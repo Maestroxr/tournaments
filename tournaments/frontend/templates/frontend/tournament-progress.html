@@ -63,11 +63,17 @@
 
                                     <!-- Begin Fixture -->
 
+                                    {% if fixture.can_play %}
+                                        <!-- Sibling of the score form below, never nested inside it; the button that submits
+                                             this form sits in the action row and points back here with its `form` attribute. -->
+                                        <form method="post" action="{% url 'gamelink-start' fixture.data.id %}" id="gamelink-play-{{ fixture.data.id }}">{% csrf_token %}</form>
+                                    {% endif %}
+
                                     <form method="post" action="" class="fixture-{{ fixture.data.id }}">
 
                                         <input type="hidden" name="fixture_id" value="{{ fixture.data.id }}">
                                         {% csrf_token %}
-                                        <div class="row bg-light rounded-top py-2 mx-0 {% if stage_info.levels|length > 1 %}mt-2{% endif %} {% if not fixture.editable %}rounded-bottom{% endif %}">
+                                        <div class="row bg-light rounded-top py-2 mx-0 {% if stage_info.levels|length > 1 %}mt-2{% endif %} {% if not fixture.editable and not fixture.data.auto_confirmed %}rounded-bottom{% endif %}">
 
                                             <div class="col-4 text-left">
                                                 <strong>
@@ -108,18 +114,25 @@
                                             </div>
 
                                         </div>
-                                        {% if fixture.editable %}
+                                        {% if fixture.editable or fixture.data.auto_confirmed %}
                                             <div class="row bg-light rounded-bottom mx-0 py-2 border-top">
                                                 <div class="col-12 text-right">
-                                                    {% if fixture.data.score1 == None or fixture.data.score2 == None %}
-                                                        <button class="btn btn-sm btn-outline-success"><i class="bi bi-check-lg"></i> Submit</button>
+                                                    {% if fixture.data.auto_confirmed %}
+                                                        <span class="badge badge-info">Result reported by the game server</span>
                                                     {% else %}
-                                                        <small>Confirmations: {{ fixture.data.confirmations.count }} / {{ fixture.data.required_confirmations_count }}</small>
-                                                        {% if not fixture.has_confirmed %}
-                                                            <button class="btn btn-sm btn-outline-success btn-confirm"><i class="bi bi-check-lg"></i> Confirm</button>
-                                                            <button class="btn btn-sm btn-outline-danger btn-rebuttal" style="display: none;">Rebuttal</button>
+                                                        {% if fixture.can_play %}
+                                                            <button type="submit" form="gamelink-play-{{ fixture.data.id }}" class="btn btn-sm btn-primary"><i class="bi bi-dice-5"></i> Go to game</button>
+                                                        {% endif %}
+                                                        {% if fixture.data.score1 == None or fixture.data.score2 == None %}
+                                                            <button class="btn btn-sm btn-outline-success"><i class="bi bi-check-lg"></i> Submit</button>
                                                         {% else %}
-                                                            <small class="text-success ml-2"><i class="bi bi-patch-check-fill"></i> You have confirmed.</small>
+                                                            <small>Confirmations: {{ fixture.data.confirmations.count }} / {{ fixture.data.required_confirmations_count }}</small>
+                                                            {% if not fixture.has_confirmed %}
+                                                                <button class="btn btn-sm btn-outline-success btn-confirm"><i class="bi bi-check-lg"></i> Confirm</button>
+                                                                <button class="btn btn-sm btn-outline-danger btn-rebuttal" style="display: none;">Rebuttal</button>
+                                                            {% else %}
+                                                                <small class="text-success ml-2"><i class="bi bi-patch-check-fill"></i> You have confirmed.</small>
+                                                            {% endif %}
                                                         {% endif %}
                                                     {% endif %}
                                                 </div>

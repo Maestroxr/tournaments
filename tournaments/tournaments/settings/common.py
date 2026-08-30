@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.1/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -31,6 +32,7 @@ INSTALLED_APPS = [
     'capture_tag',
     'tournaments',
     'frontend',
+    'gamelink',
 ]
 
 MIDDLEWARE = [
@@ -120,3 +122,23 @@ CRISPY_TEMPLATE_PACK = 'bootstrap4'
 
 LOGIN_REDIRECT_URL = 'index'
 LOGOUT_REDIRECT_URL = 'index'
+
+
+# Game link — see tournaments-backgammon-messaging.md
+#
+# The feature ships switched off. Enabling it is a deployment step, and rolling it back is a matter
+# of switching it off again: the button disappears and manual scoring carries on untouched.
+# Secrets come from the environment only, are never `SECRET_KEY`, and the two channels never share
+# one. `gamelink.checks` refuses to boot on a weak configuration outside DEBUG.
+
+GAMELINK_ENABLED        = os.environ.get('GAMELINK_ENABLED', '0') == '1'
+GAMELINK_ISSUER         = 'tournaments'
+GAMELINK_AUDIENCE       = 'backgammon'
+GAMELINK_BACKGAMMON_URL = os.environ.get('GAMELINK_BACKGAMMON_URL', '')  # https://…, no path
+GAMELINK_TICKET_SECRET  = os.environ.get('GAMELINK_TICKET_SECRET', '')
+GAMELINK_RESULT_SECRETS = [s for s in os.environ.get('GAMELINK_RESULT_SECRETS', '').split(',') if s]
+GAMELINK_TICKET_TTL     = 120        # seconds a minted ticket stays redeemable
+GAMELINK_LINK_TTL       = 7200       # seconds a game link stays open before it is refreshed
+GAMELINK_CLOCK_SKEW     = 300        # seconds of tolerance on an inbound result timestamp
+GAMELINK_MAX_BODY       = 64 * 1024  # bytes; larger result bodies are rejected unread
+GAMELINK_TARGET_POINTS  = 1          # match length, in points; decided (plan §9, decision 1)

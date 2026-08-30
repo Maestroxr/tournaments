@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.views.generic import ListView, View
 from django.views.generic.detail import SingleObjectMixin
 from django.views.generic.edit import FormView
+from gamelink.views import playable_seat
 
 from tournaments import models
 
@@ -368,10 +369,15 @@ class TournamentProgressView(SingleObjectMixin, VersionInfoMixin, AlertMixin, Vi
         }
 
     def get_fixture_data(self, stage, level, fixture):
+        editable = not fixture.is_confirmed and level == stage.current_level and self.request.user.id and stage.tournament.participations.filter(participant__user = self.request.user).count() > 0
         return {
             'data': fixture,
-            'editable': not fixture.is_confirmed and level == stage.current_level and self.request.user.id and stage.tournament.participations.filter(participant__user = self.request.user).count() > 0,
+            'editable': editable,
             'has_confirmed': fixture.confirmations.filter(id = self.request.user.id).count() > 0,
+            # The button and `StartGameView` share the one predicate, so they cannot disagree about
+            # who may play what. Only asked where the action row is rendered at all, which keeps
+            # the extra queries off every fixture that could not show a button anyway.
+            'can_play': bool(editable) and playable_seat(self.request.user, fixture)[0] is not None,
         }
 
     def get_context_data(self, **kwargs):

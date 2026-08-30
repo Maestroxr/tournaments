@@ -873,6 +873,7 @@ class Fixture(models.Model):
     score1  = models.PositiveSmallIntegerField(null = True)
     score2  = models.PositiveSmallIntegerField(null = True)
     confirmations = models.ManyToManyField('auth.User', related_name = 'fixture_confirmations')
+    auto_confirmed = models.BooleanField(default = False)  # result reported by a trusted game server
 
     class Meta:
         constraints = [
@@ -928,6 +929,11 @@ class Fixture(models.Model):
     def is_confirmed(self):
         if self.score1 is None or self.score2 is None:
             return False
+        # A result reported by a trusted game server is authoritative and collects no human
+        # confirmations, so without this it would never reach `required_confirmations_count` and
+        # would stall the tournament forever.
+        if self.auto_confirmed:
+            return True
         return self.confirmations.count() >= self.required_confirmations_count
 
     @property
