@@ -74,3 +74,76 @@ Run the local server:
 ```bash
 python manage.py runserver
 ```
+
+## Game link (playing fixtures on an external game server)
+
+A fixture can be played on a linked game server instead of being scored by hand. A player presses
+**Go to game** on the tournament progress page, is handed a single-use ticket, plays, and the game
+server reports the result back — which confirms the fixture without any human votes and advances
+the tournament. The manual scoring path is untouched and stays available for every fixture that was
+not reported this way.
+
+**The feature ships disabled.** With `GAMELINK_ENABLED` off, the button never renders, the
+predicate behind it refuses before it touches the database, and the callback endpoint returns 404.
+Turning it off again is a complete rollback.
+
+### Environment variables
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `GAMELINK_ENABLED` | — | `1` to turn the feature on. Anything else is off, which is the default. |
+| `GAMELINK_BACKGAMMON_URL` | when enabled | Base URL of the game server, `https://…`, no path. |
+| `GAMELINK_TICKET_SECRET` | when enabled | Signs the tickets this server issues. |
+| `GAMELINK_RESULT_SECRETS` | when enabled | Comma-separated list. Verifies results the game server posts back; **every** entry is tried. |
+
+Never commit any of these. Generate each one separately, per environment:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+A boot-time system check refuses to start the server when the feature is on outside `DEBUG` and the
+configuration is weak — a missing or short secret, the same secret used for both channels, the
+ticket secret reused as `SECRET_KEY`, or a base URL that is not `https://`. Run it with
+`python manage.py check`; it fails loudly rather than degrading silently.
+
+### Scheduled jobs
+
+One cron entry, at whatever interval suits you — hourly is plenty:
+
+```cron
+0 * * * * cd /srv/tournaments/tournaments && ../venv/bin/python manage.py purge_expired
+```
+
+It forgets seen nonces older than an hour, deletes issued-ticket audit rows past their expiry, and
+closes any game link still `pending` past its own expiry so the fixture goes back to being
+manually scorable. It refuses to run — non-zero, no traceback — if `--nonce-hours` is set low
+enough to weaken replay protection, because a nonce forgotten while its message is still inside the
+timestamp window can be replayed.
+
+> **The game server has a cron requirement of its own, and it is not optional.** Its `run_tasks` is
+> the only retry path for a result this server refuses or fails to answer. Without it, one blip
+> here loses a match result permanently and silently. See the backend README on that side.
+
+### Rotating a secret
+
+Each verifier takes a **list** and each signer uses the **first** entry, which is what makes a
+rotation possible with no window where valid messages bounce. For `GAMELINK_RESULT_SECRETS`, whose
+signer is the game server:
+
+1. Append the new secret to `GAMELINK_RESULT_SECRETS` here and deploy. Both old and new now verify.
+2. Move the new secret to the front of the game server's `GAMELINK_RESULT_SECRET` and deploy there.
+3. Remove the old secret from the list here and deploy.
+
+`GAMELINK_TICKET_SECRET` rotates the same way in the other direction: add the new secret to the
+game server's `GAMELINK_TICKET_SECRETS` list first, then switch this server's signer, then drop the
+old one from the list.
+
+Never do steps 1 and 2 in the other order, and never skip step 1 — that is precisely the window in
+which valid messages are rejected.
+
+### Enabling it
+
+Enable the **game server first**. It can only accept tickets that nobody is yet able to mint, so
+that half is inert on its own. Then enable this side. Rolling back is `GAMELINK_ENABLED=0` here:
+the button disappears and manual scoring carries on untouched.

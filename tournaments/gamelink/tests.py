@@ -4,17 +4,21 @@ import json
 import logging
 import time
 import uuid
+from io import StringIO
 from urllib.parse import unquote
 
 from django.contrib.auth.models import AnonymousUser, User
 from django.core import signing
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
 
 from gamelink import checks
+from gamelink.housekeeping import minimum_nonce_retention, purge_expired
 from gamelink.models import GameLink, IssuedTicket, LinkedAccount, SeenNonce
 from gamelink.signing import (
     TICKET_SALT,
@@ -522,6 +526,10 @@ class StartGameTestBase(TestCase):
             level = 0,
             player1 = self.participants['player-1'],
             player2 = self.participants['player-2'],
+            # A knockout fixture built by hand needs a dict here: the field defaults to a *list*
+            # and `Knockout.propagate` reads it as a mapping, so the first `update_state` after
+            # this fixture confirms would die on an AttributeError six frames down (**G23**).
+            extras = dict(),
         )
 
     def login(self, user):
@@ -1752,3 +1760,271 @@ class LinkedRoundEndToEndTest(TestCase):
         self.report(self.stage.fixtures.get(level = 1))
 
         self.assertEqual(self.tournament.state, 'finished')
+
+
+# Housekeeping and the manual path (session 7)
+# --------------------------------------------
+
+
+@gamelink_settings
+class PurgeExpiredTest(GameLinkTestBase):
+    """
+    `gamelink.housekeeping.purge_expired` and the management command wrapping it.
+
+    The base class supplies one `GameLink` expiring in ten minutes, which is the "leave this alone"
+    case for every test here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.now = timezone.now()
+
+    def add_nonce(self, nonce, age):
+        seen = SeenNonce.objects.create(nonce = nonce)
+        # `seen_at` is auto_now_add, so it has to be written back rather than passed in.
+        SeenNonce.objects.filter(pk = seen.pk).update(seen_at = self.now - age)
+        return seen
+
+    def add_ticket(self, jti, expires_in):
+        return IssuedTicket.objects.create(
+            jti        = jti,
+            game_link  = self.game_link,
+            user       = self.users[0],
+            seat       = 'p1',
+            expires_at = self.now + expires_in)
+
+    def test_a_nonce_older_than_the_retention_is_forgotten(self):
+        self.add_nonce('old', datetime.timedelta(hours = 2))
+        self.add_nonce('recent', datetime.timedelta(minutes = 5))
+
+        counts = purge_expired(now = self.now)
+
+        self.assertEqual(counts['nonces'], 1)
+        self.assertEqual(list(SeenNonce.objects.values_list('nonce', flat = True)), ['recent'])
+
+    def test_a_nonce_is_kept_for_the_whole_retention(self):
+        # Exactly on the boundary, and one second inside it. Neither may be forgotten: the window
+        # is what stops the replay, so an off-by-one here is a security bug, not a tidiness one.
+        self.add_nonce('boundary', datetime.timedelta(hours = 1))
+        self.add_nonce('just-inside', datetime.timedelta(minutes = 59, seconds = 59))
+
+        counts = purge_expired(now = self.now)
+
+        self.assertEqual(counts['nonces'], 0)
+        self.assertEqual(SeenNonce.objects.count(), 2)
+
+    def test_a_retention_shorter_than_the_clock_skew_window_is_refused(self):
+        self.add_nonce('old', datetime.timedelta(hours = 2))
+
+        # `GAMELINK_CLOCK_SKEW` is 300 s, so a captured result stays replayable for 600 s.
+        with self.assertRaises(ValueError) as refusal:
+            purge_expired(nonce_retention = datetime.timedelta(seconds = 599), now = self.now)
+
+        self.assertIn('replayed', str(refusal.exception))
+
+        # And it refused *before* deleting anything, rather than partway through.
+        self.assertEqual(SeenNonce.objects.count(), 1)
+
+    def test_the_minimum_retention_follows_the_configured_skew(self):
+        with override_settings(GAMELINK_CLOCK_SKEW = 900):
+            self.assertEqual(minimum_nonce_retention(), datetime.timedelta(seconds = 1800))
+            purge_expired(nonce_retention = datetime.timedelta(seconds = 1800), now = self.now)
+            with self.assertRaises(ValueError):
+                purge_expired(nonce_retention = datetime.timedelta(seconds = 1799), now = self.now)
+
+    def test_an_expired_ticket_is_deleted_and_a_live_one_is_kept(self):
+        self.add_ticket(uuid.uuid4(), -datetime.timedelta(minutes = 1))
+        live = self.add_ticket(uuid.uuid4(), datetime.timedelta(minutes = 1))
+
+        counts = purge_expired(now = self.now)
+
+        self.assertEqual(counts['tickets'], 1)
+        self.assertEqual(list(IssuedTicket.objects.values_list('jti', flat = True)), [live.jti])
+
+    def test_deleting_a_ticket_does_not_take_its_game_link_with_it(self):
+        # `IssuedTicket.game_link` cascades one way only; purging the audit row must not remove the
+        # record of the game it was minted for.
+        self.add_ticket(uuid.uuid4(), -datetime.timedelta(minutes = 1))
+
+        purge_expired(now = self.now)
+
+        self.assertTrue(GameLink.objects.filter(pk = self.game_link.pk).exists())
+
+    def test_a_pending_link_past_its_expiry_is_cancelled(self):
+        GameLink.objects.filter(pk = self.game_link.pk).update(
+            expires_at = self.now - datetime.timedelta(minutes = 1))
+
+        counts = purge_expired(now = self.now)
+
+        self.assertEqual(counts['links'], 1)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'cancelled')
+
+    def test_a_link_that_has_not_expired_is_left_alone(self):
+        counts = purge_expired(now = self.now)
+
+        self.assertEqual(counts['links'], 0)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'pending')
+
+    def test_a_link_that_reached_an_outcome_is_never_reopened(self):
+        # Re-closing a settled link would overwrite a real result with a housekeeping guess.
+        for status in ('completed', 'cancelled', 'playing', 'failed'):
+            with self.subTest(status = status):
+                GameLink.objects.filter(pk = self.game_link.pk).update(
+                    status = status, expires_at = self.now - datetime.timedelta(days = 1))
+
+                counts = purge_expired(now = self.now)
+
+                self.assertEqual(counts['links'], 0)
+                self.game_link.refresh_from_db()
+                self.assertEqual(self.game_link.status, status)
+
+    def test_a_cancelled_fixture_is_still_manually_scorable_afterwards(self):
+        # This is the whole point of closing a stuck link: the fixture goes back to the humans.
+        GameLink.objects.filter(pk = self.game_link.pk).update(
+            expires_at = self.now - datetime.timedelta(minutes = 1))
+
+        purge_expired(now = self.now)
+
+        self.fixture.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+        self.assertFalse(self.fixture.auto_confirmed)
+        self.assertFalse(self.fixture.is_confirmed)
+
+    def test_a_second_run_finds_nothing_left_to_do(self):
+        self.add_nonce('old', datetime.timedelta(hours = 2))
+        self.add_ticket(uuid.uuid4(), -datetime.timedelta(minutes = 1))
+        GameLink.objects.filter(pk = self.game_link.pk).update(
+            expires_at = self.now - datetime.timedelta(minutes = 1))
+
+        first = purge_expired(now = self.now)
+        second = purge_expired(now = self.now)
+
+        self.assertEqual(first, dict(nonces = 1, tickets = 1, links = 1))
+        self.assertEqual(second, dict(nonces = 0, tickets = 0, links = 0))
+
+    def test_the_command_runs_and_says_what_it_did(self):
+        self.add_nonce('old', datetime.timedelta(hours = 2))
+
+        out = StringIO()
+        call_command('purge_expired', stdout = out)
+
+        self.assertIn('Purged 1 seen nonces', out.getvalue())
+        self.assertEqual(SeenNonce.objects.count(), 0)
+
+    def test_the_command_refuses_an_unsafe_retention_without_a_traceback(self):
+        self.add_nonce('old', datetime.timedelta(hours = 2))
+
+        with self.assertRaises(CommandError):
+            call_command('purge_expired', '--nonce-hours', '0.1')
+
+        self.assertEqual(SeenNonce.objects.count(), 1)
+
+
+@start_game_settings
+class ManualScoreGuardTest(StartGameTestBase):
+    """
+    The manual scoring path must refuse to overwrite a result the game server reported.
+
+    `TournamentProgressView.post` already refuses a confirmed fixture, and `auto_confirmed` makes
+    `is_confirmed` true, so the guard covers this by construction. That is exactly why it needs an
+    explicit test: nothing in the manual path mentions `auto_confirmed`, so a future refactor of
+    `is_confirmed` could reopen the hole without a single test going red.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # A second, deliberately unscored fixture at the same level. Without it the auto-confirmed
+        # fixture closes the level and finishes the tournament, and the POST is then refused by the
+        # *state* check long before the confirmation guard is reached — a test that passes for
+        # entirely the wrong reason (gotcha **G26**). The pairing does not matter; only that it is
+        # unconfirmed and at level 0.
+        self.sibling = Fixture.objects.create(
+            mode = self.knockout,
+            level = 0,
+            player1 = self.participants['player-3'],
+            player2 = self.participants['player-2'],
+            extras = dict())
+
+    def post_score(self, fixture, score1, score2):
+        return self.client.post(self.progress_url(), dict(
+            fixture_id = fixture.pk,
+            score1 = str(score1),
+            score2 = str(score2)))
+
+    def auto_confirm(self, score1 = 1, score2 = 0):
+        """Put the fixture in the state `ResultCallbackView` leaves it in."""
+        self.fixture.score = (score1, score2)
+        self.fixture.auto_confirmed = True
+        self.fixture.save()
+
+    def test_the_manual_path_still_works_on_an_ordinary_fixture(self):
+        # The control. Without it, a 412 from any unrelated guard would look like proof that the
+        # confirmation check is doing its job (the lesson of **G12**).
+        self.login(self.user1)
+
+        response = self.post_score(self.fixture, 1, 0)
+
+        self.assertEqual(response.status_code, 302)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+
+    def test_an_auto_confirmed_fixture_refuses_a_manual_score_edit(self):
+        self.auto_confirm()
+        self.login(self.user1)
+
+        response = self.post_score(self.fixture, 0, 1)
+
+        self.assertEqual(response.status_code, 412)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertTrue(self.fixture.auto_confirmed)
+
+    def test_the_refusal_reaches_the_confirmation_guard_and_not_an_earlier_one(self):
+        # Pins the arrangement the previous test depends on: the tournament is still running and
+        # the fixture is still in the current level, so a 412 can only have come from
+        # `is_confirmed`.
+        self.auto_confirm()
+
+        self.assertEqual(self.tournament.state, 'active')
+        self.assertEqual(self.knockout.current_level, 0)
+        self.assertEqual(self.fixture.level, 0)
+        self.assertTrue(Fixture.objects.get(pk = self.fixture.pk).is_confirmed)
+
+    def test_a_vote_confirmed_fixture_refuses_an_edit_too(self):
+        # The behaviour that predates this work, pinned alongside so that the two cannot drift.
+        self.fixture.score = (1, 0)
+        self.fixture.save()
+        self.fixture.confirmations.add(self.user1, self.user2)
+        self.login(self.user1)
+
+        response = self.post_score(self.fixture, 0, 1)
+
+        self.assertEqual(response.status_code, 412)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+
+    def test_an_auto_confirmed_fixture_refuses_every_player(self):
+        self.auto_confirm()
+
+        for user in (self.user1, self.user2):
+            with self.subTest(user = user.username):
+                self.login(user)
+                self.assertEqual(self.post_score(self.fixture, 0, 1).status_code, 412)
+
+    def test_resubmitting_the_reported_score_changes_nothing(self):
+        # The score guard only runs when the score differs, so an identical resubmission falls
+        # through to the confirmation branch. It must not alter the result either way — see
+        # **P18**, which records that it does still add a human confirmation to a fixture that was
+        # settled by machine.
+        self.auto_confirm()
+        self.login(self.user1)
+
+        response = self.post_score(self.fixture, 1, 0)
+
+        self.assertEqual(response.status_code, 302)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertTrue(self.fixture.auto_confirmed)
+        self.assertTrue(self.fixture.is_confirmed)
