@@ -1,7 +1,9 @@
 import datetime
 import hashlib
 import json
+import logging
 import time
+import uuid
 from urllib.parse import unquote
 
 from django.contrib.auth.models import AnonymousUser, User
@@ -13,8 +15,9 @@ from django.utils import timezone
 from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
 
 from gamelink import checks
-from gamelink.models import GameLink, IssuedTicket, LinkedAccount
+from gamelink.models import GameLink, IssuedTicket, LinkedAccount, SeenNonce
 from gamelink.signing import (
+    TICKET_SALT,
     issue_ticket,
     redact,
     result_signature_base,
@@ -859,3 +862,893 @@ class PlayableSeatTest(StartGameTestBase):
         self.tournament.save()
 
         self.assertEqual(playable_seat(self.user1, Fixture.objects.get(pk = self.fixture.pk)), (None, 412))
+
+
+# The result callback (session 6)
+# -------------------------------
+
+RESULT_URL = '/api/gamelink/result/'
+
+
+class ResultCallbackTestBase(TestCase):
+    """
+    A published, running knockout whose current level holds one linked fixture.
+
+    Two `Participation` rows are registered deliberately, so that
+    `required_confirmations_count` is 2 rather than the 1 a fixture built from bare `Participant`
+    rows would need (gotcha **G10**). Without them "auto-confirmed with no confirmations" would be
+    indistinguishable from "confirmed by nobody, and one was enough anyway".
+    """
+
+    ROOM_ID  = '7c9e6679-7425-40de-944b-e07fc1f90ae7'
+    MATCH_ID = '3a1f0c2b-4d5e-4a6b-8c7d-9e0f1a2b3c4d'
+
+    def setUp(self):
+        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list(), published = True)
+        self.knockout   = Knockout.objects.create(tournament = self.tournament)
+
+        self.user1, self.user2 = [
+            User.objects.create_user(username = f'player-{user_idx + 1}', password = 'password')
+            for user_idx in range(2)
+        ]
+        self.participants = {
+            user.username: Participant.create_for_user(user)
+            for user in (self.user1, self.user2)
+        }
+        for slot_id, participant in enumerate(self.participants.values()):
+            Participation.objects.create(
+                tournament = self.tournament,
+                participant = participant,
+                slot_id = slot_id)
+
+        self.fixture = Fixture.objects.create(
+            mode = self.knockout,
+            level = 0,
+            player1 = self.participants['player-1'],
+            player2 = self.participants['player-2'],
+            # `Fixture.extras` defaults to a *list*, but `Knockout.propagate` reads it as a dict,
+            # so a hand-built knockout fixture crashes `update_state` the moment it is confirmed.
+            # Real brackets come out of `Knockout.create_fixtures`, which always writes a dict.
+            extras = dict(),
+        )
+        self.game_link = GameLink.objects.create(
+            fixture = self.fixture,
+            target_points = 1,
+            expires_at = timezone.now() + datetime.timedelta(hours = 2),
+        )
+
+        # Every refusal is logged at WARNING and most tests below provoke one on purpose, which
+        # would otherwise bury the test output. `assertRejectionLogs` turns it back on for the two
+        # tests that pin the logging contract itself.
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+
+    def assertRejectionLogs(self):
+        logging.disable(logging.NOTSET)
+        return self.assertLogs('gamelink.views', level = 'WARNING')
+
+    def result_body(self, **overrides):
+        """
+        The plan §3.2 body for this fixture, as `game.link.outbox.build_result_body` produces it.
+        """
+        body = {
+            'v'            : 1,
+            'tournament_id': self.tournament.pk,
+            'fixture_id'   : self.fixture.pk,
+            'room_id'      : self.ROOM_ID,
+            'match_id'     : self.MATCH_ID,
+            'status'       : 'completed',
+            'target_points': 1,
+            'seats'        : {'p1': 'white', 'p2': 'black'},
+            'score'        : {'p1': 1, 'p2': 0},
+            'winner_seat'  : 'p1',
+            'end_reason'   : 'bear_off',
+            'finished_at'  : '2026-08-27T12:02:20Z',
+        }
+        body.update(overrides)
+        return body
+
+    def serialize(self, body):
+        # Byte for byte what `deliver_result` puts on the wire: compact separators, sorted keys.
+        return json.dumps(body, separators = (',', ':'), sort_keys = True).encode()
+
+    def deliver(self, body = None, raw = None, timestamp = None, nonce = None, signature = None,
+                client = None, drop = (), sign_over = None, issuer = 'backgammon'):
+        """
+        POST a result the way the backgammon server does.
+
+        `sign_over` signs a *different* payload than the one sent, which is how a body mutated
+        after signing is simulated.
+        """
+        if raw is None:
+            raw = self.serialize(self.result_body() if body is None else body)
+        if timestamp is None:
+            timestamp = str(int(time.time()))
+        if nonce is None:
+            nonce = uuid.uuid4().hex
+        if signature is None:
+            signature = sign_result_body(raw if sign_over is None else sign_over, timestamp, nonce)
+
+        headers = {
+            'HTTP_X_GAMELINK_TIMESTAMP': timestamp,
+            'HTTP_X_GAMELINK_NONCE'    : nonce,
+            'HTTP_X_GAMELINK_SIGNATURE': signature,
+            'HTTP_X_GAMELINK_ISSUER'   : issuer,
+        }
+        for name in drop:
+            headers.pop(name)
+
+        return (client or self.client).post(
+            RESULT_URL, data = raw, content_type = 'application/json', **headers)
+
+    def assertNothingRecorded(self):
+        self.fixture.refresh_from_db()
+        self.game_link.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+        self.assertIsNone(self.fixture.score2)
+        self.assertFalse(self.fixture.auto_confirmed)
+        self.assertEqual(self.game_link.status, 'pending')
+        self.assertIsNone(self.game_link.raw_result)
+
+
+@gamelink_settings
+class ResultCallbackViewTest(ResultCallbackTestBase):
+
+    # The happy path
+    # --------------
+
+    def test_a_signed_result_scores_the_fixture_and_confirms_it(self):
+        response = self.deliver()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'recorded'})
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertTrue(self.fixture.auto_confirmed)
+        self.assertTrue(self.fixture.is_confirmed)
+
+        # The whole point of `auto_confirmed`: nobody voted, and the fixture is settled anyway.
+        self.assertEqual(self.fixture.confirmations.count(), 0)
+        self.assertEqual(self.fixture.required_confirmations_count, 2)
+
+    def test_the_game_link_records_what_was_reported(self):
+        body = self.result_body()
+        self.deliver(body)
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'completed')
+        self.assertIsNotNone(self.game_link.completed_at)
+        self.assertEqual(self.game_link.external_room_id, self.ROOM_ID)
+
+        # The audit record behind a fixture that confirmed itself is the message verbatim.
+        self.assertEqual(self.game_link.raw_result, body)
+
+    def test_the_level_closes_and_the_tournament_advances(self):
+        Fixture.objects.create(
+            mode = self.knockout,
+            level = 1,
+            player1 = self.participants['player-1'],
+            player2 = self.participants['player-2'],
+            extras = dict())
+        self.assertEqual(self.knockout.current_level, 0)
+
+        self.deliver()
+
+        self.assertEqual(Knockout.objects.get(pk = self.knockout.pk).current_level, 1)
+
+    def test_confirmations_recorded_before_the_result_are_cleared(self):
+        self.fixture.confirmations.add(self.user1)
+
+        self.deliver()
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.confirmations.count(), 0)
+
+    def test_a_score_of_zero_is_a_score(self):
+        # `if score:` would drop this one, and 0 is the losing half of every 1-0 result.
+        self.deliver(self.result_body(score = {'p1': 0, 'p2': 1}, winner_seat = 'p2'))
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (0, 1))
+
+    def test_the_seats_map_onto_this_side_s_players(self):
+        # p1 is `fixture.player1` because that is the seat the ticket gave them, and the sender has
+        # already mapped colours onto seats. Getting this backwards would award every game to the
+        # wrong player while every signature still verified.
+        self.deliver(self.result_body(score = {'p1': 1, 'p2': 0}))
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.winner, self.participants['player-1'])
+
+    # Idempotency
+    # -----------
+
+    def test_a_second_delivery_of_the_same_result_changes_nothing(self):
+        body = self.result_body()
+        self.assertEqual(self.deliver(body).status_code, 200)
+
+        self.game_link.refresh_from_db()
+        completed_at = self.game_link.completed_at
+
+        # A retry mints a fresh nonce — the receiver rejects a replayed one outright — so this is
+        # what a re-delivery actually looks like on the wire.
+        response = self.deliver(body)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'already_recorded'})
+
+        self.fixture.refresh_from_db()
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertEqual(self.game_link.completed_at, completed_at)
+
+    def test_a_different_result_for_a_completed_fixture_is_ignored_rather_than_applied(self):
+        self.deliver()
+        self.deliver(self.result_body(score = {'p1': 0, 'p2': 1}, winner_seat = 'p2'))
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+
+    # Authentication
+    # --------------
+
+    def test_a_bad_signature_is_refused(self):
+        response = self.deliver(signature = 'v1=' + '0' * 64)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(json.loads(response.content), {'error': 'unauthorized'})
+        self.assertNothingRecorded()
+
+    def test_a_signature_from_the_wrong_secret_is_refused(self):
+        raw = self.serialize(self.result_body())
+        timestamp = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        with override_settings(GAMELINK_RESULT_SECRETS = [OTHER_SECRET]):
+            forged = sign_result_body(raw, timestamp, nonce)
+
+        response = self.deliver(raw = raw, timestamp = timestamp, nonce = nonce, signature = forged)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNothingRecorded()
+
+    def test_a_body_mutated_after_signing_is_refused(self):
+        honest = self.serialize(self.result_body())
+        tampered = self.serialize(self.result_body(score = {'p1': 7, 'p2': 0}))
+        self.assertNotEqual(honest, tampered)
+
+        response = self.deliver(raw = tampered, sign_over = honest)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNothingRecorded()
+
+    def test_a_replayed_nonce_is_refused(self):
+        nonce = uuid.uuid4().hex
+        self.assertEqual(self.deliver(nonce = nonce).status_code, 200)
+
+        # Same nonce, freshly signed, and a body that would otherwise be perfectly acceptable.
+        response = self.deliver(nonce = nonce)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(SeenNonce.objects.filter(nonce = nonce).count(), 1)
+
+    def test_a_stale_or_futuristic_timestamp_is_refused(self):
+        now = int(time.time())
+        for offset in (-301, -3600, 301, 3600):
+            with self.subTest(offset = offset):
+                response = self.deliver(timestamp = str(now + offset))
+                self.assertEqual(response.status_code, 401)
+        self.assertNothingRecorded()
+        self.assertEqual(SeenNonce.objects.count(), 0)
+
+    def test_a_timestamp_inside_the_window_is_accepted(self):
+        response = self.deliver(timestamp = str(int(time.time()) - 299))
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_missing_header_is_refused(self):
+        for name in ('HTTP_X_GAMELINK_TIMESTAMP', 'HTTP_X_GAMELINK_NONCE', 'HTTP_X_GAMELINK_SIGNATURE'):
+            with self.subTest(header = name):
+                response = self.deliver(drop = [name])
+                self.assertEqual(response.status_code, 401)
+        self.assertNothingRecorded()
+
+    def test_a_malformed_timestamp_or_nonce_is_refused(self):
+        for kwargs in (
+            dict(timestamp = 'now'),
+            dict(timestamp = '-1756300940'),
+            dict(timestamp = ' 1756300940'),
+            dict(timestamp = '9' * 21),
+            dict(nonce = 'a nonce with spaces'),
+            dict(nonce = 'x' * 65),          # longer than SeenNonce.nonce can hold
+            dict(nonce = ''),
+        ):
+            with self.subTest(**kwargs):
+                self.assertEqual(self.deliver(**kwargs).status_code, 401)
+        self.assertEqual(SeenNonce.objects.count(), 0)
+
+    def test_the_issuer_header_is_not_a_gate(self):
+        # It rides outside the signed material, so anyone can write anything in it. Refusing on it
+        # would only give a false sense of a check; the secret is what separates environments, and
+        # this test exists so that nobody adds one later believing it buys something.
+        response = self.deliver(issuer = 'not-backgammon')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'recorded'})
+
+    def test_the_issuer_header_may_be_absent_altogether(self):
+        response = self.deliver(drop = ['HTTP_X_GAMELINK_ISSUER'])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'recorded'})
+
+    def test_a_rotated_secret_still_verifies(self):
+        raw = self.serialize(self.result_body())
+        timestamp = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        with override_settings(GAMELINK_RESULT_SECRETS = [ROTATED_SECRET]):
+            signature = sign_result_body(raw, timestamp, nonce)
+
+        # Step one of the rotation in plan §5: the new secret is in the verifier list but is not
+        # the one this server signs with. A result signed with it has to be accepted anyway.
+        with override_settings(GAMELINK_RESULT_SECRETS = [RESULT_SECRET, ROTATED_SECRET]):
+            response = self.deliver(raw = raw, timestamp = timestamp, nonce = nonce, signature = signature)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_signature_is_checked_before_any_database_query(self):
+        # Plan §2, threat 16: a flood of forged results must not become a flood of queries.
+        with self.assertNumQueries(0):
+            self.deliver(signature = 'v1=' + 'f' * 64)
+
+    # No session authority
+    # --------------------
+
+    def test_a_session_cookie_changes_nothing(self):
+        self.assertTrue(self.client.login(username = self.user1.username, password = 'password'))
+
+        self.assertEqual(self.deliver().status_code, 200)
+
+    def test_a_session_cookie_does_not_stand_in_for_a_signature(self):
+        self.assertTrue(self.client.login(username = self.user1.username, password = 'password'))
+
+        response = self.deliver(signature = 'v1=' + '0' * 64)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNothingRecorded()
+
+    def test_a_post_without_a_csrf_token_is_accepted(self):
+        # `self.client` never enforces CSRF (gotcha **G12**), so the exemption is only actually
+        # exercised by a client that does. Without this, `@csrf_exempt` could be removed and every
+        # other test here would still pass.
+        client = Client(enforce_csrf_checks = True)
+
+        self.assertEqual(self.deliver(client = client).status_code, 200)
+
+    def test_get_is_not_allowed(self):
+        self.assertEqual(self.client.get(RESULT_URL).status_code, 405)
+
+    def test_a_disabled_feature_does_not_admit_the_endpoint_exists(self):
+        with override_settings(GAMELINK_ENABLED = False):
+            with self.assertNumQueries(0):
+                response = self.deliver()
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(json.loads(response.content), {'error': 'not_found'})
+        self.assertNothingRecorded()
+
+    # Malformed messages
+    # ------------------
+
+    def test_an_oversized_body_is_refused(self):
+        body = self.result_body(end_reason = 'x' * (64 * 1024))
+        raw = self.serialize(body)
+        self.assertGreater(len(raw), 64 * 1024)
+
+        response = self.deliver(raw = raw)
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(json.loads(response.content), {'error': 'payload_too_large'})
+        # Refused on the declared length, so nothing downstream ran at all.
+        self.assertEqual(SeenNonce.objects.count(), 0)
+        self.assertNothingRecorded()
+
+    def test_a_body_that_is_not_json_is_refused(self):
+        response = self.deliver(raw = b'{"v": 1, ')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(json.loads(response.content), {'error': 'bad_request'})
+        self.assertNothingRecorded()
+
+    def test_a_body_that_is_not_an_object_is_refused(self):
+        for raw in (b'[]', b'"result"', b'null', b'7'):
+            with self.subTest(raw = raw):
+                self.assertEqual(self.deliver(raw = raw).status_code, 400)
+
+    def test_an_unsupported_version_is_refused(self):
+        for version in (2, '1', None, True):
+            with self.subTest(version = version):
+                self.assertEqual(self.deliver(self.result_body(v = version)).status_code, 400)
+        self.assertNothingRecorded()
+
+    def test_a_field_of_the_wrong_type_is_refused(self):
+        for overrides in (
+            dict(tournament_id = '17'),
+            dict(fixture_id = None),
+            dict(fixture_id = 4.0),
+            dict(room_id = ''),
+            dict(room_id = 12345),
+            dict(room_id = 'r' * 65),
+            dict(status = 'finished'),
+            dict(status = None),
+            dict(score = None),
+            dict(score = [1, 0]),
+            dict(score = {'p1': 1}),
+            dict(score = {'p1': '1', 'p2': 0}),
+            dict(score = {'p1': -1, 'p2': 0}),
+            dict(score = {'p1': 32768, 'p2': 0}),
+        ):
+            with self.subTest(**overrides):
+                self.assertEqual(self.deliver(self.result_body(**overrides)).status_code, 400)
+        self.assertNothingRecorded()
+
+    def test_a_boolean_is_not_an_integer(self):
+        # `isinstance(True, int)` is `True` in Python, so this needs its own guard and therefore
+        # its own test.
+        for overrides in (dict(fixture_id = True), dict(score = {'p1': True, 'p2': 0})):
+            with self.subTest(**overrides):
+                self.assertEqual(self.deliver(self.result_body(**overrides)).status_code, 400)
+
+    def test_a_message_carrying_unknown_fields_is_still_accepted(self):
+        # The sender may grow the message; a receiver that refused every field it did not know
+        # would turn an additive change on the other side into an outage on this one.
+        response = self.deliver(self.result_body(doubling_cube = 4))
+
+        self.assertEqual(response.status_code, 200)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.raw_result['doubling_cube'], 4)
+
+    # Conflicts with the tournament's own state
+    # -----------------------------------------
+
+    def test_a_result_for_an_unknown_fixture_is_not_found(self):
+        response = self.deliver(self.result_body(fixture_id = self.fixture.pk + 1000))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertNothingRecorded()
+
+    def test_a_result_for_a_fixture_with_no_game_link_is_not_found(self):
+        orphan = Fixture.objects.create(
+            mode = self.knockout,
+            level = 0,
+            player1 = self.participants['player-2'],
+            player2 = self.participants['player-1'],
+            extras = dict())
+
+        response = self.deliver(self.result_body(fixture_id = orphan.pk))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_result_naming_the_wrong_tournament_is_a_conflict(self):
+        response = self.deliver(self.result_body(tournament_id = self.tournament.pk + 1))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content), {'error': 'conflict'})
+        self.assertNothingRecorded()
+
+    def test_the_room_is_pinned_on_first_contact(self):
+        # Nothing on this side knows the room id until the game server names it, so the first
+        # message that arrives is what fixes it — and every later one is checked against it.
+        self.assertEqual(self.game_link.external_room_id, '')
+
+        self.deliver(self.result_body(status = 'cancelled', winner_seat = None))
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.external_room_id, self.ROOM_ID)
+
+    def test_a_result_from_a_different_room_is_a_conflict(self):
+        self.game_link.external_room_id = 'a-different-room'
+        self.game_link.save(update_fields = ['external_room_id'])
+
+        response = self.deliver()
+
+        self.assertEqual(response.status_code, 409)
+        self.fixture.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+
+    def test_a_knockout_draw_is_refused_and_the_fixture_stays_unscored(self):
+        # `Knockout.check_fixture` cannot propagate a draw, so writing one would leave the bracket
+        # with a level that can never close.
+        response = self.deliver(self.result_body(score = {'p1': 1, 'p2': 1}, winner_seat = None))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertNothingRecorded()
+
+    # Cancellation
+    # ------------
+
+    def test_a_cancelled_result_releases_the_fixture_for_manual_scoring(self):
+        body = self.result_body(status = 'cancelled', winner_seat = None, score = {'p1': 0, 'p2': 0},
+                                end_reason = 'abandoned', match_id = None)
+
+        response = self.deliver(body)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'recorded'})
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'cancelled')
+        self.assertEqual(self.game_link.raw_result, body)
+        self.assertIsNone(self.game_link.completed_at)
+
+        # The fixture is exactly as it was, which is what "still manually scorable" means.
+        self.fixture.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+        self.assertFalse(self.fixture.auto_confirmed)
+        self.assertFalse(self.fixture.is_confirmed)
+
+    def test_a_cancelled_result_carries_no_score_requirement(self):
+        # A cancellation has nothing to score, so the sender is not obliged to invent one.
+        body = self.result_body(status = 'cancelled', winner_seat = None)
+        body.pop('score')
+
+        self.assertEqual(self.deliver(body).status_code, 200)
+
+    def test_a_cancelled_fixture_can_still_be_scored_by_hand(self):
+        self.deliver(self.result_body(status = 'cancelled', winner_seat = None))
+
+        self.fixture.refresh_from_db()
+        self.fixture.score = (1, 0)
+        self.fixture.full_clean()
+        self.fixture.save()
+        self.fixture.confirmations.add(self.user1, self.user2)
+
+        self.assertTrue(Fixture.objects.get(pk = self.fixture.pk).is_confirmed)
+
+    def test_a_repeated_cancellation_is_already_recorded(self):
+        body = self.result_body(status = 'cancelled', winner_seat = None)
+        self.assertEqual(self.deliver(body).status_code, 200)
+
+        response = self.deliver(body)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'already_recorded'})
+
+    def test_a_completion_after_a_cancellation_is_a_conflict(self):
+        self.deliver(self.result_body(status = 'cancelled', winner_seat = None))
+
+        response = self.deliver()
+
+        self.assertEqual(response.status_code, 409)
+        self.fixture.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+
+    def test_a_cancellation_after_a_completion_leaves_the_result_standing(self):
+        self.deliver()
+
+        response = self.deliver(self.result_body(status = 'cancelled', winner_seat = None))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'already_recorded'})
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertTrue(self.fixture.is_confirmed)
+
+    def test_a_failed_link_takes_no_result(self):
+        self.game_link.status = 'failed'
+        self.game_link.save(update_fields = ['status'])
+
+        response = self.deliver()
+
+        self.assertEqual(response.status_code, 409)
+        self.fixture.refresh_from_db()
+        self.assertIsNone(self.fixture.score1)
+
+    # Logging
+    # -------
+
+    def test_a_refusal_is_logged_with_its_reason_and_a_redacted_signature(self):
+        signature = 'v1=' + 'a' * 64
+
+        with self.assertRejectionLogs() as logs:
+            self.deliver(signature = signature)
+
+        record = '\n'.join(logs.output)
+        self.assertIn('401', record)
+        self.assertIn('signature does not verify', record)
+        self.assertIn('v1=[redacted]', record)
+        self.assertNotIn('a' * 64, record)
+
+    def test_a_refusal_names_the_fixture_it_was_about(self):
+        with self.assertRejectionLogs() as logs:
+            self.deliver(self.result_body(tournament_id = self.tournament.pk + 1))
+
+        self.assertIn(f'fixture={self.fixture.pk}', '\n'.join(logs.output))
+
+
+@gamelink_settings
+class ResultContractTest(ResultCallbackTestBase):
+    """
+    The result half of the cross-repo contract (plan §7, tracker **P13**).
+
+    The two repos share no code, no virtualenv and no parent git repository, so a contract test
+    here can only take one shape: a **golden vector pinned identically on both sides**. Every
+    constant below was produced by the backgammon signer and is pinned character for character in
+    ``game/link/tests.py::ResultSignatureContractTests``. If either side drifts, one of the two
+    suites turns red — which is the entire point, because drift otherwise leaves both suites green
+    and the link broken in production.
+    """
+
+    # Produced by `game.link.signing.sign_result_body` under RESULT_SECRET.
+    VECTOR_BODY = (
+        b'{"end_reason":"bear_off","finished_at":"2026-08-27T12:02:20Z","fixture_id":482,'
+        b'"match_id":"3a1f0c2b-4d5e-4a6b-8c7d-9e0f1a2b3c4d",'
+        b'"room_id":"7c9e6679-7425-40de-944b-e07fc1f90ae7","score":{"p1":1,"p2":0},'
+        b'"seats":{"p1":"white","p2":"black"},"status":"completed","target_points":1,'
+        b'"tournament_id":17,"v":1,"winner_seat":"p1"}'
+    )
+    VECTOR_TIMESTAMP = '1756300940'
+    VECTOR_NONCE     = 'b31c4f0e9a7d4c1eb2f38a6d5c091e77'
+    VECTOR_BASE      = ('v1:1756300940:b31c4f0e9a7d4c1eb2f38a6d5c091e77:'
+                        'f0a9545b5208bd6e742413ff1c5848364b05180801624918c67242f708573b7f')
+    VECTOR_SIGNATURE = 'v1=0350ccb82111f47d231e2c1e4f04ac852f5b2d803d4333343d8d0c2c3bbf2dca'
+
+    def verify(self, body = None, timestamp = None, nonce = None, signature = None):
+        return verify_result_signature(
+            self.VECTOR_BODY if body is None else body,
+            self.VECTOR_TIMESTAMP if timestamp is None else timestamp,
+            self.VECTOR_NONCE if nonce is None else nonce,
+            self.VECTOR_SIGNATURE if signature is None else signature)
+
+    def test_the_base_string_matches_the_one_the_sender_built(self):
+        base = result_signature_base(self.VECTOR_BODY, self.VECTOR_TIMESTAMP, self.VECTOR_NONCE)
+        self.assertEqual(base.decode(), self.VECTOR_BASE)
+
+    def test_a_signature_produced_by_the_backgammon_signer_verifies_here(self):
+        self.assertTrue(self.verify())
+
+    def test_this_server_would_have_produced_the_same_signature(self):
+        signature = sign_result_body(self.VECTOR_BODY, self.VECTOR_TIMESTAMP, self.VECTOR_NONCE)
+        self.assertEqual(signature, self.VECTOR_SIGNATURE)
+
+    def test_the_pinned_signature_is_refused_under_any_change(self):
+        self.assertFalse(self.verify(body = self.VECTOR_BODY.replace(b'"p1":1', b'"p1":7')))
+        self.assertFalse(self.verify(nonce = 'c42d4f0e9a7d4c1eb2f38a6d5c091e77'))
+        self.assertFalse(self.verify(timestamp = '1756300941'))
+        with override_settings(GAMELINK_RESULT_SECRETS = [OTHER_SECRET]):
+            self.assertFalse(self.verify())
+
+    def test_the_pinned_body_is_exactly_what_this_receiver_reserialises(self):
+        # If these ever differ, the sender and this test disagree about JSON, and a body signed
+        # over there would fail here for a reason that has nothing to do with the secret.
+        reserialised = self.serialize(json.loads(self.VECTOR_BODY.decode()))
+        self.assertEqual(reserialised, self.VECTOR_BODY)
+
+    def test_the_senders_own_bytes_are_understood_and_not_merely_authenticated(self):
+        """
+        Post the frozen body verbatim and check that the *fixture* ends up right.
+
+        The golden vector above pins the crypto. It cannot catch this receiver reading `score.p1`
+        as the wrong player, which would award every game to the loser while every signature still
+        verified — so the vector's own body, byte for byte, is run through the real endpoint here.
+        The timestamp and nonce are fresh because the receiver rejects a stale one, which is
+        exactly what a retry does.
+        """
+        tournament = Tournament.objects.create(id = 17, name = 'Vector', podium_spec = list(), published = True)
+        knockout = Knockout.objects.create(tournament = tournament)
+        alice, bob = [
+            User.objects.create_user(username = name, password = 'password')
+            for name in ('alice', 'bob')
+        ]
+        participants = [Participant.create_for_user(user) for user in (alice, bob)]
+        for slot_id, participant in enumerate(participants):
+            Participation.objects.create(tournament = tournament, participant = participant, slot_id = slot_id)
+
+        fixture = Fixture.objects.create(
+            id = 482, mode = knockout, level = 0,
+            player1 = participants[0], player2 = participants[1], extras = dict())
+        GameLink.objects.create(
+            fixture = fixture, target_points = 1, expires_at = timezone.now() + datetime.timedelta(hours = 2))
+
+        response = self.deliver(raw = self.VECTOR_BODY)
+
+        self.assertEqual(response.status_code, 200)
+        fixture.refresh_from_db()
+        self.assertEqual(fixture.score, (1, 0))
+        self.assertEqual(fixture.winner, participants[0])
+        self.assertTrue(fixture.is_confirmed)
+        self.assertEqual(GameLink.objects.get(fixture = fixture).external_room_id,
+                         '7c9e6679-7425-40de-944b-e07fc1f90ae7')
+
+
+@gamelink_settings
+class TicketContractTest(TestCase):
+    """
+    The ticket half of the cross-repo contract (plan §7, tracker **P13**).
+
+    Same shape as the result half, in the other direction: this token was minted here and is
+    pinned character for character in ``game/link/tests.py::TicketContractTests``, where the
+    backgammon verifier has to accept it. Session 3 checked this by hand against the real signer
+    and the real endpoint; that script is gone, and this is what replaces it.
+
+    Note it is decoded with ``max_age = None``. A pinned token is expired by construction — that is
+    what makes it reproducible — and the age is not the part of the format that can drift.
+    """
+
+    VECTOR_TOKEN = (
+        'eyJ2IjoxLCJpc3MiOiJ0b3VybmFtZW50cyIsImF1ZCI6ImJhY2tnYW1tb24iLCJqdGkiOiI1ZjNjMWQyZS04YTRi'
+        'LTRjNmQtOWUwZi0xYTJiM2M0ZDVlNmYiLCJpYXQiOjE3NTYzMDAwMDAsImV4cCI6MTc1NjMwMDEyMCwic3ViIjoi'
+        'MGYyYTdiNmMtM2Q0ZS00ZjVhLThiOWMtMGQxZTJmM2E0YjVjIiwibmFtZSI6ImFsaWNlIiwidHJuIjoxNywiZml4'
+        'Ijo0ODIsInNlYXQiOiJwMSIsIm9wcCI6ImJvYiIsInRwIjoxfQ:1x0Qjf:'
+        'FgOctl42KMzHWqwdGqd57k_WoKZLIRZgN52CkAaCZCs'
+    )
+    VECTOR_PAYLOAD = {
+        'v'   : 1,
+        'iss' : 'tournaments',
+        'aud' : 'backgammon',
+        'jti' : '5f3c1d2e-8a4b-4c6d-9e0f-1a2b3c4d5e6f',
+        'iat' : 1756300000,
+        'exp' : 1756300120,
+        'sub' : '0f2a7b6c-3d4e-4f5a-8b9c-0d1e2f3a4b5c',
+        'name': 'alice',
+        'trn' : 17,
+        'fix' : 482,
+        'seat': 'p1',
+        'opp' : 'bob',
+        'tp'  : 1,
+    }
+
+    def load(self, token = None, key = TICKET_SECRET):
+        return signing.loads(
+            self.VECTOR_TOKEN if token is None else token,
+            key = key, salt = TICKET_SALT, max_age = None)
+
+    def test_the_pinned_ticket_decodes_to_the_documented_payload(self):
+        # Pins the salt, the key derivation, the serializer, the encoding and every claim name in
+        # plan §3.1 at once — everything the backgammon verifier has to agree with.
+        self.assertEqual(self.load(), self.VECTOR_PAYLOAD)
+
+    def test_the_pinned_ticket_is_refused_under_the_wrong_secret(self):
+        with self.assertRaises(signing.BadSignature):
+            self.load(key = OTHER_SECRET)
+
+    def test_the_pinned_ticket_is_refused_under_the_wrong_salt(self):
+        with self.assertRaises(signing.BadSignature):
+            signing.loads(self.VECTOR_TOKEN, key = TICKET_SECRET, salt = 'gamelink.ticket.v2', max_age = None)
+
+    def test_a_tampered_claim_breaks_the_signature(self):
+        _, timestamp, signature = self.VECTOR_TOKEN.split(':')
+        forged = signing.b64_encode(
+            json.dumps(dict(self.VECTOR_PAYLOAD, fix = 999), separators = (',', ':')).encode()).decode()
+
+        with self.assertRaises(signing.BadSignature):
+            self.load(f'{forged}:{timestamp}:{signature}')
+
+    def test_the_issuer_still_mints_this_shape(self):
+        # The pinned token is a snapshot; this is the check that `issue_ticket` has not since moved
+        # away from it. Claim *names* and types are the contract — `jti`, `iat` and `exp` are
+        # minted fresh and are not comparable.
+        tournament = Tournament.objects.create(name = 'Test', podium_spec = list())
+        knockout = Knockout.objects.create(tournament = tournament)
+        user = User.objects.create_user(username = 'alice', password = 'password')
+        fixture = Fixture.objects.create(
+            mode = knockout,
+            level = 0,
+            player1 = Participant.create_for_user(user),
+            player2 = Participant.create_for_user(User.objects.create_user(username = 'bob', password = 'x')))
+        game_link = GameLink.objects.create(
+            fixture = fixture, target_points = 1, expires_at = timezone.now() + datetime.timedelta(hours = 2))
+
+        token, _ = issue_ticket(user, fixture, 'p1', game_link)
+        minted = signing.loads(token, key = TICKET_SECRET, salt = TICKET_SALT, max_age = None)
+
+        self.assertEqual(sorted(minted.keys()), sorted(self.VECTOR_PAYLOAD.keys()))
+        for claim in ('v', 'iss', 'aud', 'seat', 'tp'):
+            self.assertEqual(minted[claim], self.VECTOR_PAYLOAD[claim], claim)
+        for claim, value in minted.items():
+            self.assertIsInstance(value, type(self.VECTOR_PAYLOAD[claim]), claim)
+
+
+@gamelink_settings
+class LinkedRoundEndToEndTest(TestCase):
+    """
+    A real knockout round advanced entirely through the callback, with zero human confirmations.
+
+    This is plan §7's end-to-end row. The bracket is built by the project's own
+    `Tournament.load` + `update_state`, so the propagation wiring is the real thing rather than
+    hand-assembled `extras`.
+    """
+
+    DEFINITION = """
+    stages:
+    -
+      id: main_round
+      mode: knockout
+
+    podium:
+    - main_round.placements[0]
+    """
+
+    def setUp(self):
+        self.tournament = Tournament.load(self.DEFINITION, 'Cup', published = True)
+        self.users = [
+            User.objects.create_user(username = f'player-{idx}', password = 'password')
+            for idx in range(4)
+        ]
+        for slot_id, user in enumerate(self.users):
+            Participation.objects.create(
+                tournament = self.tournament,
+                participant = Participant.create_for_user(user),
+                slot_id = slot_id)
+        self.tournament.update_state()
+        self.stage = self.tournament.stages.all()[0]
+
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+
+    def report(self, fixture):
+        """Report `fixture` as a 1-0 win for its `player1`, the way the game server would."""
+        game_link = GameLink.objects.create(
+            fixture = fixture,
+            target_points = 1,
+            expires_at = timezone.now() + datetime.timedelta(hours = 2))
+        body = {
+            'v'            : 1,
+            'tournament_id': self.tournament.pk,
+            'fixture_id'   : fixture.pk,
+            'room_id'      : f'room-for-fixture-{fixture.pk}',
+            'match_id'     : str(uuid.uuid4()),
+            'status'       : 'completed',
+            'target_points': 1,
+            'seats'        : {'p1': 'white', 'p2': 'black'},
+            'score'        : {'p1': 1, 'p2': 0},
+            'winner_seat'  : 'p1',
+            'end_reason'   : 'bear_off',
+            'finished_at'  : '2026-08-27T12:02:20Z',
+        }
+        raw = json.dumps(body, separators = (',', ':'), sort_keys = True).encode()
+        timestamp = str(int(time.time()))
+        nonce = uuid.uuid4().hex
+        response = self.client.post(
+            RESULT_URL,
+            data = raw,
+            content_type = 'application/json',
+            HTTP_X_GAMELINK_TIMESTAMP = timestamp,
+            HTTP_X_GAMELINK_NONCE     = nonce,
+            HTTP_X_GAMELINK_SIGNATURE = sign_result_body(raw, timestamp, nonce),
+            HTTP_X_GAMELINK_ISSUER    = 'backgammon')
+        self.assertEqual(response.status_code, 200, response.content)
+        return game_link
+
+    def test_a_full_round_advances_without_a_single_human_confirmation(self):
+        semifinals = list(self.stage.fixtures.filter(level = 0).order_by('pk'))
+        final = self.stage.fixtures.get(level = 1)
+
+        self.assertEqual(len(semifinals), 2)
+        self.assertEqual(self.stage.current_level, 0)
+        self.assertIsNone(final.player1)
+        self.assertIsNone(final.player2)
+
+        winners = [fixture.player1 for fixture in semifinals]
+        for fixture in semifinals:
+            self.report(fixture)
+
+        # The level closed, and it closed because the game server said so.
+        self.assertEqual(Knockout.objects.get(pk = self.stage.pk).current_level, 1)
+
+        final.refresh_from_db()
+        self.assertEqual({final.player1, final.player2}, set(winners))
+
+        for fixture in semifinals:
+            fixture.refresh_from_db()
+            self.assertEqual(fixture.score, (1, 0))
+            self.assertTrue(fixture.auto_confirmed)
+            self.assertEqual(fixture.confirmations.count(), 0)
+
+        self.assertEqual(self.tournament.state, 'active')
+
+    def test_the_tournament_finishes_when_the_last_fixture_is_reported(self):
+        for fixture in self.stage.fixtures.filter(level = 0):
+            self.report(fixture)
+        self.report(self.stage.fixtures.get(level = 1))
+
+        self.assertEqual(self.tournament.state, 'finished')
