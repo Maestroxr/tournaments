@@ -87,6 +87,38 @@ def playable_seat(user, fixture):
     return None, 403
 
 
+def _playable_refusal_reason(user, fixture):
+    """Return a development-only label for the first failed playability guard."""
+    if not settings.GAMELINK_ENABLED:
+        return 'disabled'
+    if user is None or not user.is_authenticated:
+        return 'not_authenticated'
+
+    tournament = fixture.mode.tournament
+    if tournament.state != 'active':
+        return 'tournament_not_active'
+    current_stage = tournament.current_stage
+    if current_stage is None or fixture.mode_id != current_stage.id:
+        return 'fixture_not_in_current_stage'
+    if fixture.level != current_stage.current_level:
+        return 'fixture_not_in_current_level'
+    if fixture.is_confirmed:
+        return 'fixture_already_confirmed'
+    if fixture.player1 is None or fixture.player2 is None:
+        return 'fixture_missing_player'
+    if fixture.player1.user_id is None or fixture.player2.user_id is None:
+        return 'fixture_player_has_no_user'
+    return 'user_not_in_fixture'
+
+
+def _start_refusal(status, reason):
+    """Keep production refusals opaque while making local integration debugging practical."""
+    response = HttpResponse(status=status)
+    if settings.DEBUG:
+        response['X-GameLink-Debug'] = reason
+    return response
+
+
 class StartGameView(LoginRequiredMixin, View):
     """
     Mint a ticket for the requesting player and redirect them to the game server.
@@ -101,22 +133,38 @@ class StartGameView(LoginRequiredMixin, View):
 
     def post(self, request, pk):
         if not settings.GAMELINK_ENABLED:
-            return HttpResponse(status = 412)
+            logger.warning('gamelink start refused: disabled [fixture=%s user=%s]', pk, request.user.pk)
+            return _start_refusal(412, 'disabled')
 
         try:
             fixture = Fixture.objects.get(pk = pk)
         except Fixture.DoesNotExist:
-            return HttpResponse(status = 412)
+            logger.warning('gamelink start refused: fixture does not exist [fixture=%s user=%s]', pk, request.user.pk)
+            return _start_refusal(412, 'fixture_does_not_exist')
 
         seat, refusal = playable_seat(request.user, fixture)
         if seat is None:
-            return HttpResponse(status = refusal)
+            tournament = fixture.mode.tournament
+            reason = _playable_refusal_reason(request.user, fixture)
+            logger.warning(
+                'gamelink start refused: %s '
+                '[fixture=%s user=%s tournament_state=%s fixture_stage=%s current_stage=%s '
+                'fixture_level=%s current_level=%s confirmed=%s p1_user=%s p2_user=%s]',
+                reason, fixture.pk, request.user.pk, tournament.state, fixture.mode_id,
+                getattr(tournament.current_stage, 'id', None), fixture.level,
+                getattr(tournament.current_stage, 'current_level', None), fixture.is_confirmed,
+                fixture.player1.user_id if fixture.player1 else None,
+                fixture.player2.user_id if fixture.player2 else None,
+            )
+            return _start_refusal(refusal, reason)
 
         # The destination comes from settings and from nowhere else — no host, path or scheme is
         # ever read from the request or from a ticket claim (plan §2, threat 8).
         base_url = settings.GAMELINK_BACKGAMMON_URL.rstrip('/')
         if not base_url:
-            return HttpResponse(status = 412)
+            logger.warning('gamelink start refused: GAMELINK_BACKGAMMON_URL is empty [fixture=%s user=%s]',
+                           fixture.pk, request.user.pk)
+            return _start_refusal(412, 'backgammon_url_is_empty')
 
         now = timezone.now()
         link_ttl = datetime.timedelta(seconds = settings.GAMELINK_LINK_TTL)

@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q
 
+from gamelink.views import playable_seat
 from tournaments import models
 from .forms import SignupForm, AdminUserCreateForm, CreateTournamentForm
 
@@ -285,7 +286,8 @@ def api_admin_tournament_detail(request, pk):
     if request.method == "GET":
         data = _serialize_tournament(t, request)
         data["definition"] = t.definition
-        data["participants"] = list(t.participations.values_list("participant__name", flat=True))
+        data["participants"] = list(
+            t.participations.values_list("participant__name", flat=True))
         return JsonResponse(data)
     if request.method == "DELETE":
         if t.state != "draft":
@@ -370,10 +372,13 @@ def api_admin_tournament_attendees(request, pk):
         return JsonResponse({"detail": f"Cannot manage attendees, state={t.state}"}, status=412)
     if request.method == "GET":
         q = request.GET.get("q", "").strip()
-        participants = list(t.participations.select_related("participant").values("participant__id", "participant__name", "participant__user__id", "participant__user__username"))
+        participants = list(t.participations.select_related("participant").values(
+            "participant__id", "participant__name", "participant__user__id", "participant__user__username"))
         # map
-        parts = [{"id": p["participant__id"], "name": p["participant__name"], "user_id": p["participant__user__id"], "username": p["participant__user__username"]} for p in participants]
-        avail_qs = User.objects.exclude(participant__participations__tournament=t).order_by("username")
+        parts = [{"id": p["participant__id"], "name": p["participant__name"], "user_id": p["participant__user__id"],
+                  "username": p["participant__user__username"]} for p in participants]
+        avail_qs = User.objects.exclude(
+            participant__participations__tournament=t).order_by("username")
         if q:
             avail_qs = avail_qs.filter(username__icontains=q)
         avail = list(avail_qs.values("id", "username", "email")[:50])
@@ -390,7 +395,8 @@ def api_admin_tournament_attendees(request, pk):
                 participant = models.Participant.get_or_create_for_user(u)
                 if t.participations.filter(participant=participant).exists():
                     return JsonResponse({"detail": "Already in tournament"}, status=400)
-                models.Participation.objects.create(tournament=t, participant=participant, slot_id=models.Participation.next_slot_id(t))
+                models.Participation.objects.create(
+                    tournament=t, participant=participant, slot_id=models.Participation.next_slot_id(t))
                 return JsonResponse({"detail": "Added"})
             except (User.DoesNotExist, ValueError):
                 return JsonResponse({"detail": "User not found"}, status=404)
@@ -398,10 +404,12 @@ def api_admin_tournament_attendees(request, pk):
             name = data["name"].strip()
             if not name:
                 return JsonResponse({"detail": "Name required"}, status=400)
-            participant = models.Participant.objects.get_or_create(name=name)[0]
+            participant = models.Participant.objects.get_or_create(name=name)[
+                0]
             if t.participations.filter(participant=participant).exists():
                 return JsonResponse({"detail": "Already in tournament"}, status=400)
-            models.Participation.objects.create(tournament=t, participant=participant, slot_id=models.Participation.next_slot_id(t))
+            models.Participation.objects.create(
+                tournament=t, participant=participant, slot_id=models.Participation.next_slot_id(t))
             return JsonResponse({"detail": "Added"})
         return JsonResponse({"detail": "Provide user_id or name"}, status=400)
     # DELETE ?participant_id=123
@@ -410,7 +418,8 @@ def api_admin_tournament_attendees(request, pk):
         try:
             data = json.loads(request.body or "{}")
             pid = data.get("participant_id") or data.get("id")
-        except: pass
+        except:
+            pass
     if not pid:
         return JsonResponse({"detail": "participant_id required"}, status=400)
     try:
@@ -454,25 +463,124 @@ def api_admin_tournament_progress(request, pk):
             levels = []
             for level in range(stage.levels):
                 fixtures = []
-                for fixture in stage.fixtures.filter(level=level):
+                for fixture in stage.fixtures.select_related(
+                    "player1__user",
+                    "player2__user",
+                ).filter(level=level):
+
+                    player1 = fixture.player1
+                    player2 = fixture.player2
+
+                    player1_user = player1.user if player1 and player1.user else None
+                    player2_user = player2.user if player2 and player2.user else None
+
+                    is_player1 = (
+                        player1_user is not None
+                        and player1_user.id == request.user.id
+                    )
+
+                    is_player2 = (
+                        player2_user is not None
+                        and player2_user.id == request.user.id
+                    )
+
+                    current_user = player1_user if is_player1 else player2_user if is_player2 else None
+                    opponent = player2_user if is_player1 else player1_user if is_player2 else None
+
                     fixtures.append({
                         "id": fixture.id,
-                        "player1": {"id": fixture.player1.id if fixture.player1 else None, "name": fixture.player1.name if fixture.player1 else None},
-                        "player2": {"id": fixture.player2.id if fixture.player2 else None, "name": fixture.player2.name if fixture.player2 else None},
+
+                        "player1": {
+                            "id": player1.id if player1 else None,
+                            "user_id": player1_user.id if player1_user else None,
+                            "name": player1.name if player1 else None,
+                            "username": player1_user.username if player1_user else None,
+                        } if player1 else None,
+
+                        "player2": {
+                            "id": player2.id if player2 else None,
+                            "user_id": player2_user.id if player2_user else None,
+                            "name": player2.name if player2 else None,
+                            "username": player2_user.username if player2_user else None,
+                        } if player2 else None,
+
+                        "current_user": {
+                            "id": current_user.id,
+                            "username": current_user.username,
+                            "participant_id": (
+                                player1.id if is_player1
+                                else player2.id if is_player2
+                                else None
+                            ),
+                        } if current_user else None,
+
+                        "opponent": {
+                            "id": opponent.id,
+                            "username": opponent.username,
+                            "participant_id": (
+                                player2.id if is_player1
+                                else player1.id if is_player2
+                                else None
+                            ),
+                        } if opponent else None,
+
+                        "is_current_user": current_user is not None,
+                        # Use the exact predicate that StartGameView uses, so the Vue client
+                        # never offers a game link for an old, settled, or otherwise unavailable
+                        # fixture.  StartGameView repeats this check when the form is submitted.
+                        "can_play": playable_seat(request.user, fixture)[0] is not None,
+
                         "score1": fixture.score1,
                         "score2": fixture.score2,
                         "is_confirmed": fixture.is_confirmed,
                         "confirmations": fixture.confirmations.count(),
                         "required_confirmations": fixture.required_confirmations_count,
-                        "editable": not fixture.is_confirmed and level == stage.current_level,
-                        "has_confirmed": fixture.confirmations.filter(id=request.user.id).exists() if request.user.id else False,
+
+                        "editable": (
+                            not fixture.is_confirmed
+                            and level == stage.current_level
+                        ),
+
+                        "has_confirmed": fixture.confirmations.filter(
+                            id=request.user.id
+                        ).exists(),
                     })
-                levels.append({"fixtures": fixtures, "name": stage.get_level_name(level)})
+                    print(
+                        "FIXTURE DEBUG:",
+                        fixture.id,
+                        "| REQUEST USER:",
+                        request.user.id,
+                        request.user.username,
+                        "| P1:",
+                        player1.id if player1 else None,
+                        player1.user_id if player1 else None,
+                        player1.user.username if player1 and player1.user else None,
+                        "| P2:",
+                        player2.id if player2 else None,
+                        player2.user_id if player2 else None,
+                        player2.user.username if player2 and player2.user else None,
+                    )
+                levels.append(
+                    {"fixtures": fixtures, "name": stage.get_level_name(level)})
             stages[stage.id] = {"levels": levels}
             if t.current_stage and stage.id == t.current_stage.id:
                 current_stage_idx = idx + 1
         if t.current_stage is None:
             current_stage_idx = t.stages.count() + 1
+            print(
+                "REQUEST USER:",
+                request.user.id,
+                request.user.username,
+            )
+
+        print(
+            "FIXTURE:",
+            fixture.id,
+            "PLAYER1:",
+            fixture.player1_id,
+            "PLAYER2:",
+            fixture.player2_id,
+        )
         return JsonResponse({
             "tournament": _serialize_tournament(t, request),
             "stages": stages,
@@ -497,7 +605,8 @@ def api_admin_tournament_progress(request, pk):
     if fixture.level != t.current_stage.current_level:
         return JsonResponse({"detail": "Fixture not in current level"}, status=412)
     try:
-        new_score = (int(str(data.get("score1")).strip()), int(str(data.get("score2")).strip()))
+        new_score = (int(str(data.get("score1")).strip()),
+                     int(str(data.get("score2")).strip()))
     except:
         return JsonResponse({"detail": "Invalid score"}, status=400)
     if fixture.score != new_score:
@@ -551,7 +660,8 @@ def api_admin_dashboard(request):
     qs = models.Tournament.objects
     published_qs = qs.filter(published=True).annotate(
         fixtures=Count('stages__fixtures'),
-        podium_size=Count('participations', filter=Q(participations__podium_position__isnull=False))
+        podium_size=Count('participations', filter=Q(
+            participations__podium_position__isnull=False))
     )
     counts = {
         'drafts': qs.filter(published=False).count(),

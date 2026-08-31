@@ -1,5 +1,6 @@
 /venv
 /.venv
+/.env
 /envvars
 /deployed
 .DS_Store

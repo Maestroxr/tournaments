@@ -17,6 +17,27 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
+def load_local_env(path):
+    """Load simple KEY=VALUE pairs for local development without overriding real env vars."""
+    if not path.is_file():
+        return
+
+    for raw_line in path.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+# `.env` lives beside the repository's README, not inside the Django package.
+# Deployment environments can still provide real environment variables, which always take priority.
+load_local_env(BASE_DIR.parent / '.env')
+
+
 # Application definition
 
 INSTALLED_APPS = [
