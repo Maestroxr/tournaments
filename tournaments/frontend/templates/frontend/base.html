@@ -58,14 +58,21 @@
         {% endif %}
         <div class="row align-items-start">
             <div class="col-8">
-                {% block header %}{% endblock %}
+                {% if user.is_staff %}
+<nav class="mb-2">
+  <a class="btn btn-sm {% if request.resolver_match.url_name == 'dashboard' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{% url 'dashboard' %}">Dashboard</a>
+  <a class="btn btn-sm {% if request.resolver_match.url_name == 'index' %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{% url 'index' %}">Tournaments</a>
+  <a class="btn btn-sm {% if 'user-' in request.resolver_match.url_name %}btn-dark{% else %}btn-outline-dark{% endif %}" href="{% url 'user-list' %}">Users</a>
+  <a class="btn btn-sm btn-outline-success" href="{% url 'create-tournament' %}"><i class="bi bi-plus-lg"></i> Create Tournament</a>
+  <a class="btn btn-sm btn-outline-primary" href="{% url 'user-create' %}"><i class="bi bi-person-plus"></i> Create User</a>
+</nav>
+{% endif %}
             </div>
             <div class="col-4 text-right">
 
                 {% if user.id %}
 
-                    <h1><small class="text-muted"><i class="bi bi-person"></i> {{ user }}</small></h1>
-                    <a class="btn btn-light" href="{% url 'logout' %}" role="button">Logout</a>
+                    <h1><small class="text-muted"><i class="bi bi-person"></i> {{ user }} {% if user.is_staff %}<span class="badge badge-dark">admin</span>{% endif %}</small></h1>
 
                 {% else %}
 

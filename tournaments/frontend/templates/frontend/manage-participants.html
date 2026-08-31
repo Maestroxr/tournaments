@@ -1,27 +1,88 @@
 {% extends "frontend/base.html" %}
-
 {% load capture_tags %}
-
 {% block title %}Manage Attendees{% endblock %}
-
 {% block header %}
-<h1>Manage Attendees</h1>
+<h1>Manage Attendees <small class="text-muted">{{ tournament.name }}</small></h1>
+<p class="text-muted">{{ tournament.participants.count }} attendee{% if tournament.participants.count != 1 %}s{% endif %} currently</p>
 {% endblock %}
-
 {% block content %}
-<form method="post" action="{% url 'manage-participants' pk=tournament.id %}" class="mb-5">
+<form id="filter-form" method="get" class="form-inline mb-3">
+  <input name="q" value="{{ q }}" placeholder="Filter users..." class="form-control form-control-sm mr-2">
+  <button type="submit" class="btn btn-sm btn-outline-dark">Search</button>
+  {% if q %}<a href="{% url 'manage-participants' pk=tournament.id %}" class="btn btn-sm btn-link">Clear</a>{% endif %}
+</form>
+<form method="post" action="{% url 'manage-participants' pk=tournament.id %}{% if q %}?q={{ q }}{% endif %}" class="mb-4">
     {% csrf_token %}
+
+    <h5>Current Attendees — signed up</h5>
+    <ul class="list-group mb-3">
+      {% for p in current_participants %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <span>{{ p.name }} {% if p.user %}<span class="badge badge-primary">user: {{ p.user.username }}</span>{% else %}<span class="badge badge-secondary">guest</span>{% endif %}</span>
+          <form method="post" action="{% url 'manage-participants' pk=tournament.id %}{% if q %}?q={{ q }}{% endif %}" class="mb-0">
+            {% csrf_token %}
+            <input type="hidden" name="remove_participant_id" value="{{ p.id }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove {{ p.name }} from tournament?')"><i class="bi bi-trash"></i> Remove</button>
+          </form>
+        </li>
+      {% empty %}
+        <li class="list-group-item"><em>No attendees yet</em></li>
+      {% endfor %}
+    </ul>
+
+    <h5>Add Registered Users</h5>
+    <p class="text-muted"><small>Showing {{ available_showing }} of {{ available_total }}. From <a href="{% url 'user-list' %}">Users</a>.</small></p>
+    <input id="user-search" type="text" class="form-control form-control-sm mb-2" placeholder="Filter shown users..." oninput="filterUsers(this.value)">
+    <ul id="user-list-box" class="list-group mb-3" style="max-height:250px; overflow:auto;">
+      {% for u in available_users %}
+        <li class="list-group-item d-flex justify-content-between align-items-center user-item" data-username="{{ u.username|lower }}">
+          <span>{{ u.username }} {% if u.is_staff %}<span class="badge badge-dark">admin</span>{% endif %} {% if u.email %}<small class="text-muted">{{ u.email }}</small>{% endif %}</span>
+          <form method="post" action="{% url 'manage-participants' pk=tournament.id %}{% if q %}?q={{ q }}{% endif %}" class="mb-0">
+            {% csrf_token %}
+            <input type="hidden" name="add_single_user_id" value="{{ u.id }}">
+            <button type="submit" class="btn btn-sm btn-outline-success"><i class="bi bi-plus-lg"></i> Add</button>
+          </form>
+        </li>
+      {% empty %}
+        <li class="list-group-item">
+        {% if q %}
+          <em>No users match "{{ q }}"</em>
+        {% elif all_users %}
+          <em>All users already in tournament</em>
+        {% else %}
+          <em>No users yet — <a href="{% url 'user-create' %}">Create User</a></em>
+        {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+    <script>
+    function filterUsers(val){
+      val = val.toLowerCase();
+      document.querySelectorAll('#user-list-box .user-item').forEach(function(el){
+        el.style.display = el.dataset.username.includes(val) ? '' : 'none';
+      });
+    }
+    </script>
+
+    <h5>Add Guest Attendees (no account)</h5>
     <div class="form-group">
-        <label for="participant_names">Attendee Names (one per line)</label>
-        <textarea class="form-control" id="participant_names" name="participant_names" rows="10" required>{% for participant in tournament.participants %}{{ participant.name }}
-{% endfor %}</textarea>
+        <textarea class="form-control" id="participant_names" name="participant_names" rows="3" placeholder="Guest1&#10;Guest2">{{ virtual_participant_names }}</textarea>
+        <small class="text-muted">Guests without login. Will appear as checked "guest" above after save. To remove a guest, clear its line or uncheck above.</small>
     </div>
+
+    <!-- Legacy: keep selected existing users (hidden fallback for old JS) -->
+    {% for u in all_users %}
+      {% if u.id in participating_user_ids %}
+        <input type="hidden" name="user_ids" value="{{ u.id }}" class="legacy-user">
+      {% endif %}
+    {% endfor %}
+
     <button type="submit" class="btn btn-primary"><i class="bi bi-floppy-fill"></i> Save Attendees</button>
+    <a class="btn btn-link" href="{% url 'update-tournament' pk=tournament.id %}">Back to Tournament</a>
 </form>
 
 {% capture silent %}
 <a class="btn btn-secondary" href="{% url 'update-tournament' pk=tournament.id %}" role="button">Manage Tournament</a>
 {% endcapture %}
-
 {% include "frontend/tournament-details.html" with tournament=tournament buttons=capture %}
 {% endblock %}

@@ -6,12 +6,12 @@
 
 {% block header %}
 
-<h1>Tournaments</h1>
+<h1>Admin — Tournaments</h1>
 
-{% if user.id %}
-
-    <a href="{% url "create-tournament" %}" class="btn btn-outline-dark"><i class="bi bi-plus-lg"></i> Create Tournament</a>
-
+{% if user.is_staff %}
+    <a href="{% url "create-tournament" %}" class="btn btn-outline-success mr-2"><i class="bi bi-plus-lg"></i> Create Tournament</a>
+    <a href="{% url "user-create" %}" class="btn btn-outline-primary mr-2"><i class="bi bi-person-plus"></i> Create User</a>
+    <a href="{% url "user-list" %}" class="btn btn-outline-dark"><i class="bi bi-people"></i> Manage Users</a>
 {% endif %}
 
 {% endblock %}

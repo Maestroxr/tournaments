@@ -1,0 +1,11 @@
+{% extends "frontend/base.html" %}
+{% block title %}delete user{% endblock %}
+{% block header %}<h1>Delete User</h1>{% endblock %}
+{% block content %}
+<p>Are you sure you want to delete user <strong>{{ del_user.username }}</strong> (ID {{ del_user.id }})? This cannot be undone.</p>
+<form method="post">
+  {% csrf_token %}
+  <button class="btn btn-danger" type="submit">Yes, delete</button>
+  <a class="btn btn-link" href="{% url 'user-list' %}">Cancel</a>
+</form>
+{% endblock %}

@@ -11,3 +11,17 @@ __pycache__
 *.pyc
 .coverage
 coverage.json
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+# frontend generated
+coverage/
+dist/
+admin-frontend/coverage/
+admin-frontend/.eslintcache
+# local env - keep .env.example
+admin-frontend/.env
+# optional: ignore generated specs
+ docs/

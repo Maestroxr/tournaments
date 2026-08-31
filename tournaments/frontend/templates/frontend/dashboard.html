@@ -1,0 +1,37 @@
+{% extends "frontend/base.html" %}
+{% block title %}dashboard{% endblock %}
+{% block header %}
+<h1>Dashboard <small class="text-muted">Overview</small></h1>
+{% endblock %}
+{% block content %}
+<div class="row mt-3">
+  <div class="col-3"><div class="card text-center"><div class="card-body"><h3>{{ counts.drafts }}</h3><small class="text-muted">Drafts</small></div></div></div>
+  <div class="col-3"><div class="card text-center"><div class="card-body"><h3>{{ counts.open }}</h3><small class="text-muted">Open</small></div></div></div>
+  <div class="col-3"><div class="card text-center"><div class="card-body"><h3>{{ counts.active }}</h3><small class="text-muted">Active</small></div></div></div>
+  <div class="col-3"><div class="card text-center"><div class="card-body"><h3>{{ counts.finished }}</h3><small class="text-muted">Finished</small></div></div></div>
+</div>
+<div class="row mt-3">
+  <div class="col-4"><div class="card"><div class="card-body"><h5>Total Tournaments</h5><h2>{{ total_tournaments }}</h2><a href="{% url 'index' %}" class="btn btn-sm btn-outline-dark">View Tournaments</a></div></div></div>
+  <div class="col-4"><div class="card"><div class="card-body"><h5>Total Users</h5><h2>{{ total_users }}</h2><a href="{% url 'user-list' %}" class="btn btn-sm btn-outline-dark">Manage Users</a> <a href="{% url 'user-create' %}" class="btn btn-sm btn-outline-primary">Create User</a></div></div></div>
+  <div class="col-4"><div class="card"><div class="card-body"><h5>Participants</h5><h2>{{ total_participants }}</h2></div></div></div>
+</div>
+
+<div class="row mt-4">
+  <div class="col-6">
+    <h4>Recent Tournaments</h4>
+    <ul class="list-group">
+      {% for t in recent_tournaments %}
+      <li class="list-group-item d-flex justify-content-between"><span>{{ t.name }} <small class="text-muted">{{ t.state }}</small></span><a href="{% url 'update-tournament' pk=t.id %}" class="btn btn-sm btn-link">Open</a></li>
+      {% empty %}<li class="list-group-item"><em>No tournaments</em></li>{% endfor %}
+    </ul>
+  </div>
+  <div class="col-6">
+    <h4>Recent Users</h4>
+    <ul class="list-group">
+      {% for u in recent_users %}
+      <li class="list-group-item d-flex justify-content-between"><span>{{ u.username }} {% if u.is_staff %}<span class="badge badge-dark">admin</span>{% endif %}</span><a href="{% url 'user-edit' pk=u.id %}" class="btn btn-sm btn-link">Edit</a></li>
+      {% empty %}<li class="list-group-item"><em>No users</em></li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endblock %}
