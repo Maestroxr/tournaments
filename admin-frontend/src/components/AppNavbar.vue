@@ -15,7 +15,7 @@ async function handleLogout() {
 <template>
   <!-- Header wraps the dedicated AppTabs component (mirrors base.html:62-68) -->
   <header class="border-b border-zinc-200 bg-white">
-    <div class="mx-auto flex max-w-6xl items-center gap-3 px-6 py-3">
+    <div class="flex w-full items-center gap-3 px-6 py-3">
       <AppTabs v-if="auth.isLoggedIn" />
 
       <!-- Right: auth — exact replica of base.html:71-76 — Tailwind only -->

@@ -10,10 +10,7 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: () => {
-        const auth = useAuthStore()
-        return auth.isLoggedIn ? '/dashboard' : '/login'
-      },
+      redirect: '/dashboard',
     },
     {
       path: '/dashboard',
@@ -59,6 +56,33 @@ const router = createRouter({
       },
     },
     {
+      path: '/tournaments/:id/attendees',
+      name: 'tournament-attendees',
+      component: () => import('@/pages/AttendeesView.vue'),
+      meta: {
+        breadcrumb: ((route: RouteLocationNormalized) => [
+          { label: 'Dashboard', to: '/dashboard' },
+          { label: 'Tournaments', to: '/tournaments' },
+          { label: String(route.params.id) },
+          { label: 'Attendees' },
+        ]) satisfies BreadcrumbFactory,
+      },
+    },
+    {
+      path: '/tournaments/:id/progress',
+      name: 'tournament-progress',
+      component: () => import('@/pages/TournamentProgressView.vue'),
+      props: true,
+      meta: {
+        breadcrumb: ((route: RouteLocationNormalized) => [
+          { label: 'Dashboard', to: '/dashboard' },
+          { label: 'Tournaments', to: '/tournaments' },
+          { label: String(route.params.id) },
+          { label: 'Progress' },
+        ]) satisfies BreadcrumbFactory,
+      },
+    },
+    {
       path: '/users',
       name: 'users',
       component: () => import('@/pages/UsersView.vue'),
@@ -97,16 +121,15 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  if (!auth.checked) await auth.fetchMe()
+  if (to.path === '/') return auth.isLoggedIn ? '/dashboard' : '/login'
   if (to.path === '/login') {
-    if (auth.isLoggedIn) next('/dashboard')
-    else next()
-  } else if (!auth.isLoggedIn) {
-    next('/login')
-  } else {
-    next()
+    if (auth.isLoggedIn) return '/dashboard'
+    return
   }
+  if (!auth.isLoggedIn) return '/login'
 })
 
 export default router

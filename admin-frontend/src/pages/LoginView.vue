@@ -64,11 +64,11 @@ async function login() {
 </script>
 <template>
   <div class="mx-auto max-w-sm">
-    <h1 class="mb-4 text-xl font-bold">Admin Login</h1>
+    <h1 class="mb-4 text-xl font-bold text-black">Admin Login</h1>
     <AppAlert v-if="alertMessage" type="error" :message="alertMessage" dismissible class="mb-4" @close="alertMessage = ''" />
     <form @submit.prevent="login" class="space-y-3">
-      <AppInput v-model="username" label="Username" placeholder="username" :error="usernameError" />
-      <AppInput v-model="password" label="Password" type="password" placeholder="password" :error="passwordError" />
+      <AppInput v-model="username" label="Username" placeholder="username" autocomplete="username" :error="usernameError" @keydown="login" />
+      <AppInput v-model="password" label="Password" type="password" placeholder="password" autocomplete="current-password" :error="passwordError" @keydown="login" />
       <button type="submit" class="w-full rounded bg-dark px-4 py-2 text-sm font-medium text-white hover:bg-dark-hover">
         Login
       </button>

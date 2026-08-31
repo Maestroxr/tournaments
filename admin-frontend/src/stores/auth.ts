@@ -12,6 +12,7 @@ interface MeResponse extends AuthUser {
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
+  const checked = ref(false)
   const isLoggedIn = computed<boolean>(() => user.value !== null)
 
   async function fetchMe(): Promise<boolean> {
@@ -22,6 +23,8 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       user.value = null
       return false
+    } finally {
+      checked.value = true
     }
   }
   async function login(username: string, password: string): Promise<void> {
@@ -46,5 +49,5 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {}
   }
   void apiFetch<{ detail: string }>('/api/csrf').catch(() => {})
-  return { user, isLoggedIn, fetchMe, login, signup, logout }
+  return { user, checked, isLoggedIn, fetchMe, login, signup, logout }
 })
