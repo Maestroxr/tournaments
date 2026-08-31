@@ -14,11 +14,24 @@ from polymorphic.models import PolymorphicModel
 
 class Tournament(models.Model):
 
+    TIME_CHOICES = [
+        ("none", "None"),
+        ("fast", "Fast"),
+        ("normal", "Normal"),
+        ("slow", "Slow"),
+    ]
+
     name = models.CharField(blank = False, max_length = 100)
     definition = models.TextField(null = True, blank = True)  # noqa: DJ001
     podium_spec = models.JSONField()
     published = models.BooleanField(default = False)
     creator = models.ForeignKey('auth.User', on_delete = models.SET_NULL, related_name = 'tournaments', null = True, blank = True)
+    # New easy fields — keep YAML for knockout/groups/division structure, add UI-friendly metadata
+    starts_at = models.DateTimeField(null=True, blank=True)
+    min_players = models.PositiveSmallIntegerField(default=6)
+    max_players = models.PositiveSmallIntegerField(null=True, blank=True)
+    target_points = models.PositiveSmallIntegerField(default=5, help_text="Points / games to win")
+    time_control = models.CharField(max_length=20, choices=TIME_CHOICES, default="normal")
 
     def __str__(self):
         return self.name

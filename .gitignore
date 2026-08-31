@@ -24,4 +24,4 @@ admin-frontend/.eslintcache
 # local env - keep .env.example
 admin-frontend/.env
 # optional: ignore generated specs
- docs/
+docs/
