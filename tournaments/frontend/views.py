@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.views.generic import ListView, View
 from django.views.generic.detail import SingleObjectMixin
 from django.views.generic.edit import FormView
+from gamelink.views import playable_seat
 
 from tournaments import models
 
@@ -496,12 +497,61 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
             'name': stage.get_level_name(level),
         }
 
-    def get_fixture_data(self, stage, level, fixture):
+  
+
+    def get_fixture_data(self, stage, level,    fixture):
+        is_participant = (
+            self.request.user.is_authenticated
+            and stage.tournament.participations.filter(
+                participant__user=self.request.user
+            ).exists()
+        )
+
+        editable = (
+            not fixture.is_confirmed
+            and level == stage.current_level
+            and is_participant
+        )
+
+        is_my_match = (
+        self.request.user.is_authenticated
+        and (
+            fixture.player1
+            and fixture.player1.user_id == self.request.user.id
+            or
+            fixture.player2
+            and fixture.player2.user_id == self.request.user.id
+        )
+    )
+
         return {
-            'data': fixture,
-            'editable': not fixture.is_confirmed and level == stage.current_level and self.request.user.id and stage.tournament.participations.filter(participant__user=self.request.user).count() > 0,
-            'has_confirmed': fixture.confirmations.filter(id=self.request.user.id).count() > 0,
-        }
+    'id': fixture.id,
+
+    'player1': {
+        'id': fixture.player1.id,
+        'name': str(fixture.player1),
+    } if fixture.player1 else None,
+
+    'player2': {
+        'id': fixture.player2.id,
+        'name': str(fixture.player2),
+    } if fixture.player2 else None,
+
+    'score1': fixture.score1,
+    'score2': fixture.score2,
+
+    'is_confirmed': fixture.is_confirmed,
+    'is_my_match': is_my_match,
+
+    'confirmations': fixture.confirmations.count(),
+    'required_confirmations': fixture.required_confirmations_count,
+
+    'editable': editable,
+    'has_confirmed': fixture.confirmations.filter(
+        id=self.request.user.id
+    ).exists(),
+}
+       
 
     def get_context_data(self, **kwargs):
         context = super(TournamentProgressView,
@@ -530,6 +580,8 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
     def post(self, request, *args, **kwargs):
         self.object = self.get_object()
         fixture = models.Fixture.objects.get(id=request.POST.get('fixture_id'))
+        if not fixture.players.filter(id=request.user.id).exists():
+            return HttpResponseForbidden()
 
         # Check whether the user is a participator.
         if not request.user.id or self.object.participations.filter(participant__user=request.user).count() == 0:

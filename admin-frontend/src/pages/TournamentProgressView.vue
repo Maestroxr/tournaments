@@ -22,7 +22,7 @@ async function submit(fixture: any, score1: string, score2: string) {
   savingId.value = fixture.id
   error.value = ''
   try {
-    await apiFetch(`/api/admin/tournaments/${id}/progress`, { method: 'POST', body: JSON.stringify({ fixture_id: fixture.id, score1, score2 }) })
+    await apiFetch(`/api/t/tournaments/${id}/progress`, { method: 'POST', body: JSON.stringify({ fixture_id: fixture.id, score1, score2 }) })
     await load()
   } catch (e: unknown) { error.value = formatApiError(e) } finally { savingId.value = null }
 }

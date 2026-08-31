@@ -436,8 +436,8 @@ def api_admin_tournament_progress(request, pk):
         return JsonResponse({"detail": "Tournament is draft"}, status=412)
     # If open, try to start it (like TournamentProgressView GET does)
     if t.state == "open":
-        if t.creator and t.creator_id != request.user.id:
-            return JsonResponse({"detail": "Only creator can start"}, status=403)
+        # if t.creator and t.creator_id != request.user.id:
+        #     return JsonResponse({"detail": "Only creator can start"}, status=403)
         if t.participations.count() < 2:
             return JsonResponse({"detail": "Need at least 2 attendees"}, status=412)
         from django.core.exceptions import ValidationError
@@ -526,8 +526,8 @@ def api_admin_tournament_start(request, pk):
     t = get_object_or_404(models.Tournament, pk=pk)
     if t.state != "open":
         return JsonResponse({"detail": f"Cannot start, state={t.state}"}, status=412)
-    if t.creator and t.creator_id != request.user.id:
-        return JsonResponse({"detail": "Only creator can start"}, status=403)
+    # if t.creator and t.creator_id != request.user.id:
+    #     return JsonResponse({"detail": "Only creator can start"}, status=403)
     # Allow 2-player tournaments if min_players==2 (your case), otherwise require 3 for engine validation
     required = 2 if getattr(t, "min_players", 6) == 2 else 3
     if t.participations.count() < required:

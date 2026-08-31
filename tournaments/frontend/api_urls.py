@@ -24,4 +24,5 @@ urlpatterns = [
     path('admin/tournaments/<int:pk>/attendees', api.api_admin_tournament_attendees, name='api-admin-tournament-attendees'),
     path('admin/users', api.api_admin_users, name='api-admin-users'),
     path('admin/users/<int:pk>', api.api_admin_user_detail, name='api-admin-user-detail'),
+    
 ]

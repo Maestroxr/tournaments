@@ -18,6 +18,7 @@ from django.urls import include, path
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('', include('gamelink.urls')),
     path('', include('frontend.urls')),
     path('api/', include('frontend.api_urls')),
 ]
