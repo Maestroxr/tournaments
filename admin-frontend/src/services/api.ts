@@ -21,17 +21,34 @@ export class ApiError extends Error {
   }
 }
 
+function looksLikeHtml(value: string): boolean {
+  return /<!doctype html|<html[\s>]|<body[\s>]|<h1[\s>]/i.test(value)
+}
+
+function friendlyStatusMessage(status: number, statusText: string): string {
+  const label = statusText || ({
+    400: 'Bad request',
+    401: 'Please log in to continue.',
+    403: 'You do not have permission to do that.',
+    404: 'The requested page or action was not found.',
+    405: 'This action is not available here. Try refreshing the page and signing in again.',
+    500: 'The server had a problem. Please try again in a moment.',
+  } as Record<number, string>)[status] || 'Request failed'
+
+  return statusText ? `${status} ${label}` : label
+}
+
 export function formatApiError(e: unknown): string {
   if (e instanceof ApiError) {
-    const statusText = e.statusText || ({ 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 412: 'Precondition Failed' } as Record<number, string>)[e.status] || ''
-    const prefix = statusText ? `${e.status} ${statusText}` : String(e.status)
+    const fallback = friendlyStatusMessage(e.status, e.statusText)
+    if (!e.body.trim() || looksLikeHtml(e.body)) return fallback
     try {
       const data = JSON.parse(e.body) as Record<string, unknown>
       const raw = (data.detail ?? data.errors ?? e.body) as unknown
       const detail = typeof raw === 'string' ? `"${raw}"` : JSON.stringify(raw)
-      return `${prefix}: ${detail}`
+      return `${fallback}: ${detail}`
     } catch {
-      return e.message.includes(String(e.status)) ? e.message : `${prefix}: ${e.body}`
+      return e.body.length > 240 ? fallback : `${fallback}: ${e.body}`
     }
   }
   return e instanceof Error ? e.message : String(e)

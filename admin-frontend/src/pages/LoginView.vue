@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { ApiError } from '@/services/api'
+import { ApiError, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import AppInput from '@/components/AppInput.vue'
 import AppAlert from '@/components/AppAlert.vue'
@@ -30,10 +30,10 @@ function parseApiError(e: unknown): string {
       }
       if (Array.isArray(data.non_field_errors)) return String(data.non_field_errors[0])
       // field errors handled separately
-      return e.body
+      return formatApiError(e)
     } catch {
       if (e.body.toLowerCase().includes('invalid')) return 'Username or password is incorrect'
-      return e.body
+      return formatApiError(e)
     }
   }
   if (e instanceof Error) return e.message
