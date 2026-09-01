@@ -1,4 +1,4 @@
-const BASE = '' // use proxy: '' → '/api/...' hits Django via Vite
+const BASE = '/tournaments-api'
 
 type FetchOpts = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
 
@@ -59,7 +59,8 @@ export async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T
   if (opts.headers) Object.assign(headers, opts.headers)
   const csrf = getCsrf()
   if (csrf && opts.method && opts.method !== 'GET') headers['X-CSRFToken'] = csrf
-  const res = await fetch(path, { credentials: 'include', ...opts, headers })
+  const apiPath = path.startsWith('/api/') ? path.slice(4) : path
+  const res = await fetch(`${BASE}${apiPath}`, { credentials: 'include', ...opts, headers })
 
   if (!res.ok) {
     const body = await res.text()

@@ -45,7 +45,7 @@ function scheduleRefresh() {
 
 function progressSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws/admin/tournaments/${id}/progress/`
+  return `${protocol}//${window.location.host}/tournaments-ws/admin/tournaments/${id}/progress/`
 }
 
 function findFixture(fixtureId: number): TournamentFixture | null {

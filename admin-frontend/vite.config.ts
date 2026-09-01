@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiTarget = env.VITE_API_URL || env.VITE_BACKEND_URL || 'http://127.0.0.1:8001'
   return {
+    base: '/tournaments-admin/',
     plugins: [
       vue({
         template: {
@@ -26,10 +27,14 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       proxy: {
-        '/api': apiTarget,
-        '/ws': {
+        '/tournaments-api': {
+          target: apiTarget,
+          rewrite: (path) => path.replace(/^\/tournaments-api/, '/api'),
+        },
+        '/tournaments-ws': {
           target: apiTarget,
           ws: true,
+          rewrite: (path) => path.replace(/^\/tournaments-ws/, '/ws'),
         },
       },
     },
