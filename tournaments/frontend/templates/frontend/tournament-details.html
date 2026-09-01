@@ -25,7 +25,7 @@
                     {% else %}
                         <i class="bi bi-person"></i>
                     {% endif %}
-                    {{ participant.name }}
+                    {{ participant|participant_display_name }}
                 </span>
     
             {% endfor %}
@@ -61,7 +61,7 @@
                     {% else %}
                         <i class="bi bi-person"></i>
                     {% endif %}
-                    {{ participant.name }}
+                    {{ participant|participant_display_name }}
                 </span>
     
             {% endfor %}

@@ -41,6 +41,7 @@ load_local_env(BASE_DIR.parent / '.env')
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
     'crispy_forms',
     'crispy_bootstrap4',
     'capture_tag',
+    'channels',
     'tournaments',
     'frontend',
     'gamelink',
@@ -85,6 +87,29 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'tournaments.wsgi.application'
+ASGI_APPLICATION = 'tournaments.asgi.application'
+
+REDIS_URL = os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/0')
+CHANNEL_LAYER_BACKEND = os.environ.get('CHANNEL_LAYER_BACKEND')
+if CHANNEL_LAYER_BACKEND is None:
+    settings_module = os.environ.get('DJANGO_SETTINGS_MODULE', '')
+    CHANNEL_LAYER_BACKEND = 'memory' if settings_module.endswith('.development') else 'redis'
+CHANNEL_LAYER_BACKEND = CHANNEL_LAYER_BACKEND.lower()
+if CHANNEL_LAYER_BACKEND == 'redis':
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                'hosts': [REDIS_URL],
+            },
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
 
 
 # Database

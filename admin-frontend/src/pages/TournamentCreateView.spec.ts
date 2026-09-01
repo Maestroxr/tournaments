@@ -38,15 +38,79 @@ const AppInputStub = defineComponent({
   },
 })
 
+const AppAlertStub = defineComponent({
+  name: 'AppAlert',
+  props: {
+    message: { type: String, required: true },
+  },
+  setup(props) {
+    return () => h('div', props.message)
+  },
+})
+
+const DatePickerStub = defineComponent({
+  name: 'DatePicker',
+  props: {
+    modelValue: { type: Date, default: null },
+    timeOnly: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    const pad = (value: number) => String(value).padStart(2, '0')
+    const formatValue = () => {
+      if (!(props.modelValue instanceof Date) || Number.isNaN(props.modelValue.getTime())) return ''
+      return props.timeOnly
+        ? `${pad(props.modelValue.getHours())}:${pad(props.modelValue.getMinutes())}`
+        : `${props.modelValue.getFullYear()}-${pad(props.modelValue.getMonth() + 1)}-${pad(props.modelValue.getDate())}`
+    }
+    const parseValue = (value: string) => {
+      if (!value) return null
+      if (!props.timeOnly) {
+        const [year = 0, month = 0, day = 0] = value.split('-').map(Number)
+        return new Date(year, month - 1, day)
+      }
+      const [hours = 0, minutes = 0] = value.split(':').map(Number)
+      const date = new Date()
+      date.setHours(hours, minutes, 0, 0)
+      return date
+    }
+    return () => h('input', {
+      value: formatValue(),
+      onInput: (event: Event) => emit('update:modelValue', parseValue((event.target as HTMLInputElement).value)),
+    })
+  },
+})
+
+const InputNumberStub = defineComponent({
+  name: 'InputNumber',
+  props: {
+    modelValue: { type: Number, default: null },
+  },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    return () => h('input', {
+      type: 'number',
+      value: props.modelValue ?? '',
+      onInput: (event: Event) => {
+        const value = (event.target as HTMLInputElement).value
+        emit('update:modelValue', value === '' ? null : Number(value))
+      },
+    })
+  },
+})
+
 const TournamentMetaFieldsStub = defineComponent({
   name: 'TournamentMetaFields',
   props: {
     timeControl: { type: String, required: true },
     targetPoints: { type: Number, required: true },
+    doublingEnabled: { type: Boolean, default: true },
+    entryFee: { type: Number, default: 0 },
+    prizeMoney: { type: Number, default: 0 },
     rulesOnly: { type: Boolean, default: false },
     errors: { type: Object, default: () => ({}) },
   },
-  emits: ['update:timeControl', 'update:targetPoints'],
+  emits: ['update:timeControl', 'update:targetPoints', 'update:doublingEnabled', 'update:entryFee', 'update:prizeMoney'],
   setup(props, { emit }) {
     return () => h('div', [
       h('input', {
@@ -63,6 +127,24 @@ const TournamentMetaFieldsStub = defineComponent({
         h('option', { value: 'normal' }, 'normal'),
         h('option', { value: 'speed' }, 'speed'),
       ]),
+      h('input', {
+        'aria-label': 'Doubling cube',
+        type: 'checkbox',
+        checked: props.doublingEnabled,
+        onChange: (event: Event) => emit('update:doublingEnabled', (event.target as HTMLInputElement).checked),
+      }),
+      h('input', {
+        'aria-label': 'Entry fee',
+        type: 'number',
+        value: props.entryFee,
+        onInput: (event: Event) => emit('update:entryFee', Number((event.target as HTMLInputElement).value)),
+      }),
+      h('input', {
+        'aria-label': 'Prize',
+        type: 'number',
+        value: props.prizeMoney,
+        onInput: (event: Event) => emit('update:prizeMoney', Number((event.target as HTMLInputElement).value)),
+      }),
     ])
   },
 })
@@ -71,7 +153,10 @@ function mountView() {
   return mount(TournamentCreateView, {
     global: {
       stubs: {
+        AppAlert: AppAlertStub,
         AppInput: AppInputStub,
+        DatePicker: DatePickerStub,
+        InputNumber: InputNumberStub,
         TournamentMetaFields: TournamentMetaFieldsStub,
       },
     },
@@ -132,6 +217,9 @@ describe('TournamentCreateView', () => {
         max_players: 16,
         target_points: 5,
         time_control: 'normal',
+        doubling_enabled: true,
+        entry_fee: 0,
+        prize_money: 0,
       }),
     })
     expect(routerPush).toHaveBeenCalledWith({ name: 'tournament-detail', params: { id: 8 } })

@@ -33,7 +33,7 @@ def reset_tournament(modeladmin, request, queryset):
 @admin.register(models.Tournament)
 class TournamentAdmin(admin.ModelAdmin):
 
-    list_display = ('name', 'published', 'state', 'creator')
+    list_display = ('name', 'published', 'state', 'creator', 'entry_fee', 'prize_money')
     list_filter  = ('published', 'creator')
 
     actions = [reset_tournament]
@@ -45,7 +45,15 @@ class TournamentAdmin(admin.ModelAdmin):
                 'definition',
                 'podium_spec',
                 'published',
-                'creator')
+                'creator',
+                'starts_at',
+                'min_players',
+                'max_players',
+                'target_points',
+                'time_control',
+                'doubling_enabled',
+                'entry_fee',
+                'prize_money')
             }
         ),
     )
@@ -74,3 +82,13 @@ class FixtureAdmin(admin.ModelAdmin):
 
     def score(self, fixture):
         return f'{fixture.score[0]}:{fixture.score[1]}' if fixture.score else '-'
+
+
+@admin.register(models.WalletTransaction)
+class WalletTransactionAdmin(admin.ModelAdmin):
+
+    list_display = ('created_at', 'user', 'kind', 'amount', 'balance_after', 'tournament', 'actor')
+    list_filter = ('kind', 'created_at')
+    search_fields = ('user__username', 'actor__username', 'tournament__name', 'note')
+    readonly_fields = ('created_at', 'balance_after')
+    ordering = ('-created_at', '-id')

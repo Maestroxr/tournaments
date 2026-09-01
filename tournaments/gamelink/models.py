@@ -45,10 +45,13 @@ class GameLink(models.Model):
     external_room_id = models.CharField(max_length = 64, blank = True)
     status           = models.CharField(max_length = 16, choices = STATUS, default = 'pending')
     target_points    = models.PositiveSmallIntegerField(default = 1)
+    doubling_enabled = models.BooleanField(default = True)
     created_at       = models.DateTimeField(auto_now_add = True)
     expires_at       = models.DateTimeField()
     completed_at     = models.DateTimeField(null = True, blank = True)
     raw_result       = models.JSONField(null = True, blank = True)  # audit trail behind the auto-confirmation
+    live_snapshot    = models.JSONField(null = True, blank = True)
+    live_updated_at  = models.DateTimeField(null = True, blank = True)
 
     def __str__(self):
         return f'{self.provider} game for fixture {self.fixture_id} ({self.status})'

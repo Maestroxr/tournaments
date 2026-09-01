@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import Button from 'primevue/button'
 import AppTabs from '@/components/AppTabs.vue'
 
 const auth = useAuthStore()
@@ -24,23 +25,14 @@ async function handleLogout() {
           <h1 class="m-0 text-right leading-none">
             <p class="text-muted text-sm font-normal">
               <i class="bi bi-person" aria-hidden="true"></i> {{ auth.user?.username }}
+              <span class="ml-2 inline-block rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-bold text-emerald-700">Balance {{ Number(auth.user?.balance || 0).toFixed(2) }}</span>
               <span class="inline-block rounded bg-dark px-1.5 py-0.5 text-xs font-bold text-white">admin</span>
             </p>
           </h1>
-          <button
-            class="inline-flex items-center gap-1.5 rounded border border-dark bg-white px-3 py-1 text-sm font-normal text-dark transition-colors hover:bg-dark hover:text-white"
-            @click="handleLogout"
-          >
-            Logout
-          </button>
+          <Button label="Logout" icon="bi bi-box-arrow-right" size="small" severity="contrast" outlined @click="handleLogout" />
         </template>
         <template v-else>
-          <RouterLink
-            to="/login"
-            class="inline-flex items-center gap-1.5 rounded border border-[#f8f9fa] bg-[#f8f9fa] px-3 py-1 text-sm font-normal text-[#212529] transition-colors hover:bg-[#e2e6ea] no-underline"
-          >
-            <i class="bi bi-door-open" aria-hidden="true"></i> Login
-          </RouterLink>
+          <Button as="router-link" to="/login" label="Login" icon="bi bi-door-open" size="small" severity="secondary" />
         </template>
       </div>
     </div>

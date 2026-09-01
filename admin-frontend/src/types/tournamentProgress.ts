@@ -16,6 +16,16 @@ export interface TournamentFixture {
   required_confirmations: number
   editable: boolean
   has_confirmed: boolean
+  live: {
+    status: string
+    state: {
+      phase: string | null
+      turn: string | null
+      dice: number[] | null
+      cube: number | null
+    }
+    match_score: { white: number; black: number }
+  } | null
 }
 
 export interface TournamentProgressLevel {

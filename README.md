@@ -95,6 +95,8 @@ Turning it off again is a complete rollback.
 | `GAMELINK_BACKGAMMON_URL` | when enabled | Base URL of the game server, `https://…`, no path. |
 | `GAMELINK_TICKET_SECRET` | when enabled | Signs the tickets this server issues. |
 | `GAMELINK_RESULT_SECRETS` | when enabled | Comma-separated list. Verifies results the game server posts back; **every** entry is tried. |
+| `REDIS_URL` | production live admin | Redis connection URL for tournament progress WebSockets. |
+| `CHANNEL_LAYER_BACKEND` | — | `redis` in production, `memory` for local development. Defaults are chosen from the Django settings module. |
 
 Never commit any of these. Generate each one separately, per environment:
 
@@ -106,6 +108,14 @@ A boot-time system check refuses to start the server when the feature is on outs
 configuration is weak — a missing or short secret, the same secret used for both channels, the
 ticket secret reused as `SECRET_KEY`, or a base URL that is not `https://`. Run it with
 `python manage.py check`; it fails loudly rather than degrading silently.
+
+### Live admin progress
+
+The tournament progress screen uses WebSockets for live game snapshots. Run the tournament server
+with ASGI/Daphne, not a WSGI-only server, and make sure your reverse proxy forwards `/ws/` with
+the WebSocket upgrade headers. Local development uses the in-memory channel layer automatically.
+Production defaults to Redis; set `REDIS_URL` to the Redis instance shared by the tournament app
+workers.
 
 ### Scheduled jobs
 

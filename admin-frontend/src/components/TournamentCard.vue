@@ -2,6 +2,7 @@
 import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
 import UserQuickView from './UserQuickView.vue'
+import { timeControlLabel } from '@/utils/adminLabels'
 
 interface Tournament {
   id: number
@@ -15,6 +16,9 @@ interface Tournament {
   max_players: number | null
   target_points: number
   time_control: string
+  doubling_enabled: boolean
+  entry_fee: string
+  prize_money: string
 }
 defineProps<{ tournament: Tournament }>()
 
@@ -35,37 +39,111 @@ function participantMessage(count: number) {
   return `${count} players have already registered`
 }
 
+function participantProgress(count: number, max: number | null) {
+  const target = max ?? Math.max(count, 1)
+  return `${Math.min((count / target) * 100, 100)}%`
+}
+
+function scheduleLabel(startsAt: string | null) {
+  return startsAt ? 'Scheduled start' : 'Start time'
+}
+
 function primaryActionLabel(state: string) {
   return state === 'draft' ? 'Edit tournament' : 'Manage tournament'
+}
+
+function primaryActionTo(tournament: Tournament) {
+  return `/tournaments/${tournament.id}${tournament.state === 'draft' ? '?edit=1' : ''}`
 }
 </script>
 
 <template>
-  <article class="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:shadow-md">
-    <div class="mb-1 flex items-start justify-between gap-3">
-      <h3 class="text-lg font-semibold leading-tight text-black">{{ tournament.name }}</h3>
+  <article
+    class="group flex h-full flex-col rounded-lg border border-zinc-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
+  >
+    <div class="flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <p class="mb-1 text-xs font-medium tracking-wide text-zinc-400 uppercase">
+          Tournament #{{ tournament.id }}
+        </p>
+        <h3 class="truncate text-lg font-semibold leading-tight text-zinc-950">{{ tournament.name }}</h3>
+      </div>
       <TournamentStatusBadge :state="tournament.state" />
     </div>
 
-    <p class="mb-4 text-xs text-zinc-500">
+    <p class="mt-2 text-xs text-zinc-500">
       Created by
-      <UserQuickView :user-id="tournament.creator_id" :username="tournament.creator || 'Unknown user'" />
+      <UserQuickView
+        :user-id="tournament.creator_id"
+        :username="tournament.creator || 'Unknown user'"
+      />
     </p>
 
-    <dl class="mb-4 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-zinc-50 p-3 text-sm sm:grid-cols-4">
-      <TournamentMetaItem label="Starts" :value="formatDate(tournament.starts_at)" />
-      <TournamentMetaItem label="Players" :value="playerRange(tournament.min_players, tournament.max_players)" />
-      <TournamentMetaItem label="Match" :value="`Race to ${tournament.target_points}`" />
-      <TournamentMetaItem label="Time control" :value="tournament.time_control" />
+    <section class="mt-5 rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div class="flex items-start gap-3">
+        <i class="bi bi-calendar3 mt-0.5 text-base text-zinc-400" aria-hidden="true"></i>
+        <div class="min-w-0">
+          <p class="text-xs font-medium text-zinc-500">{{ scheduleLabel(tournament.starts_at) }}</p>
+          <p class="mt-0.5 truncate text-sm font-semibold text-zinc-900">
+            {{ formatDate(tournament.starts_at) }}
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-4 border-t border-zinc-200 pt-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <p class="text-xs font-medium text-zinc-500">Registration</p>
+            <p class="mt-0.5 text-sm font-semibold text-zinc-900">
+              {{ tournament.participant_count }} / {{ tournament.max_players ?? 'Unlimited' }} players
+            </p>
+          </div>
+          <span class="rounded-md bg-white px-2 py-1 text-xs font-medium text-zinc-600 ring-1 ring-zinc-200">
+            Min. {{ tournament.min_players }}
+          </span>
+        </div>
+        <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-200" aria-hidden="true">
+          <div
+            class="h-full rounded-full bg-emerald-500 transition-[width]"
+            :style="{ width: participantProgress(tournament.participant_count, tournament.max_players) }"
+          ></div>
+        </div>
+      </div>
+    </section>
+
+    <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
+      <TournamentMetaItem label="Match format" :value="`Race to ${tournament.target_points}`" />
+      <TournamentMetaItem label="Time control" :value="timeControlLabel(tournament.time_control)" />
+      <TournamentMetaItem
+        label="Doubling cube"
+        :value="tournament.doubling_enabled ? 'Enabled' : 'Disabled'"
+      />
+      <TournamentMetaItem label="Capacity" :value="playerRange(tournament.min_players, tournament.max_players)" />
     </dl>
 
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <section class="mt-5 grid grid-cols-2 divide-x divide-zinc-200 rounded-lg border border-zinc-200 bg-white">
+      <div class="px-4 py-3">
+        <p class="text-xs font-medium text-zinc-500">Entry fee</p>
+        <p class="mt-1 text-base font-semibold tabular-nums text-zinc-900">
+          ${{ Number(tournament.entry_fee || 0).toFixed(2) }}
+        </p>
+      </div>
+      <div class="px-4 py-3">
+        <p class="text-xs font-medium text-zinc-500">Prize pool</p>
+        <p class="mt-1 text-base font-semibold tabular-nums text-emerald-700">
+          ${{ Number(tournament.prize_money || 0).toFixed(2) }}
+        </p>
+      </div>
+    </section>
+
+    <div class="mt-5 flex flex-col gap-3 border-t border-zinc-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
       <p class="text-sm text-zinc-600">{{ participantMessage(tournament.participant_count) }}</p>
       <RouterLink
-        :to="`/tournaments/${tournament.id}${tournament.state === 'draft' ? '?edit=1' : ''}`"
-        class="rounded-lg bg-zinc-900 px-4 py-2 text-center text-sm font-medium text-white hover:bg-black"
+        :to="primaryActionTo(tournament)"
+        class="inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-black focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         {{ primaryActionLabel(tournament.state) }}
+        <i class="bi bi-arrow-right" aria-hidden="true"></i>
       </RouterLink>
     </div>
   </article>

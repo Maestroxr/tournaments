@@ -504,7 +504,9 @@ class StartGameTestBase(TestCase):
     """
 
     def setUp(self):
-        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list(), published = True)
+        self.tournament = Tournament.objects.create(
+            name = 'Test', podium_spec = list(), published = True, target_points = 7,
+            doubling_enabled = False)
         self.knockout   = Knockout.objects.create(tournament = self.tournament)
 
         self.user1, self.user2, self.user3 = [
@@ -580,14 +582,16 @@ class StartGameViewTest(StartGameTestBase):
         game_link = GameLink.objects.get()
         self.assertEqual(game_link.fixture_id, self.fixture.pk)
         self.assertEqual(game_link.status, 'pending')
-        self.assertEqual(game_link.target_points, 1)
+        self.assertEqual(game_link.target_points, 7)
+        self.assertFalse(game_link.doubling_enabled)
         self.assertGreater(game_link.expires_at, timezone.now())
 
         payload = verify_ticket(unquote(response['Location'][len(prefix):]))
         self.assertEqual(payload['seat'], 'p1')
         self.assertEqual(payload['fix'], self.fixture.pk)
         self.assertEqual(payload['trn'], self.tournament.pk)
-        self.assertEqual(payload['tp'], 1)
+        self.assertEqual(payload['tp'], 7)
+        self.assertFalse(payload['dbl'])
         self.assertEqual(payload['sub'], str(LinkedAccount.objects.get(user = self.user1).external_id))
 
         ticket = IssuedTicket.objects.get()
@@ -876,6 +880,7 @@ class PlayableSeatTest(StartGameTestBase):
 # -------------------------------
 
 RESULT_URL = '/api/gamelink/result/'
+LIVE_URL = '/api/gamelink/live/'
 
 
 class ResultCallbackTestBase(TestCase):
@@ -960,6 +965,25 @@ class ResultCallbackTestBase(TestCase):
         # Byte for byte what `deliver_result` puts on the wire: compact separators, sorted keys.
         return json.dumps(body, separators = (',', ':'), sort_keys = True).encode()
 
+    def live_body(self, **overrides):
+        body = {
+            'v': 1,
+            'tournament_id': self.tournament.pk,
+            'fixture_id': self.fixture.pk,
+            'room_id': self.ROOM_ID,
+            'sequence': 3,
+            'status': 'playing',
+            'state': {
+                'phase': 'playing',
+                'turn': 'white',
+                'dice': [3, 4],
+                'cube': 2,
+            },
+            'match_score': {'white': 0, 'black': 0},
+        }
+        body.update(overrides)
+        return body
+
     def deliver(self, body = None, raw = None, timestamp = None, nonce = None, signature = None,
                 client = None, drop = (), sign_over = None, issuer = 'backgammon'):
         """
@@ -989,6 +1013,27 @@ class ResultCallbackTestBase(TestCase):
         return (client or self.client).post(
             RESULT_URL, data = raw, content_type = 'application/json', **headers)
 
+    def deliver_live(self, body = None, raw = None, timestamp = None, nonce = None, signature = None,
+                     client = None):
+        if raw is None:
+            raw = self.serialize(self.live_body() if body is None else body)
+        if timestamp is None:
+            timestamp = str(int(time.time()))
+        if nonce is None:
+            nonce = uuid.uuid4().hex
+        if signature is None:
+            signature = sign_result_body(raw, timestamp, nonce)
+
+        return (client or self.client).post(
+            LIVE_URL,
+            data = raw,
+            content_type = 'application/json',
+            HTTP_X_GAMELINK_TIMESTAMP = timestamp,
+            HTTP_X_GAMELINK_NONCE = nonce,
+            HTTP_X_GAMELINK_SIGNATURE = signature,
+            HTTP_X_GAMELINK_ISSUER = 'backgammon',
+        )
+
     def assertNothingRecorded(self):
         self.fixture.refresh_from_db()
         self.game_link.refresh_from_db()
@@ -997,6 +1042,31 @@ class ResultCallbackTestBase(TestCase):
         self.assertFalse(self.fixture.auto_confirmed)
         self.assertEqual(self.game_link.status, 'pending')
         self.assertIsNone(self.game_link.raw_result)
+
+
+@gamelink_settings
+class LiveSnapshotCallbackViewTest(ResultCallbackTestBase):
+    def test_a_signed_live_snapshot_is_saved_on_the_game_link(self):
+        response = self.deliver_live()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {'status': 'recorded'})
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'playing')
+        self.assertEqual(self.game_link.external_room_id, self.ROOM_ID)
+        self.assertEqual(self.game_link.live_snapshot['sequence'], 3)
+        self.assertEqual(self.game_link.live_snapshot['state']['turn'], 'white')
+        self.assertIsNotNone(self.game_link.live_updated_at)
+
+    def test_an_older_live_snapshot_does_not_overwrite_a_newer_one(self):
+        self.deliver_live(self.live_body(sequence = 5, state = {'phase': 'playing', 'turn': 'white'}))
+        response = self.deliver_live(self.live_body(sequence = 4, state = {'phase': 'playing', 'turn': 'black'}))
+
+        self.assertEqual(response.status_code, 200)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.live_snapshot['sequence'], 5)
+        self.assertEqual(self.game_link.live_snapshot['state']['turn'], 'white')
 
 
 @gamelink_settings

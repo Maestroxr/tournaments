@@ -1,4 +1,7 @@
-asgiref==3.7.2
+asgiref==3.9.1
+channels==4.2.2
+channels-redis==4.3.0
+daphne==4.0.0
 django==4.2.15
 django-polymorphic==3.1.0
 django-crispy-forms==2.1

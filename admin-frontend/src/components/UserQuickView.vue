@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import Button from 'primevue/button'
 import { apiFetch } from '@/services/api'
 import type { AdminUserSummary } from '@/types/user'
 
@@ -45,16 +46,15 @@ function scheduleClose() {
 
 <template>
   <span class="relative inline-flex" @mouseenter="show" @mouseleave="scheduleClose" @focusin="show" @focusout="scheduleClose">
-    <button
+    <Button
       v-if="userId !== null"
-      type="button"
-      class="inline-flex items-center gap-1 font-medium text-zinc-900 hover:text-blue-700 hover:underline"
+      :label="username"
+      icon="bi bi-person-circle"
+      link
+      severity="contrast"
       :aria-expanded="open"
       @click.stop="show"
-    >
-      <i class="bi bi-person-circle text-zinc-400" aria-hidden="true"></i>
-      {{ username }}
-    </button>
+    />
     <span v-else class="inline-flex items-center gap-1 font-medium text-zinc-700">
       <i class="bi bi-person text-zinc-400" aria-hidden="true"></i>
       {{ username }}
@@ -73,19 +73,14 @@ function scheduleClose() {
             <span class="block font-semibold text-black">{{ user.username }}</span>
             <span class="block text-xs text-zinc-500">User #{{ user.id }}</span>
           </span>
-          <button type="button" class="text-zinc-400 hover:text-black" aria-label="Close user details" @click="open = false">×</button>
+          <Button icon="bi bi-x" text rounded severity="secondary" aria-label="Close user details" @click="open = false" />
         </span>
         <span class="block space-y-1 text-xs text-zinc-600">
           <span class="block"><span class="font-medium text-zinc-800">Email:</span> {{ user.email || 'No email' }}</span>
           <span class="block"><span class="font-medium text-zinc-800">Role:</span> {{ user.is_staff ? 'Staff' : 'User' }}</span>
           <span class="block"><span class="font-medium text-zinc-800">Status:</span> {{ user.is_active ? 'Active' : 'Inactive' }}</span>
         </span>
-        <RouterLink
-          :to="`/users/${user.id}/edit`"
-          class="block rounded-lg bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black"
-        >
-          Edit user
-        </RouterLink>
+        <Button as="router-link" :to="`/users/${user.id}/edit`" label="Edit user" severity="contrast" class="w-full" />
       </span>
     </span>
   </span>

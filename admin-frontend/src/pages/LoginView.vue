@@ -1,18 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { ApiError } from '@/services/api'
+import Button from 'primevue/button'
 import AppInput from '@/components/AppInput.vue'
 import AppAlert from '@/components/AppAlert.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
 const router = useRouter()
 const username = ref('')
 const password = ref('')
 const usernameError = ref('')
 const passwordError = ref('')
 const alertMessage = ref('')
+
+if (route.query.reason === 'admin-required') {
+  alertMessage.value = 'This area is only available to admin users. Log in with an admin account.'
+}
 
 function parseApiError(e: unknown): string {
   if (e instanceof ApiError) {
@@ -45,7 +51,12 @@ async function login() {
 
   try {
     await auth.login(username.value.trim(), password.value)
-    router.push('/dashboard')
+    if (!auth.isAdmin) {
+      alertMessage.value = 'This account does not have admin access.'
+      return
+    }
+    const next = typeof route.query.next === 'string' ? route.query.next : '/dashboard'
+    router.push(next)
   } catch (e: unknown) {
     // field-specific errors from API
     if (e instanceof ApiError) {
@@ -69,9 +80,7 @@ async function login() {
     <form @submit.prevent="login" class="space-y-3">
       <AppInput v-model="username" label="Username" placeholder="username" autocomplete="username" :error="usernameError" @keydown="login" />
       <AppInput v-model="password" label="Password" type="password" placeholder="password" autocomplete="current-password" :error="passwordError" @keydown="login" />
-      <button type="submit" class="w-full rounded bg-dark px-4 py-2 text-sm font-medium text-white hover:bg-dark-hover">
-        Login
-      </button>
+      <Button type="submit" label="Login" severity="contrast" class="w-full" />
     </form>
   </div>
 </template>

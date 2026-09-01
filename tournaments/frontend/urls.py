@@ -34,7 +34,7 @@ urlpatterns = [
     path('users/<int:pk>/delete', views.UserDeleteView.as_view(), name='user-delete'),
     path('accounts/login/',
          LoginView.as_view(template_name='frontend/login.html'), name='login'),
-    #     path('accounts/signup/', views.SignupView.as_view(), name='signup'),
+    path('accounts/signup/', views.SignupView.as_view(), name='signup'),
     path('accounts/logout/', LogoutView.as_view(), name='logout'),
 
 

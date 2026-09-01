@@ -12,4 +12,5 @@ from . import views
 urlpatterns = [
     path('t/fixture/<int:pk>/play', views.StartGameView.as_view(), name='gamelink-start'),
     path('api/gamelink/result/', views.ResultCallbackView.as_view(), name='gamelink-result'),
+    path('api/gamelink/live/', views.LiveSnapshotCallbackView.as_view(), name='gamelink-live'),
 ]

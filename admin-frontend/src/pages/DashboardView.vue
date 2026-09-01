@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '@/services/api'
+import Button from 'primevue/button'
+import SelectButton from 'primevue/selectbutton'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
@@ -120,6 +122,13 @@ function severityIcon(severity: Severity) {
   return 'bi-info-circle'
 }
 
+function attentionLabel(kind: AttentionItem['kind']) {
+  if (kind === 'overdue') return 'Schedule overdue'
+  if (kind === 'waiting_players') return 'Registration'
+  if (kind === 'pending_matches') return 'Match result'
+  return 'Draft tournament'
+}
+
 onMounted(load)
 </script>
 
@@ -131,40 +140,22 @@ onMounted(load)
         <p class="mt-1 text-sm text-zinc-600">Tournament operations at a glance</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <RouterLink to="/users/new" class="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-50">
-          <i class="bi bi-person-plus mr-1" aria-hidden="true"></i>Create user
-        </RouterLink>
-        <RouterLink to="/tournaments/new" class="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-black">
-          <i class="bi bi-plus-lg mr-1" aria-hidden="true"></i>Create tournament
-        </RouterLink>
+        <Button as="router-link" to="/users/new" label="Create user" icon="bi bi-person-plus" severity="secondary" outlined />
+        <Button as="router-link" to="/tournaments/new" label="Create tournament" icon="bi bi-plus-lg" severity="contrast" />
       </div>
     </header>
 
-    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-2">
-      <div class="flex gap-1" aria-label="Dashboard time range">
-        <button
-          v-for="range in ranges"
-          :key="range.value"
-          type="button"
-          :class="['rounded-lg px-3 py-1.5 text-sm font-medium transition', rangeDays === range.value ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:bg-zinc-100 hover:text-black']"
-          :aria-pressed="rangeDays === range.value"
-          @click="selectRange(range.value)"
-        >
-          {{ range.label }}
-        </button>
-      </div>
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-2">
+      <SelectButton v-model="rangeDays" :options="ranges" option-label="label" option-value="value" aria-label="Dashboard time range" @update:model-value="selectRange($event as RangeDays)" />
       <div class="flex items-center gap-3 px-2 text-xs text-zinc-500">
         <span v-if="data">Updated at {{ formatUpdatedAt(data.updated_at) }}</span>
-        <button type="button" class="inline-flex items-center gap-1 font-medium text-zinc-700 hover:text-black" :disabled="loading" @click="load">
-          <i :class="['bi bi-arrow-clockwise', loading && 'animate-spin']" aria-hidden="true"></i>
-          Refresh
-        </button>
+        <Button label="Refresh" icon="bi bi-arrow-clockwise" size="small" severity="secondary" text :loading="loading" @click="load" />
       </div>
     </div>
 
     <AppAlert v-if="error" class="mb-5" type="error" :message="error" />
     <div v-if="loading && !data" class="grid grid-cols-2 gap-3 lg:grid-cols-5" aria-label="Loading dashboard">
-      <div v-for="index in 5" :key="index" class="h-32 animate-pulse rounded-xl bg-zinc-100"></div>
+      <div v-for="index in 5" :key="index" class="h-32 animate-pulse rounded-lg bg-zinc-100"></div>
     </div>
 
     <div v-else-if="data" class="space-y-7" aria-live="polite">
@@ -175,7 +166,7 @@ onMounted(load)
             v-for="kpi in kpiCards"
             :key="kpi.key"
             :to="kpi.to"
-            class="group rounded-xl border border-zinc-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-sm"
+            class="group rounded-lg border border-zinc-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-sm"
           >
             <span class="flex items-start justify-between gap-2">
               <span class="text-xs font-medium text-zinc-500">{{ kpi.label }}</span>
@@ -195,7 +186,7 @@ onMounted(load)
           </div>
           <span class="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{{ data.attention.length }} items</span>
         </div>
-        <div v-if="data.attention.length" class="overflow-hidden rounded-xl border border-zinc-200 bg-white">
+        <div v-if="data.attention.length" class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
           <div v-for="item in data.attention" :key="`${item.kind}-${item.id}`" class="flex flex-col gap-3 border-b border-zinc-100 p-4 last:border-0 sm:flex-row sm:items-center">
             <span :class="['inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border', severityClass(item.severity)]">
               <i :class="['bi', severityIcon(item.severity)]" aria-hidden="true"></i>
@@ -204,6 +195,7 @@ onMounted(load)
               <div class="flex flex-wrap items-center gap-2">
                 <RouterLink :to="`/tournaments/${item.id}`" class="truncate font-semibold text-black hover:underline">{{ item.name }}</RouterLink>
                 <TournamentStatusBadge :state="item.state" />
+                <span class="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">{{ attentionLabel(item.kind) }}</span>
               </div>
               <p class="mt-0.5 text-sm text-zinc-600">{{ item.message }}</p>
             </div>
@@ -212,7 +204,7 @@ onMounted(load)
             </RouterLink>
           </div>
         </div>
-        <div v-else class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-8 text-center">
+        <div v-else class="rounded-lg border border-dashed border-zinc-300 bg-zinc-50 px-4 py-8 text-center">
           <i class="bi bi-check-circle text-2xl text-emerald-600" aria-hidden="true"></i>
           <p class="mt-2 font-medium text-zinc-800">Everything is on track</p>
           <p class="text-sm text-zinc-500">There are no tournaments requiring attention.</p>
@@ -226,15 +218,24 @@ onMounted(load)
             <RouterLink to="/tournaments?state=active" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline">View all</RouterLink>
           </div>
           <div v-if="data.active_tournaments.length" class="grid gap-3 sm:grid-cols-2">
-            <article v-for="tournament in data.active_tournaments" :key="tournament.id" class="rounded-xl border border-zinc-200 bg-white p-4">
+            <article v-for="tournament in data.active_tournaments" :key="tournament.id" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <div class="flex items-start justify-between gap-2">
-                <RouterLink :to="`/tournaments/${tournament.id}`" class="font-semibold text-black hover:underline">{{ tournament.name }}</RouterLink>
+                <div class="min-w-0">
+                  <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Tournament #{{ tournament.id }}</p>
+                  <RouterLink :to="`/tournaments/${tournament.id}`" class="block truncate font-semibold text-black hover:underline">{{ tournament.name }}</RouterLink>
+                </div>
                 <TournamentStatusBadge :state="tournament.state" />
               </div>
-              <p class="mt-3 text-sm font-medium text-zinc-800">{{ tournament.stage }} · {{ tournament.round }}</p>
-              <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-                <span><i class="bi bi-people mr-1" aria-hidden="true"></i>{{ tournament.participant_count }} players</span>
-                <span><i class="bi bi-hourglass-split mr-1" aria-hidden="true"></i>{{ tournament.pending_matches }} pending</span>
+              <p class="mt-4 text-sm font-semibold text-zinc-800">{{ tournament.stage }} <span class="font-normal text-zinc-400">/</span> {{ tournament.round }}</p>
+              <div class="mt-3 grid grid-cols-2 divide-x divide-zinc-100 border-y border-zinc-100 py-3 text-sm">
+                <div class="pr-3">
+                  <p class="text-xs text-zinc-500">Players</p>
+                  <p class="mt-0.5 font-semibold text-black"><i class="bi bi-people mr-1 text-zinc-400" aria-hidden="true"></i>{{ tournament.participant_count }}</p>
+                </div>
+                <div class="pl-3">
+                  <p class="text-xs text-zinc-500">Pending matches</p>
+                  <p :class="['mt-0.5 font-semibold', tournament.pending_matches ? 'text-amber-700' : 'text-emerald-700']"><i class="bi bi-hourglass-split mr-1" aria-hidden="true"></i>{{ tournament.pending_matches }}</p>
+                </div>
               </div>
               <RouterLink :to="`/tournaments/${tournament.id}/progress`" class="mt-4 block rounded-lg bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black">View progress</RouterLink>
             </article>

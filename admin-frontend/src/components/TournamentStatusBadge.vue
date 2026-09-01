@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { tournamentStateLabel } from '@/utils/adminLabels'
+
 defineProps<{ state: string }>()
 
 function badgeClass(state: string) {
@@ -9,13 +11,6 @@ function badgeClass(state: string) {
   return 'border-zinc-200 bg-zinc-100 text-zinc-700'
 }
 
-function stateLabel(state: string) {
-  if (state === 'draft') return 'Draft'
-  if (state === 'open') return 'Open for registration'
-  if (state === 'active') return 'Active'
-  if (state === 'finished') return 'Finished'
-  return state
-}
 </script>
 
 <template>
@@ -25,6 +20,6 @@ function stateLabel(state: string) {
       badgeClass(state),
     ]"
   >
-    {{ stateLabel(state) }}
+    {{ tournamentStateLabel(state) }}
   </span>
 </template>

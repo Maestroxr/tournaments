@@ -94,6 +94,17 @@ const router = createRouter({
       },
     },
     {
+      path: '/transfers',
+      name: 'transfers',
+      component: () => import('@/pages/TransfersView.vue'),
+      meta: {
+        breadcrumb: [
+          { label: 'Dashboard', to: '/dashboard' },
+          { label: 'Transfers' },
+        ] satisfies BreadcrumbItem[],
+      },
+    },
+    {
       path: '/users/new',
       name: 'users-create',
       component: () => import('@/pages/UserCreateView.vue'),
@@ -126,10 +137,11 @@ router.beforeEach(async (to) => {
   if (!auth.checked) await auth.fetchMe()
   if (to.path === '/') return auth.isLoggedIn ? '/dashboard' : '/login'
   if (to.path === '/login') {
-    if (auth.isLoggedIn) return '/dashboard'
+    if (auth.isAdmin) return '/dashboard'
     return
   }
-  if (!auth.isLoggedIn) return '/login'
+  if (!auth.isLoggedIn) return { path: '/login', query: { next: to.fullPath } }
+  if (!auth.isAdmin) return { path: '/login', query: { reason: 'admin-required', next: to.fullPath } }
 })
 
 export default router

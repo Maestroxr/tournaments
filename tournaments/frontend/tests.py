@@ -350,6 +350,27 @@ def start_tournament(tournament, **kwargs):
     return users
 
 
+class ApiJoinAutoStartTests(TestCase):
+    def test_joining_the_final_slot_starts_a_full_tournament(self):
+        tournament = models.Tournament.load(
+            definition=test_tournament1_yml,
+            name='Full tournament',
+            published=True,
+            min_players=6,
+            max_players=6,
+        )
+        add_participants(tournament, num_users=5)
+        final_user = models.User.objects.create_user(username='final-player', password=password1)
+        self.client.force_login(final_user)
+
+        response = self.client.post(reverse('api-join', kwargs={'pk': tournament.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        tournament.refresh_from_db()
+        self.assertEqual(tournament.participations.count(), 6)
+        self.assertEqual(tournament.state, 'active')
+
+
 class DraftTournamentViewTests(TestCase):
 
     def setUp(self):

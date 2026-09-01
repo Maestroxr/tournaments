@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate, login
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import Count, Q
 from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
@@ -236,9 +237,21 @@ class DraftTournamentView(AdminRequiredMixin, IsCreatorMixin, SingleObjectMixin,
         if self.object.state != 'open':
             return HttpResponse(status=412)
 
-        self.object.published = False
-        self.object.participations.all().delete()
-        self.object.save()
+        with transaction.atomic():
+            if self.object.entry_fee > 0:
+                for participation in self.object.participations.select_related("participant__user"):
+                    if participation.participant.user_id:
+                        models.WalletTransaction.create_entry(
+                            user=participation.participant.user,
+                            amount=self.object.entry_fee,
+                            kind=models.WalletTransaction.KIND_TOURNAMENT_REFUND,
+                            tournament=self.object,
+                            actor=request.user,
+                            note=f"Refund for {self.object.name}",
+                        )
+            self.object.published = False
+            self.object.participations.all().delete()
+            self.object.save()
         request.session['alert'] = dict(
             status='warning', text='The tournament is now in draft mode and cannot be joined.')
         return redirect('update-tournament', pk=self.object.id)
@@ -263,6 +276,9 @@ class JoinTournamentView(LoginRequiredMixin, SingleObjectMixin, View):
 
     model = models.Tournament
 
+    def _redirect_back(self):
+        return redirect(self.request.META.get('HTTP_REFERER') or reverse('update-tournament', kwargs={'pk': self.object.id}))
+
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
 
@@ -272,21 +288,42 @@ class JoinTournamentView(LoginRequiredMixin, SingleObjectMixin, View):
 
         # Create the participation only if it does not already exist.
         if not self.object.participations.filter(participant__user=request.user).exists():
-            participant, created = models.Participant.objects.get_or_create(
-                user=request.user, defaults={'name': request.user.username})
-            models.Participation.objects.create(
-                tournament=self.object,
-                participant=participant,
-                slot_id=models.Participation.next_slot_id(self.object))
+            participant = models.Participant.get_or_create_for_user(request.user)
+            if self.object.participations.filter(participant=participant).exists():
+                request.session['alert'] = dict(
+                    status='success', text='You have joined the tournament.')
+                return self._redirect_back()
+            try:
+                with transaction.atomic():
+                    if self.object.entry_fee > 0:
+                        models.WalletTransaction.create_entry(
+                            user=request.user,
+                            amount=-self.object.entry_fee,
+                            kind=models.WalletTransaction.KIND_TOURNAMENT_ENTRY,
+                            tournament=self.object,
+                            actor=request.user,
+                            note=f"Entry fee for {self.object.name}",
+                        )
+                    models.Participation.objects.create(
+                        tournament=self.object,
+                        participant=participant,
+                        slot_id=models.Participation.next_slot_id(self.object))
+            except ValidationError:
+                request.session['alert'] = dict(
+                    status='danger', text='Insufficient funds to join this tournament.')
+                return self._redirect_back()
 
         request.session['alert'] = dict(
             status='success', text='You have joined the tournament.')
-        return redirect('update-tournament', pk=self.object.id)
+        return self._redirect_back()
 
 
 class WithdrawTournamentView(LoginRequiredMixin, SingleObjectMixin, View):
 
     model = models.Tournament
+
+    def _redirect_back(self):
+        return redirect(self.request.META.get('HTTP_REFERER') or reverse('update-tournament', kwargs={'pk': self.object.id}))
 
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
@@ -296,13 +333,23 @@ class WithdrawTournamentView(LoginRequiredMixin, SingleObjectMixin, View):
             return HttpResponse(status=412)
 
         # Delete the participation only if it exists.
-        if self.object.participations.filter(participant__user=request.user).exists():
-            self.object.participations.filter(
-                participant__user=request.user).delete()
+        participation = self.object.participations.filter(participant__user=request.user).first()
+        if participation:
+            with transaction.atomic():
+                participation.delete()
+                if self.object.entry_fee > 0:
+                    models.WalletTransaction.create_entry(
+                        user=request.user,
+                        amount=self.object.entry_fee,
+                        kind=models.WalletTransaction.KIND_TOURNAMENT_REFUND,
+                        tournament=self.object,
+                        actor=request.user,
+                        note=f"Refund for {self.object.name}",
+                    )
 
         request.session['alert'] = dict(
             status='success', text='You have withdrawn from the tournament.')
-        return redirect('update-tournament', pk=self.object.id)
+        return self._redirect_back()
 
 
 class ManageParticipantsView(AdminRequiredMixin, IsCreatorMixin, SingleObjectMixin, VersionInfoMixin, AlertMixin, View):

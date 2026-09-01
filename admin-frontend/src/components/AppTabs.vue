@@ -23,6 +23,9 @@ function isUsersActive(): boolean {
     route.path.startsWith('/users')
   )
 }
+function isTransfersActive(): boolean {
+  return String(route.name ?? '').startsWith('transfers') || route.path.startsWith('/transfers')
+}
 
 const baseBtn =
   'inline-flex items-center gap-1.5 rounded border px-3 py-1 text-sm font-normal transition-colors whitespace-nowrap no-underline'
@@ -54,6 +57,14 @@ const baseBtn =
       Tournaments
     </RouterLink>
     <RouterLink
+      to="/tournaments?state=finished"
+      :class="[baseBtn, route.query.state === 'finished'
+        ? 'bg-dark text-white border-dark hover:bg-dark-hover'
+        : 'bg-white text-dark border-dark hover:bg-dark hover:text-white']"
+    >
+      History
+    </RouterLink>
+    <RouterLink
       to="/users"
       :class="[
         baseBtn,
@@ -63,6 +74,17 @@ const baseBtn =
       ]"
     >
       Users
+    </RouterLink>
+    <RouterLink
+      to="/transfers"
+      :class="[
+        baseBtn,
+        isTransfersActive()
+          ? 'bg-dark text-white border-dark hover:bg-dark-hover'
+          : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
+      ]"
+    >
+      Transfers
     </RouterLink>
 
     <template v-if="auth.isLoggedIn">

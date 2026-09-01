@@ -1,6 +1,7 @@
 import math
 import random
 import re
+from decimal import Decimal
 
 import numpy as np
 from django.contrib.auth.models import User
@@ -32,6 +33,9 @@ class Tournament(models.Model):
     max_players = models.PositiveSmallIntegerField(null=True, blank=True)
     target_points = models.PositiveSmallIntegerField(default=5, help_text="Points / games to win")
     time_control = models.CharField(max_length=20, choices=TIME_CHOICES, default="normal")
+    doubling_enabled = models.BooleanField(default=True)
+    entry_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    prize_money = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     def __str__(self):
         return self.name
@@ -122,6 +126,22 @@ class Tournament(models.Model):
                 participation.slot_id = new_slot_id
                 participation.save()
 
+    def start_if_full(self):
+        """Initialize an open tournament once its configured capacity is reached.
+
+        The caller must hold a row lock for this tournament when registrations can
+        happen concurrently.
+        """
+        if self.state != 'open' or self.max_players is None:
+            return False
+        if self.participations.count() < self.max_players:
+            return False
+
+        self.test()
+        self.shuffle_participants()
+        self.update_state()
+        return True
+
     def update_state(self):
         if self.current_stage is None:
 
@@ -131,12 +151,32 @@ class Tournament(models.Model):
                 participation = self.participations.get(participant = participant)
                 participation.podium_position = position
                 participation.save()
+            self.award_prize_money()
 
         else:
 
             # Propagate `update_state` to the current stage as long as updates happen.
             while self.current_stage.update_state():
                 pass
+
+    def award_prize_money(self):
+        if self.prize_money <= 0:
+            return
+        winner = self.participations.filter(podium_position=0).select_related('participant__user').first()
+        if winner is None or winner.participant.user is None:
+            return
+        if WalletTransaction.objects.filter(
+            tournament=self,
+            kind=WalletTransaction.KIND_TOURNAMENT_PRIZE,
+        ).exists():
+            return
+        WalletTransaction.create_entry(
+            user=winner.participant.user,
+            amount=self.prize_money,
+            kind=WalletTransaction.KIND_TOURNAMENT_PRIZE,
+            tournament=self,
+            note=f"Prize for winning {self.name}",
+        )
 
     @property
     def state(self):
@@ -253,8 +293,17 @@ class Participant(models.Model):
     @staticmethod
     def get_or_create_for_user(user):
         try:
-            return Participant.objects.get(user = user)
+            participant = Participant.objects.get(user = user)
+            if participant.name != user.username and not Participant.objects.filter(name=user.username).exclude(pk=participant.pk).exists():
+                participant.name = user.username
+                participant.save(update_fields=['name'])
+            return participant
         except Participant.DoesNotExist:
+            participant = Participant.objects.filter(name=user.username, user__isnull=True).first()
+            if participant is not None:
+                participant.user = user
+                participant.save(update_fields=['user'])
+                return participant
             return Participant.create_for_user(user)
 
 
@@ -279,6 +328,65 @@ class Participation(models.Model):
     @staticmethod
     def next_slot_id(tournament):
         return Participation.objects.filter(tournament = tournament).aggregate(Max('slot_id', default = -1))['slot_id__max'] + 1
+
+
+class WalletTransaction(models.Model):
+    KIND_DEPOSIT = "deposit"
+    KIND_WITHDRAWAL = "withdrawal"
+    KIND_TOURNAMENT_ENTRY = "tournament_entry"
+    KIND_TOURNAMENT_REFUND = "tournament_refund"
+    KIND_TOURNAMENT_PRIZE = "tournament_prize"
+
+    KIND_CHOICES = [
+        (KIND_DEPOSIT, "Deposit"),
+        (KIND_WITHDRAWAL, "Withdrawal"),
+        (KIND_TOURNAMENT_ENTRY, "Tournament entry"),
+        (KIND_TOURNAMENT_REFUND, "Tournament refund"),
+        (KIND_TOURNAMENT_PRIZE, "Tournament prize"),
+    ]
+
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='wallet_transactions')
+    tournament = models.ForeignKey('Tournament', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
+    actor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, related_name='wallet_transactions_created', null=True, blank=True)
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    balance_after = models.DecimalField(max_digits=10, decimal_places=2)
+    note = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at', '-id')
+        constraints = [
+            CheckConstraint(check=~Q(amount=Decimal("0")), name="wallet_transaction_amount_not_zero"),
+        ]
+
+    def __str__(self):
+        return f'{self.user} {self.kind} {self.amount}'
+
+    @staticmethod
+    def balance_for_user(user):
+        total = WalletTransaction.objects.filter(user=user).aggregate(models.Sum('amount'))['amount__sum']
+        return total or Decimal("0.00")
+
+    @staticmethod
+    @transaction.atomic
+    def create_entry(*, user, amount, kind, tournament=None, actor=None, note=""):
+        amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+        if amount == 0:
+            raise ValidationError("Amount cannot be zero.")
+        current_balance = WalletTransaction.balance_for_user(user)
+        new_balance = current_balance + amount
+        if new_balance < 0:
+            raise ValidationError("Insufficient funds.")
+        return WalletTransaction.objects.create(
+            user=user,
+            tournament=tournament,
+            actor=actor,
+            kind=kind,
+            amount=amount,
+            balance_after=new_balance,
+            note=note,
+        )
 
 
 def parse_participants_str_list(participants_str_list):

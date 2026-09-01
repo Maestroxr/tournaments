@@ -3,7 +3,7 @@ import string
 from django import template
 from django.utils.safestring import mark_safe
 
-from tournaments.models import parse_participants_str_list
+from tournaments.models import WalletTransaction, parse_participants_str_list
 
 register = template.Library()
 
@@ -44,6 +44,20 @@ def parse_participants(participants_str_list, tournament):
 @register.filter
 def is_joined_by(tournament, user):
     return user.id is not None and tournament.participations.filter(participant__user = user).count() > 0
+
+
+@register.filter
+def wallet_balance(user):
+    if user.id is None:
+        return '0.00'
+    return WalletTransaction.balance_for_user(user)
+
+
+@register.filter
+def participant_display_name(participant):
+    if participant.user_id:
+        return participant.user.username
+    return participant.name
 
 
 @register.filter

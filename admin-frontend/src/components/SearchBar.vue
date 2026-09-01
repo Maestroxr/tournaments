@@ -1,16 +1,24 @@
 <script setup lang="ts">
+import Button from 'primevue/button'
+import IconField from 'primevue/iconfield'
+import InputIcon from 'primevue/inputicon'
+import InputText from 'primevue/inputtext'
+
 defineProps<{ modelValue: string; placeholder?: string }>()
 defineEmits<{ (e: 'update:modelValue', v: string): void; (e: 'search', v: string): void }>()
 </script>
 <template>
   <div class="flex gap-2">
-    <input
+    <IconField class="min-w-0 flex-1">
+      <InputIcon class="bi bi-search" />
+      <InputText
       :value="modelValue"
       :placeholder="placeholder ?? 'Search...'"
-      class="w-full rounded border px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 focus:outline-none"
+        class="w-full"
       @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       @keydown.enter="$emit('search', modelValue)"
-    />
-    <button class="rounded bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-black" @click="$emit('search', modelValue)">Search</button>
+      />
+    </IconField>
+    <Button label="Search" size="small" severity="contrast" @click="$emit('search', modelValue)" />
   </div>
 </template>

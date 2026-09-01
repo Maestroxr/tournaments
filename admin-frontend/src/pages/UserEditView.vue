@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import Button from 'primevue/button'
+import Column from 'primevue/column'
+import DataTable from 'primevue/datatable'
+import InputNumber from 'primevue/inputnumber'
+import InputText from 'primevue/inputtext'
+import ToggleSwitch from 'primevue/toggleswitch'
 import AppInput from '@/components/AppInput.vue'
 import { apiFetch } from '@/services/api'
 
@@ -13,6 +19,10 @@ const email = ref('')
 const is_staff = ref(false)
 const is_active = ref(true)
 const new_password = ref('')
+const balance = ref('0.00')
+const walletAmount = ref<number | null>(null)
+const walletNote = ref('')
+const transactions = ref<WalletTransaction[]>([])
 const error = ref('')
 const loading = ref(false)
 const fetching = ref(true)
@@ -23,6 +33,19 @@ interface UserDetail {
   email?: string
   is_staff?: boolean
   is_active?: boolean
+  balance?: string
+  transactions?: WalletTransaction[]
+}
+
+interface WalletTransaction {
+  id: number
+  kind: string
+  amount: string
+  balance_after: string
+  tournament_name: string | null
+  actor_username: string | null
+  note: string
+  created_at: string
 }
 
 const fieldErrors = computed(() => {
@@ -40,6 +63,8 @@ onMounted(async () => {
     email.value = data.email ?? ''
     is_staff.value = !!data.is_staff
     is_active.value = data.is_active ?? true
+    balance.value = data.balance ?? '0.00'
+    transactions.value = data.transactions ?? []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : 'Failed to load user'
   } finally {
@@ -65,6 +90,31 @@ async function save() {
     loading.value = false
   }
 }
+
+async function wallet(action: 'deposit' | 'withdraw') {
+  error.value = ''
+  const amount = Number(walletAmount.value)
+  if (!Number.isFinite(amount) || amount <= 0) { error.value = 'Enter a positive amount.'; return }
+  loading.value = true
+  try {
+    const data = await apiFetch<UserDetail>(`/api/admin/users/${id}/wallet`, {
+      method: 'POST',
+      body: JSON.stringify({ action, amount, note: walletNote.value.trim() }),
+    })
+    balance.value = data.balance ?? '0.00'
+    transactions.value = data.transactions ?? []
+    walletAmount.value = null
+    walletNote.value = ''
+  } catch (e: unknown) {
+    try { const b = JSON.parse((e as any).body || '{}'); error.value = b.detail || JSON.stringify(b.errors || b) } catch { error.value = e instanceof Error ? e.message : 'Failed' }
+  } finally {
+    loading.value = false
+  }
+}
+
+function formatDate(value: string) {
+  try { return new Date(value).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) } catch { return value }
+}
 </script>
 
 <template>
@@ -75,13 +125,47 @@ async function save() {
       <AppInput v-model="username" label="Username" placeholder="username" :error="fieldErrors.username || error" autocomplete="username" />
       <AppInput v-model="email" label="Email" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
       <AppInput v-model="new_password" label="New password (leave blank to keep)" type="password" placeholder="••••••••" autocomplete="new-password" />
-      <label class="flex items-center gap-2 text-sm text-black"><input v-model="is_staff" type="checkbox" class="h-4 w-4 rounded border-zinc-300" /> Staff (admin)</label>
-      <label class="flex items-center gap-2 text-sm text-black"><input v-model="is_active" type="checkbox" class="h-4 w-4 rounded border-zinc-300" /> Active</label>
-      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-600">Preview: {{ username || '—' }} • {{ email || 'no email' }} • {{ is_staff ? 'staff' : 'user' }} • {{ is_active ? 'active' : 'inactive' }}</div>
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> Staff (admin)</label>
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_active" /> Active</label>
+      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-600">Preview: {{ username || '—' }} • {{ email || 'no email' }} • {{ is_staff ? 'staff' : 'user' }} • {{ is_active ? 'active' : 'inactive' }} • Balance {{ Number(balance || 0).toFixed(2) }}</div>
       <div class="flex gap-2">
-        <button type="submit" :disabled="loading" class="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{{ loading ? 'Saving…' : 'Save' }}</button>
-        <button type="button" class="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-black hover:bg-zinc-50" @click="router.push('/users')">Cancel</button>
+        <Button type="submit" :label="loading ? 'Saving...' : 'Save'" :loading="loading" severity="info" />
+        <Button label="Cancel" severity="secondary" outlined @click="router.push('/users')" />
       </div>
     </form>
+
+    <section v-if="!fetching" class="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
+      <div class="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 class="font-semibold text-black">Wallet</h2>
+          <p class="text-sm text-zinc-500">Current balance: <span class="font-semibold text-emerald-700">{{ Number(balance || 0).toFixed(2) }}</span></p>
+        </div>
+      </div>
+      <div class="grid gap-3 sm:grid-cols-[120px_1fr]">
+        <InputNumber v-model="walletAmount" :min="0.01" :min-fraction-digits="2" :max-fraction-digits="2" placeholder="Amount" fluid />
+        <InputText v-model="walletNote" placeholder="Note" class="w-full" />
+      </div>
+      <div class="mt-3 flex gap-2">
+        <Button label="Deposit" size="small" severity="success" :loading="loading" @click="wallet('deposit')" />
+        <Button label="Withdraw" size="small" severity="danger" outlined :loading="loading" @click="wallet('withdraw')" />
+      </div>
+
+      <DataTable class="mt-4" :value="transactions" data-key="id" size="small" striped-rows show-gridlines>
+        <template #empty>No wallet activity yet.</template>
+        <Column header="Date" sortable sort-field="created_at">
+          <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
+        </Column>
+        <Column field="kind" header="Type" sortable />
+        <Column header="Amount" sortable sort-field="amount" body-class="text-right">
+          <template #body="{ data }"><span :class="['font-medium', Number(data.amount) >= 0 ? 'text-emerald-700' : 'text-red-700']">{{ Number(data.amount).toFixed(2) }}</span></template>
+        </Column>
+        <Column header="Balance" sortable sort-field="balance_after" body-class="text-right">
+          <template #body="{ data }">{{ Number(data.balance_after).toFixed(2) }}</template>
+        </Column>
+        <Column header="Note">
+          <template #body="{ data }">{{ data.tournament_name || data.note || '-' }}</template>
+        </Column>
+      </DataTable>
+    </section>
   </div>
 </template>

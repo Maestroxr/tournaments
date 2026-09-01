@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import Button from 'primevue/button'
+import ToggleSwitch from 'primevue/toggleswitch'
 import AppInput from '@/components/AppInput.vue'
 import { apiFetch } from '@/services/api'
 
@@ -55,15 +57,15 @@ async function create() {
       <AppInput v-model="email" label="Email (optional)" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
       <AppInput v-model="password1" label="Password" type="password" placeholder="••••••••" :error="fieldErrors.password1" autocomplete="new-password" />
       <AppInput v-model="password2" label="Password confirmation" type="password" placeholder="••••••••" :error="fieldErrors.password2" autocomplete="new-password" />
-      <label class="flex items-center gap-2 text-sm text-black"><input v-model="is_staff" type="checkbox" class="h-4 w-4 rounded border-zinc-300" /> Staff (admin access)</label>
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> Staff (admin access)</label>
 
       <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
         Preview: <span class="font-medium text-black">{{ username || '—' }}</span> • {{ email || 'no email' }} • {{ is_staff ? 'staff' : 'user' }}
       </div>
 
       <div class="flex gap-2">
-        <button type="submit" :disabled="loading" class="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">{{ loading ? 'Creating…' : 'Create User' }}</button>
-        <button type="button" class="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-black hover:bg-zinc-50" @click="router.push('/users')">Cancel</button>
+        <Button type="submit" :label="loading ? 'Creating...' : 'Create User'" :loading="loading" severity="info" />
+        <Button label="Cancel" severity="secondary" outlined @click="router.push('/users')" />
       </div>
     </form>
   </div>

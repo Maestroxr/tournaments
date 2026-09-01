@@ -18,6 +18,7 @@ import re
 import time
 from urllib.parse import quote
 
+from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import RequestDataTooBig, ValidationError
@@ -27,6 +28,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
+from channels.layers import get_channel_layer
 from tournaments.models import Fixture
 
 from .models import GameLink, IssuedTicket, SeenNonce
@@ -173,7 +175,8 @@ class StartGameView(LoginRequiredMixin, View):
             game_link, _ = GameLink.objects.get_or_create(
                 fixture = fixture,
                 defaults = dict(
-                    target_points = settings.GAMELINK_TARGET_POINTS,
+                    target_points = fixture.mode.tournament.target_points,
+                    doubling_enabled = fixture.mode.tournament.doubling_enabled,
                     expires_at = now + link_ttl,
                 ),
             )
@@ -327,6 +330,7 @@ class ResultCallbackView(View):
 
         return self.record(request, body)
 
+
     def record(self, request, body):
         """
         Apply a verified, well-formed result to its fixture.
@@ -440,6 +444,60 @@ class ResultCallbackView(View):
         return _accepted('recorded')
 
 
+@method_decorator(csrf_exempt, name='dispatch')
+class LiveSnapshotCallbackView(View):
+    """Accept an authenticated, admin-safe snapshot from the game server."""
+
+    http_method_names = ['post']
+
+    def post(self, request):
+        if not settings.GAMELINK_ENABLED:
+            return _reject(request, 404, 'the game link is disabled')
+        try:
+            raw = request.body
+        except RequestDataTooBig:
+            return _reject(request, 413, 'body exceeds DATA_UPLOAD_MAX_MEMORY_SIZE')
+        timestamp = request.headers.get('X-Gamelink-Timestamp', '')
+        nonce = request.headers.get('X-Gamelink-Nonce', '')
+        signature = request.headers.get('X-Gamelink-Signature', '')
+        if (len(raw) > settings.GAMELINK_MAX_BODY or not _TIMESTAMP_PATTERN.match(timestamp)
+                or not _NONCE_PATTERN.match(nonce) or not signature
+                or abs(int(time.time()) - int(timestamp)) > settings.GAMELINK_CLOCK_SKEW
+                or not verify_result_signature(raw, timestamp, nonce, signature)):
+            return _reject(request, 401, 'live snapshot authentication failed')
+        try:
+            body = json.loads(raw.decode('utf-8'))
+            fixture_id = body['fixture_id']
+            tournament_id = body['tournament_id']
+            room_id = body['room_id']
+            sequence = body['sequence']
+            if not all(_is_integer(value) for value in (fixture_id, tournament_id, sequence)):
+                raise ValueError
+            if not isinstance(room_id, str) or not isinstance(body.get('state'), dict):
+                raise ValueError
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+            return _reject(request, 400, 'invalid live snapshot')
+        try:
+            with transaction.atomic():
+                SeenNonce.objects.create(nonce=nonce)
+                link = GameLink.objects.select_for_update().select_related('fixture__mode').get(fixture_id=fixture_id)
+                if link.fixture.mode.tournament_id != tournament_id or link.external_room_id not in ('', room_id):
+                    return _reject(request, 409, 'live snapshot does not match fixture', fixture_id=fixture_id)
+                previous = (link.live_snapshot or {}).get('sequence', -1)
+                if sequence >= previous:
+                    link.live_snapshot = body
+                    link.live_updated_at = timezone.now()
+                    link.external_room_id = room_id
+                    link.status = 'playing' if link.status == 'pending' else link.status
+                    link.save(update_fields=['live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
+                    transaction.on_commit(lambda: _broadcast_live_snapshot(tournament_id, fixture_id, body))
+        except IntegrityError:
+            return _reject(request, 401, 'nonce has been seen before')
+        except GameLink.DoesNotExist:
+            return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
+        return JsonResponse({'status': 'recorded'})
+
+
 def _validate_result(body):
     """
     Return why `body` is not a usable result message, or `None` if it is one.
@@ -492,6 +550,23 @@ def _declared_length(request):
 
 def _accepted(status):
     return JsonResponse({'status': status})
+
+
+def _broadcast_live_snapshot(tournament_id, fixture_id, snapshot):
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f'tournament_live_{tournament_id}',
+        {
+            'type': 'tournament.live',
+            'payload': {
+                'type': 'live_snapshot',
+                'fixture_id': fixture_id,
+                'live': snapshot,
+            },
+        },
+    )
 
 
 def _reject(request, status, reason, fixture_id = None):

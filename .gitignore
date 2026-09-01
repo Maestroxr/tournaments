@@ -1,11 +1,17 @@
 /venv
 /.venv
 /.env
+.env
+.env.*
+!.env.example
+!**/.env.example
 /envvars
 /deployed
 .DS_Store
 *.swp
 /tournaments/db.sqlite3
+*.sqlite3
+*.db
 /tournaments/static-deployed
 /tournaments/logs
 __pycache__

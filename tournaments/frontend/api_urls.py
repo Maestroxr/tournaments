@@ -22,7 +22,10 @@ urlpatterns = [
     path('admin/tournaments/<int:pk>/start', api.api_admin_tournament_start, name='api-admin-tournament-start'),
     path('admin/tournaments/<int:pk>/progress', api.api_admin_tournament_progress, name='api-admin-tournament-progress'),
     path('admin/tournaments/<int:pk>/attendees', api.api_admin_tournament_attendees, name='api-admin-tournament-attendees'),
+    path('admin/wallet-transactions', api.api_admin_wallet_transactions, name='api-admin-wallet-transactions'),
     path('admin/users', api.api_admin_users, name='api-admin-users'),
+    path('admin/transfers', api.api_admin_transfers, name='api-admin-transfers'),
     path('admin/users/<int:pk>', api.api_admin_user_detail, name='api-admin-user-detail'),
+    path('admin/users/<int:pk>/wallet', api.api_admin_user_wallet, name='api-admin-user-wallet'),
     
 ]
