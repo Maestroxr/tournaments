@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import TournamentMetaItem from './TournamentMetaItem.vue'
+import TournamentStatusBadge from './TournamentStatusBadge.vue'
+import UserQuickView from './UserQuickView.vue'
+
 interface Tournament {
   id: number
   name: string
   state: string // draft/open/active/finished
   creator: string | null
+  creator_id: number | null
   participant_count: number
   starts_at: string | null
   min_players: number
@@ -12,35 +17,56 @@ interface Tournament {
   time_control: string
 }
 defineProps<{ tournament: Tournament }>()
-function badgeClass(state: string) {
-  if (state === 'draft') return 'bg-zinc-100 text-zinc-700 border-zinc-200'
-  if (state === 'open') return 'bg-emerald-50 text-emerald-700 border-emerald-200'
-  if (state === 'active') return 'bg-amber-50 text-amber-700 border-amber-200'
-  if (state === 'finished') return 'bg-zinc-900 text-white border-zinc-900'
-  return 'bg-zinc-100 text-zinc-700 border-zinc-200'
-}
+
 function formatDate(s: string | null) {
-  if (!s) return '—'
+  if (!s) return 'Not scheduled yet'
   try {
     const d = new Date(s)
     return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
   } catch { return s }
 }
+
+function playerRange(min: number, max: number | null) {
+  return max === null ? `${min}+ players` : `${min}–${max} players`
+}
+
+function participantMessage(count: number) {
+  if (count === 1) return '1 player has already registered'
+  return `${count} players have already registered`
+}
+
+function primaryActionLabel(state: string) {
+  return state === 'draft' ? 'Edit tournament' : 'Manage tournament'
+}
 </script>
+
 <template>
-  <div class="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition hover:shadow">
-    <div class="mb-2 flex items-start justify-between gap-2">
-      <h3 class="text-base font-semibold text-black">{{ tournament.name }}</h3>
-      <span :class="['rounded-full border px-2 py-0.5 text-xs font-medium', badgeClass(tournament.state)]">{{ tournament.state }}</span>
+  <article class="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:shadow-md">
+    <div class="mb-1 flex items-start justify-between gap-3">
+      <h3 class="text-lg font-semibold leading-tight text-black">{{ tournament.name }}</h3>
+      <TournamentStatusBadge :state="tournament.state" />
     </div>
-    <div class="mb-3 space-y-1 text-xs text-zinc-600">
-      <div><span class="font-medium text-zinc-700">Creator:</span> {{ tournament.creator || '—' }} • {{ tournament.participant_count }} attendees</div>
-      <div><span class="font-medium text-zinc-700">Starts:</span> {{ formatDate(tournament.starts_at) }}</div>
-      <div><span class="font-medium text-zinc-700">Players:</span> {{ tournament.min_players }}–{{ tournament.max_players ?? '∞' }} • {{ tournament.target_points }} pts • {{ tournament.time_control }}</div>
+
+    <p class="mb-4 text-xs text-zinc-500">
+      Created by
+      <UserQuickView :user-id="tournament.creator_id" :username="tournament.creator || 'Unknown user'" />
+    </p>
+
+    <dl class="mb-4 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-zinc-50 p-3 text-sm sm:grid-cols-4">
+      <TournamentMetaItem label="Starts" :value="formatDate(tournament.starts_at)" />
+      <TournamentMetaItem label="Players" :value="playerRange(tournament.min_players, tournament.max_players)" />
+      <TournamentMetaItem label="Match" :value="`Race to ${tournament.target_points}`" />
+      <TournamentMetaItem label="Time control" :value="tournament.time_control" />
+    </dl>
+
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <p class="text-sm text-zinc-600">{{ participantMessage(tournament.participant_count) }}</p>
+      <RouterLink
+        :to="`/tournaments/${tournament.id}${tournament.state === 'draft' ? '?edit=1' : ''}`"
+        class="rounded-lg bg-zinc-900 px-4 py-2 text-center text-sm font-medium text-white hover:bg-black"
+      >
+        {{ primaryActionLabel(tournament.state) }}
+      </RouterLink>
     </div>
-    <div class="flex justify-end gap-2">
-      <RouterLink :to="`/tournaments/${tournament.id}`" class="rounded border border-zinc-300 bg-white px-3 py-1 text-xs font-medium text-black hover:bg-zinc-50">View</RouterLink>
-      <RouterLink :to="`/tournaments/${tournament.id}`" class="rounded bg-zinc-900 px-3 py-1 text-xs font-medium text-white hover:bg-black">Manage</RouterLink>
-    </div>
-  </div>
+  </article>
 </template>

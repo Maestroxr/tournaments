@@ -1,58 +1,284 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { apiFetch } from '@/services/api'
+import AppAlert from '@/components/AppAlert.vue'
+import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
+import UserQuickView from '@/components/UserQuickView.vue'
 
-interface Dashboard {
-  total_tournaments: number
-  total_users: number
-  total_participants: number
-  counts: { drafts: number; open: number; active: number; finished: number }
-  recent_tournaments: { id: number; name: string; published: boolean }[]
-  recent_users: { id: number; username: string; email: string; is_staff: boolean }[]
+type RangeDays = 1 | 7 | 30
+type Severity = 'critical' | 'warning' | 'info'
+
+interface TournamentSummary {
+  id: number
+  name: string
+  state: string
+  starts_at: string | null
+  participant_count: number
+  min_players: number
+  max_players: number | null
 }
-const data = ref<Dashboard | null>(null)
+
+interface ActiveTournament extends TournamentSummary {
+  stage: string
+  round: string
+  pending_matches: number
+}
+
+interface AttentionItem extends TournamentSummary {
+  kind: 'overdue' | 'waiting_players' | 'pending_matches' | 'draft'
+  severity: Severity
+  message: string
+  action_label: string
+  action_to: string
+}
+
+interface KpiValue {
+  value: number
+  context: string
+}
+
+interface DashboardData {
+  updated_at: string
+  range_days: RangeDays
+  kpis: {
+    active: KpiValue
+    upcoming: KpiValue
+    waiting: KpiValue
+    pending_matches: KpiValue
+    new_users: KpiValue
+  }
+  counts: { draft: number; open: number; active: number; finished: number }
+  attention: AttentionItem[]
+  active_tournaments: ActiveTournament[]
+  upcoming_tournaments: TournamentSummary[]
+  recent_users: {
+    id: number
+    username: string
+    email: string
+    is_staff: boolean
+    is_active: boolean
+  }[]
+}
+
+const data = ref<DashboardData | null>(null)
 const loading = ref(true)
 const error = ref('')
-onMounted(async () => {
-  try { data.value = await apiFetch<Dashboard>('/api/admin/dashboard') } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Failed' } finally { loading.value = false }
+const rangeDays = ref<RangeDays>(7)
+const ranges: { value: RangeDays; label: string }[] = [
+  { value: 1, label: 'Today' },
+  { value: 7, label: '7 days' },
+  { value: 30, label: '30 days' },
+]
+
+const kpiCards = computed(() => {
+  if (!data.value) return []
+  return [
+    { key: 'active', label: 'Active tournaments', icon: 'bi-play-circle', to: '/tournaments?state=active', ...data.value.kpis.active },
+    { key: 'upcoming', label: 'Upcoming tournaments', icon: 'bi-calendar-event', to: `/tournaments?view=upcoming&days=${rangeDays.value}`, ...data.value.kpis.upcoming },
+    { key: 'waiting', label: 'Waiting for players', icon: 'bi-people', to: '/tournaments?view=waiting', ...data.value.kpis.waiting },
+    { key: 'pending', label: 'Pending matches', icon: 'bi-hourglass-split', to: '/tournaments?state=active', ...data.value.kpis.pending_matches },
+    { key: 'users', label: 'New users', icon: 'bi-person-plus', to: '/users', ...data.value.kpis.new_users },
+  ]
 })
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    data.value = await apiFetch<DashboardData>(`/api/admin/dashboard?days=${rangeDays.value}`)
+  } catch (caught: unknown) {
+    error.value = caught instanceof Error ? caught.message : 'Failed to load dashboard'
+  } finally {
+    loading.value = false
+  }
+}
+
+async function selectRange(value: RangeDays) {
+  if (rangeDays.value === value) return
+  rangeDays.value = value
+  await load()
+}
+
+function formatDate(value: string | null) {
+  if (!value) return 'Not scheduled'
+  return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+function formatUpdatedAt(value: string) {
+  return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+function severityClass(severity: Severity) {
+  if (severity === 'critical') return 'border-red-200 bg-red-50 text-red-700'
+  if (severity === 'warning') return 'border-amber-200 bg-amber-50 text-amber-800'
+  return 'border-blue-200 bg-blue-50 text-blue-700'
+}
+
+function severityIcon(severity: Severity) {
+  if (severity === 'critical') return 'bi-exclamation-octagon'
+  if (severity === 'warning') return 'bi-exclamation-triangle'
+  return 'bi-info-circle'
+}
+
+onMounted(load)
 </script>
 
 <template>
   <div class="mx-auto w-full max-w-6xl">
-    <h1 class="mb-1 text-2xl font-bold text-black">Dashboard</h1>
-    <p class="mb-6 text-sm text-zinc-600">Overview — tournaments & users</p>
+    <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-bold text-black">Dashboard</h1>
+        <p class="mt-1 text-sm text-zinc-600">Tournament operations at a glance</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <RouterLink to="/users/new" class="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-50">
+          <i class="bi bi-person-plus mr-1" aria-hidden="true"></i>Create user
+        </RouterLink>
+        <RouterLink to="/tournaments/new" class="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-black">
+          <i class="bi bi-plus-lg mr-1" aria-hidden="true"></i>Create tournament
+        </RouterLink>
+      </div>
+    </header>
 
-    <div v-if="loading" class="py-8 text-center text-sm text-zinc-500">Loading…</div>
-    <div v-else-if="error" class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</div>
-    <div v-else-if="data" class="space-y-6">
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div class="rounded-lg border border-zinc-200 bg-white p-4"><div class="text-xs text-zinc-500">Total tournaments</div><div class="text-2xl font-bold text-black">{{ data.total_tournaments }}</div></div>
-        <div class="rounded-lg border border-zinc-200 bg-white p-4"><div class="text-xs text-zinc-500">Total users</div><div class="text-2xl font-bold text-black">{{ data.total_users }}</div></div>
-        <div class="rounded-lg border border-zinc-200 bg-white p-4"><div class="text-xs text-zinc-500">Total participants</div><div class="text-2xl font-bold text-black">{{ data.total_participants }}</div></div>
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-2">
+      <div class="flex gap-1" aria-label="Dashboard time range">
+        <button
+          v-for="range in ranges"
+          :key="range.value"
+          type="button"
+          :class="['rounded-lg px-3 py-1.5 text-sm font-medium transition', rangeDays === range.value ? 'bg-zinc-900 text-white' : 'text-zinc-600 hover:bg-zinc-100 hover:text-black']"
+          :aria-pressed="rangeDays === range.value"
+          @click="selectRange(range.value)"
+        >
+          {{ range.label }}
+        </button>
       </div>
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-3"><div class="text-xs text-zinc-500">Drafts</div><div class="text-xl font-bold text-black">{{ data.counts.drafts }}</div></div>
-        <div class="rounded-lg border border-zinc-200 bg-emerald-50 p-3"><div class="text-xs text-zinc-500">Open</div><div class="text-xl font-bold text-emerald-700">{{ data.counts.open }}</div></div>
-        <div class="rounded-lg border border-zinc-200 bg-amber-50 p-3"><div class="text-xs text-zinc-500">Active</div><div class="text-xl font-bold text-amber-700">{{ data.counts.active }}</div></div>
-        <div class="rounded-lg border border-zinc-200 bg-zinc-900 p-3"><div class="text-xs text-zinc-300">Finished</div><div class="text-xl font-bold text-white">{{ data.counts.finished }}</div></div>
+      <div class="flex items-center gap-3 px-2 text-xs text-zinc-500">
+        <span v-if="data">Updated at {{ formatUpdatedAt(data.updated_at) }}</span>
+        <button type="button" class="inline-flex items-center gap-1 font-medium text-zinc-700 hover:text-black" :disabled="loading" @click="load">
+          <i :class="['bi bi-arrow-clockwise', loading && 'animate-spin']" aria-hidden="true"></i>
+          Refresh
+        </button>
       </div>
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div class="rounded-lg border border-zinc-200 bg-white p-4">
-          <h3 class="mb-2 text-sm font-semibold text-black">Recent tournaments</h3>
-          <ul class="space-y-1 text-sm">
-            <li v-for="t in data.recent_tournaments" :key="t.id" class="flex justify-between"><RouterLink :to="`/tournaments/${t.id}`" class="text-black hover:underline">{{ t.name }}</RouterLink><span :class="['text-xs', t.published ? 'text-emerald-600' : 'text-zinc-500']">{{ t.published ? 'published' : 'draft' }}</span></li>
-            <li v-if="data.recent_tournaments.length===0" class="text-xs text-zinc-500">No tournaments.</li>
-          </ul>
+    </div>
+
+    <AppAlert v-if="error" class="mb-5" type="error" :message="error" />
+    <div v-if="loading && !data" class="grid grid-cols-2 gap-3 lg:grid-cols-5" aria-label="Loading dashboard">
+      <div v-for="index in 5" :key="index" class="h-32 animate-pulse rounded-xl bg-zinc-100"></div>
+    </div>
+
+    <div v-else-if="data" class="space-y-7" aria-live="polite">
+      <section aria-labelledby="kpi-heading">
+        <h2 id="kpi-heading" class="sr-only">Key performance indicators</h2>
+        <div class="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <RouterLink
+            v-for="kpi in kpiCards"
+            :key="kpi.key"
+            :to="kpi.to"
+            class="group rounded-xl border border-zinc-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-sm"
+          >
+            <span class="flex items-start justify-between gap-2">
+              <span class="text-xs font-medium text-zinc-500">{{ kpi.label }}</span>
+              <i :class="['bi text-zinc-400 group-hover:text-zinc-700', kpi.icon]" aria-hidden="true"></i>
+            </span>
+            <span class="mt-2 block text-3xl font-bold tracking-tight text-black">{{ kpi.value }}</span>
+            <span class="mt-1 block text-xs leading-5 text-zinc-500">{{ kpi.context }}</span>
+          </RouterLink>
         </div>
-        <div class="rounded-lg border border-zinc-200 bg-white p-4">
-          <h3 class="mb-2 text-sm font-semibold text-black">Recent users</h3>
-          <ul class="space-y-1 text-sm">
-            <li v-for="u in data.recent_users" :key="u.id" class="flex justify-between"><RouterLink :to="`/users/${u.id}/edit`" class="text-black hover:underline">{{ u.username }}</RouterLink><span :class="['text-xs', u.is_staff ? 'text-zinc-900 font-medium' : 'text-zinc-500']">{{ u.is_staff ? 'staff' : 'user' }}</span></li>
-            <li v-if="data.recent_users.length===0" class="text-xs text-zinc-500">No users.</li>
-          </ul>
+      </section>
+
+      <section aria-labelledby="attention-heading">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 id="attention-heading" class="text-lg font-semibold text-black">Requires attention</h2>
+            <p class="text-sm text-zinc-500">Items that may block tournament progress</p>
+          </div>
+          <span class="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{{ data.attention.length }} items</span>
         </div>
+        <div v-if="data.attention.length" class="overflow-hidden rounded-xl border border-zinc-200 bg-white">
+          <div v-for="item in data.attention" :key="`${item.kind}-${item.id}`" class="flex flex-col gap-3 border-b border-zinc-100 p-4 last:border-0 sm:flex-row sm:items-center">
+            <span :class="['inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border', severityClass(item.severity)]">
+              <i :class="['bi', severityIcon(item.severity)]" aria-hidden="true"></i>
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <RouterLink :to="`/tournaments/${item.id}`" class="truncate font-semibold text-black hover:underline">{{ item.name }}</RouterLink>
+                <TournamentStatusBadge :state="item.state" />
+              </div>
+              <p class="mt-0.5 text-sm text-zinc-600">{{ item.message }}</p>
+            </div>
+            <RouterLink :to="item.action_to" class="shrink-0 rounded-lg border border-zinc-300 px-3 py-1.5 text-center text-sm font-medium text-zinc-800 hover:bg-zinc-50">
+              {{ item.action_label }}
+            </RouterLink>
+          </div>
+        </div>
+        <div v-else class="rounded-xl border border-dashed border-zinc-300 bg-zinc-50 px-4 py-8 text-center">
+          <i class="bi bi-check-circle text-2xl text-emerald-600" aria-hidden="true"></i>
+          <p class="mt-2 font-medium text-zinc-800">Everything is on track</p>
+          <p class="text-sm text-zinc-500">There are no tournaments requiring attention.</p>
+        </div>
+      </section>
+
+      <div class="grid grid-cols-1 gap-5 lg:grid-cols-3">
+        <section class="lg:col-span-2" aria-labelledby="active-heading">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 id="active-heading" class="text-lg font-semibold text-black">Active tournaments</h2>
+            <RouterLink to="/tournaments?state=active" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline">View all</RouterLink>
+          </div>
+          <div v-if="data.active_tournaments.length" class="grid gap-3 sm:grid-cols-2">
+            <article v-for="tournament in data.active_tournaments" :key="tournament.id" class="rounded-xl border border-zinc-200 bg-white p-4">
+              <div class="flex items-start justify-between gap-2">
+                <RouterLink :to="`/tournaments/${tournament.id}`" class="font-semibold text-black hover:underline">{{ tournament.name }}</RouterLink>
+                <TournamentStatusBadge :state="tournament.state" />
+              </div>
+              <p class="mt-3 text-sm font-medium text-zinc-800">{{ tournament.stage }} · {{ tournament.round }}</p>
+              <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                <span><i class="bi bi-people mr-1" aria-hidden="true"></i>{{ tournament.participant_count }} players</span>
+                <span><i class="bi bi-hourglass-split mr-1" aria-hidden="true"></i>{{ tournament.pending_matches }} pending</span>
+              </div>
+              <RouterLink :to="`/tournaments/${tournament.id}/progress`" class="mt-4 block rounded-lg bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black">View progress</RouterLink>
+            </article>
+          </div>
+          <div v-else class="rounded-xl border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">
+            No active tournaments.
+            <RouterLink to="/tournaments/new" class="ml-1 font-medium text-zinc-900 hover:underline">Create one</RouterLink>
+          </div>
+        </section>
+
+        <section aria-labelledby="upcoming-heading">
+          <h2 id="upcoming-heading" class="mb-3 text-lg font-semibold text-black">Upcoming</h2>
+          <div class="rounded-xl border border-zinc-200 bg-white p-4">
+            <ul v-if="data.upcoming_tournaments.length" class="space-y-4">
+              <li v-for="tournament in data.upcoming_tournaments" :key="tournament.id" class="border-b border-zinc-100 pb-4 last:border-0 last:pb-0">
+                <RouterLink :to="`/tournaments/${tournament.id}`" class="font-medium text-black hover:underline">{{ tournament.name }}</RouterLink>
+                <p class="mt-1 text-xs text-zinc-500">{{ formatDate(tournament.starts_at) }}</p>
+                <p class="mt-1 text-xs text-zinc-500">{{ tournament.participant_count }}/{{ tournament.min_players }} minimum players</p>
+              </li>
+            </ul>
+            <div v-else class="py-6 text-center text-sm text-zinc-500">Nothing scheduled in this range.</div>
+          </div>
+        </section>
       </div>
+
+      <section aria-labelledby="users-heading">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 id="users-heading" class="text-lg font-semibold text-black">Recently added users</h2>
+          <RouterLink to="/users" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline">View all</RouterLink>
+        </div>
+        <div class="overflow-visible rounded-xl border border-zinc-200 bg-white">
+          <div v-for="user in data.recent_users" :key="user.id" class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3 last:border-0">
+            <div>
+              <UserQuickView :user-id="user.id" :username="user.username" />
+              <p class="mt-0.5 text-xs text-zinc-500">{{ user.email || 'No email address' }}</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span :class="['rounded-full px-2 py-0.5 text-xs', user.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700']">{{ user.is_active ? 'Active' : 'Inactive' }}</span>
+              <span v-if="user.is_staff" class="rounded-full bg-zinc-900 px-2 py-0.5 text-xs text-white">Staff</span>
+            </div>
+          </div>
+          <div v-if="!data.recent_users.length" class="px-4 py-8 text-center text-sm text-zinc-500">No users yet.</div>
+        </div>
+      </section>
     </div>
   </div>
 </template>

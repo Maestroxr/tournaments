@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.http import JsonResponse
@@ -6,6 +7,9 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, Q
+from django.db import transaction
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from gamelink.views import playable_seat
 from tournaments import models
@@ -83,6 +87,7 @@ def _serialize_tournament(t, request):
         "status": t.state,  # alias for Vue frontend
         "published": t.published,
         "creator": t.creator.username if t.creator else None,
+        "creator_id": t.creator_id,
         "is_creator": bool(request.user.is_authenticated and t.creator_id == request.user.id),
         "is_joined": is_joined,
         "participant_count": t.participations.count(),
@@ -96,6 +101,65 @@ def _serialize_tournament(t, request):
         "prizeMoney": 0,
         "capacity": t.max_players or 8,
     }
+
+
+def _validated_tournament_metadata(data):
+    """Validate metadata shared by tournament creation and draft updates."""
+    errors = {}
+    cleaned = {}
+    try:
+        cleaned["min_players"] = int(data.get("min_players", 6))
+        if cleaned["min_players"] < 2:
+            errors["min_players"] = "Must be at least 2."
+    except (TypeError, ValueError):
+        errors["min_players"] = "Must be a whole number."
+
+    max_players = data.get("max_players")
+    if max_players in (None, ""):
+        cleaned["max_players"] = None
+    else:
+        try:
+            cleaned["max_players"] = int(max_players)
+            if cleaned["max_players"] < 2:
+                errors["max_players"] = "Must be at least 2."
+            elif "min_players" in cleaned and cleaned["max_players"] < cleaned["min_players"]:
+                errors["max_players"] = "Must be greater than or equal to minimum players."
+        except (TypeError, ValueError):
+            errors["max_players"] = "Must be a whole number."
+
+    try:
+        cleaned["target_points"] = int(data.get("target_points", 5))
+        if cleaned["target_points"] < 1:
+            errors["target_points"] = "Must be at least 1."
+    except (TypeError, ValueError):
+        errors["target_points"] = "Must be a whole number."
+
+    time_control = data.get("time_control", "normal")
+    if time_control not in {choice[0] for choice in models.Tournament.TIME_CHOICES}:
+        errors["time_control"] = "Invalid time control."
+    else:
+        cleaned["time_control"] = time_control
+
+    starts_at = data.get("starts_at")
+    if starts_at in (None, ""):
+        cleaned["starts_at"] = None
+    elif not isinstance(starts_at, str) or parse_datetime(starts_at) is None:
+        errors["starts_at"] = "Invalid date and time."
+    else:
+        parsed_starts_at = parse_datetime(starts_at)
+        if timezone.is_naive(parsed_starts_at):
+            parsed_starts_at = timezone.make_aware(parsed_starts_at)
+        if parsed_starts_at < timezone.now():
+            errors["starts_at"] = "Must be in the future."
+        else:
+            cleaned["starts_at"] = parsed_starts_at
+    return cleaned, errors
+
+
+def _capacity_error(tournament):
+    if tournament.max_players is not None and tournament.participations.count() >= tournament.max_players:
+        return JsonResponse({"detail": f"Tournament is full ({tournament.max_players} players)."}, status=412)
+    return None
 
 
 @ensure_csrf_cookie
@@ -194,6 +258,9 @@ def api_join(request, pk):
     if t.state != "open":
         return JsonResponse({"detail": f"Cannot join, state={t.state}"}, status=412)
     if not t.participations.filter(participant__user=request.user).exists():
+        capacity_error = _capacity_error(t)
+        if capacity_error:
+            return capacity_error
         participant, _ = models.Participant.objects.get_or_create(
             user=request.user, defaults={"name": request.user.username})
         models.Participation.objects.create(
@@ -248,17 +315,9 @@ def api_admin_tournaments(request):
             data["definition"] = yaml.safe_dump(tmpl)
         except Exception as e:
             return JsonResponse({"detail": str(e)}, status=400)
-    # Pull easy fields for model (keep YAML engine)
-    extra_kwargs = {}
-    for field in ["starts_at", "min_players", "max_players", "target_points", "time_control"]:
-        if field in data and data[field] not in (None, ""):
-            val = data[field]
-            if field == "starts_at" and isinstance(val, str):
-                from django.utils.dateparse import parse_datetime
-                val = parse_datetime(val)
-                if val is None:
-                    return JsonResponse({"detail": "Invalid starts_at"}, status=400)
-            extra_kwargs[field] = val
+    extra_kwargs, metadata_errors = _validated_tournament_metadata(data)
+    if metadata_errors:
+        return JsonResponse({"errors": metadata_errors}, status=400)
     form = CreateTournamentForm(data)
     # CreateTournamentForm expects definition as YAML string; allow dict or string
     if isinstance(data.get("definition"), dict):
@@ -271,8 +330,7 @@ def api_admin_tournaments(request):
     # Apply easy fields after creation (keep YAML intact)
     for k, v in extra_kwargs.items():
         setattr(tournament, k, v)
-    if extra_kwargs:
-        tournament.save(update_fields=list(extra_kwargs.keys()))
+    tournament.save(update_fields=list(extra_kwargs.keys()))
     return JsonResponse(_serialize_tournament(tournament, request), status=201)
 
 
@@ -286,8 +344,20 @@ def api_admin_tournament_detail(request, pk):
     if request.method == "GET":
         data = _serialize_tournament(t, request)
         data["definition"] = t.definition
-        data["participants"] = list(
-            t.participations.values_list("participant__name", flat=True))
+        data["participants"] = [
+            {
+                "id": participant["participant__id"],
+                "name": participant["participant__name"],
+                "user_id": participant["participant__user__id"],
+                "username": participant["participant__user__username"],
+            }
+            for participant in t.participations.values(
+                "participant__id",
+                "participant__name",
+                "participant__user__id",
+                "participant__user__username",
+            )
+        ]
         return JsonResponse(data)
     if request.method == "DELETE":
         if t.state != "draft":
@@ -308,6 +378,9 @@ def api_admin_tournament_detail(request, pk):
             data["definition"] = yaml.safe_dump(tmpl)
         except Exception as e:
             return JsonResponse({"detail": str(e)}, status=400)
+    metadata, metadata_errors = _validated_tournament_metadata(data)
+    if metadata_errors:
+        return JsonResponse({"errors": metadata_errors}, status=400)
     form = CreateTournamentForm(data)
     if isinstance(data.get("definition"), dict):
         import yaml
@@ -315,18 +388,18 @@ def api_admin_tournament_detail(request, pk):
         form = CreateTournamentForm(data)
     if not form.is_valid():
         return JsonResponse({"errors": form.errors}, status=400)
-    t.delete()
-    tournament = form.create_tournament(request)
-    # also apply metadata fields on re-create
-    for field in ["starts_at", "min_players", "max_players", "target_points", "time_control"]:
-        if field in data and data[field] not in (None, ""):
-            val = data[field]
-            if field == "starts_at" and isinstance(val, str):
-                from django.utils.dateparse import parse_datetime
-                val = parse_datetime(val)
-            setattr(tournament, field, val)
-    tournament.save()
-    return JsonResponse(_serialize_tournament(tournament, request))
+    with transaction.atomic():
+        replacement = form.create_tournament(request)
+        t.stages.non_polymorphic().all().delete()
+        replacement.stages.non_polymorphic().update(tournament_id=t.id)
+        t.name = replacement.name
+        t.definition = replacement.definition
+        t.podium_spec = replacement.podium_spec
+        for field, value in metadata.items():
+            setattr(t, field, value)
+        replacement.delete()
+        t.save()
+    return JsonResponse(_serialize_tournament(t, request))
 
 
 @csrf_exempt
@@ -388,6 +461,9 @@ def api_admin_tournament_attendees(request, pk):
             data = json.loads(request.body or "{}")
         except json.JSONDecodeError:
             return JsonResponse({"detail": "Invalid JSON"}, status=400)
+        capacity_error = _capacity_error(t)
+        if capacity_error:
+            return capacity_error
         # add single user or virtual name
         if data.get("user_id"):
             try:
@@ -447,8 +523,9 @@ def api_admin_tournament_progress(request, pk):
     if t.state == "open":
         # if t.creator and t.creator_id != request.user.id:
         #     return JsonResponse({"detail": "Only creator can start"}, status=403)
-        if t.participations.count() < 2:
-            return JsonResponse({"detail": "Need at least 2 attendees"}, status=412)
+        required = t.min_players
+        if t.participations.count() < required:
+            return JsonResponse({"detail": f"Need at least {required} attendees"}, status=412)
         from django.core.exceptions import ValidationError
         try:
             t.test()
@@ -637,8 +714,7 @@ def api_admin_tournament_start(request, pk):
         return JsonResponse({"detail": f"Cannot start, state={t.state}"}, status=412)
     # if t.creator and t.creator_id != request.user.id:
     #     return JsonResponse({"detail": "Only creator can start"}, status=403)
-    # Allow 2-player tournaments if min_players==2 (your case), otherwise require 3 for engine validation
-    required = 2 if getattr(t, "min_players", 6) == 2 else 3
+    required = t.min_players
     if t.participations.count() < required:
         return JsonResponse({"detail": f"Need at least {required} attendees (you have {t.participations.count()})"}, status=412)
     from django.core.exceptions import ValidationError
@@ -657,25 +733,150 @@ def api_admin_dashboard(request):
     err = _require_staff(request)
     if err:
         return err
-    qs = models.Tournament.objects
-    published_qs = qs.filter(published=True).annotate(
-        fixtures=Count('stages__fixtures'),
-        podium_size=Count('participations', filter=Q(
-            participations__podium_position__isnull=False))
+
+    try:
+        days = int(request.GET.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    if days not in {1, 7, 30}:
+        days = 7
+
+    now = timezone.now()
+    period_start = now - timedelta(days=days)
+    previous_start = period_start - timedelta(days=days)
+    period_end = now + timedelta(days=days)
+    tournaments = list(
+        models.Tournament.objects
+        .prefetch_related("participations", "stages__fixtures")
+        .order_by("starts_at", "-id")
     )
-    counts = {
-        'drafts': qs.filter(published=False).count(),
-        'open': published_qs.filter(fixtures=0).count(),
-        'active': published_qs.filter(fixtures__gte=1, podium_size=0).count(),
-        'finished': published_qs.filter(podium_size__gte=1).count(),
-    }
+
+    by_state = {"draft": [], "open": [], "active": [], "finished": []}
+    for tournament in tournaments:
+        by_state[tournament.state].append(tournament)
+
+    def tournament_summary(tournament):
+        participant_count = tournament.participations.count()
+        return {
+            "id": tournament.id,
+            "name": tournament.name,
+            "state": tournament.state,
+            "starts_at": tournament.starts_at.isoformat() if tournament.starts_at else None,
+            "participant_count": participant_count,
+            "min_players": tournament.min_players,
+            "max_players": tournament.max_players,
+        }
+
+    waiting = [
+        tournament for tournament in by_state["open"]
+        if tournament.participations.count() < tournament.min_players
+    ]
+    upcoming = [
+        tournament for tournament in by_state["open"]
+        if tournament.starts_at and now <= tournament.starts_at <= period_end
+    ]
+
+    pending_match_count = 0
+    active_tournaments = []
+    for tournament in by_state["active"]:
+        stage = tournament.current_stage
+        current_fixtures = list(stage.current_fixtures or []) if stage else []
+        pending = sum(
+            1 for fixture in current_fixtures
+            if fixture.player1_id and fixture.player2_id and fixture.score1 is None
+        )
+        pending_match_count += pending
+        stage_name = stage.name or stage.identifier if stage else "Tournament"
+        round_name = stage.get_level_name(stage.current_level) if stage else None
+        summary = tournament_summary(tournament)
+        summary.update({
+            "stage": stage_name,
+            "round": round_name or "Current round",
+            "pending_matches": pending,
+        })
+        active_tournaments.append(summary)
+
+    attention = []
+    for tournament in by_state["open"]:
+        participant_count = tournament.participations.count()
+        missing = max(tournament.min_players - participant_count, 0)
+        if tournament.starts_at and tournament.starts_at < now:
+            attention.append({
+                **tournament_summary(tournament),
+                "kind": "overdue",
+                "severity": "critical",
+                "message": "Start time has passed",
+                "action_label": "Review tournament",
+                "action_to": f"/tournaments/{tournament.id}",
+            })
+        elif missing:
+            attention.append({
+                **tournament_summary(tournament),
+                "kind": "waiting_players",
+                "severity": "warning",
+                "message": f"Needs {missing} more player{'s' if missing != 1 else ''}",
+                "action_label": "Manage players",
+                "action_to": f"/tournaments/{tournament.id}/attendees",
+            })
+
+    for tournament in active_tournaments:
+        if tournament["pending_matches"]:
+            attention.append({
+                **tournament,
+                "kind": "pending_matches",
+                "severity": "warning",
+                "message": f"{tournament['pending_matches']} match{'es' if tournament['pending_matches'] != 1 else ''} waiting for results",
+                "action_label": "View progress",
+                "action_to": f"/tournaments/{tournament['id']}/progress",
+            })
+
+    for tournament in by_state["draft"][:3]:
+        attention.append({
+            **tournament_summary(tournament),
+            "kind": "draft",
+            "severity": "info",
+            "message": "Draft has not been published",
+            "action_label": "Continue editing",
+            "action_to": f"/tournaments/{tournament.id}?edit=1",
+        })
+
+    severity_order = {"critical": 0, "warning": 1, "info": 2}
+    attention.sort(key=lambda item: (severity_order[item["severity"]], item["id"]))
+
+    current_new_users = User.objects.filter(date_joined__gte=period_start).count()
+    previous_new_users = User.objects.filter(
+        date_joined__gte=previous_start,
+        date_joined__lt=period_start,
+    ).count()
+    new_user_delta = current_new_users - previous_new_users
+    active_attention = sum(1 for item in attention if item["kind"] == "pending_matches")
+    total_missing_players = sum(
+        tournament.min_players - tournament.participations.count()
+        for tournament in waiting
+    )
+
     return JsonResponse({
-        'total_tournaments': qs.count(),
-        'total_users': User.objects.count(),
-        'total_participants': models.Participant.objects.count(),
-        'counts': counts,
-        'recent_tournaments': list(qs.order_by('-id').values('id', 'name', 'published')[:5]),
-        'recent_users': list(User.objects.order_by('-id').values('id', 'username', 'email', 'is_staff')[:5]),
+        "updated_at": now.isoformat(),
+        "range_days": days,
+        "kpis": {
+            "active": {"value": len(by_state["active"]), "context": f"{active_attention} require attention"},
+            "upcoming": {"value": len(upcoming), "context": f"In the next {days} day{'s' if days != 1 else ''}"},
+            "waiting": {"value": len(waiting), "context": f"{total_missing_players} players still needed"},
+            "pending_matches": {"value": pending_match_count, "context": "Waiting for automatic results"},
+            "new_users": {
+                "value": current_new_users,
+                "context": f"{new_user_delta:+d} vs previous period",
+            },
+        },
+        "counts": {state: len(items) for state, items in by_state.items()},
+        "attention": attention[:8],
+        "active_tournaments": active_tournaments[:6],
+        "upcoming_tournaments": [tournament_summary(item) for item in upcoming[:6]],
+        "recent_users": list(
+            User.objects.order_by("-date_joined").values(
+                "id", "username", "email", "is_staff", "is_active"
+            )[:5]
+        ),
     })
 
 

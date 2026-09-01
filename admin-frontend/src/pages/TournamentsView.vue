@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { apiFetch } from '@/services/api'
 import TournamentCard from '@/components/TournamentCard.vue'
 import SearchBar from '@/components/SearchBar.vue'
@@ -9,6 +10,7 @@ interface Tournament {
   name: string
   state: string
   creator: string | null
+  creator_id: number | null
   participant_count: number
   starts_at: string | null
   min_players: number
@@ -16,9 +18,15 @@ interface Tournament {
   target_points: number
   time_control: string
 }
+const route = useRoute()
 const tournaments = ref<Tournament[]>([])
 const q = ref('')
-const stateFilter = ref<string>('all')
+const states = ['all', 'draft', 'open', 'active', 'finished'] as const
+type TournamentStateFilter = typeof states[number]
+const requestedState = String(route.query.state ?? 'all')
+const stateFilter = ref<TournamentStateFilter>(
+  states.includes(requestedState as TournamentStateFilter) ? requestedState as TournamentStateFilter : 'all',
+)
 const loading = ref(false)
 const error = ref('')
 
@@ -40,17 +48,40 @@ onMounted(load)
 watch(stateFilter, () => {}) // filter is client-side
 
 const filtered = computed(() => {
-  if (stateFilter.value === 'all') return tournaments.value
-  return tournaments.value.filter((t) => t.state === stateFilter.value)
+  let result = tournaments.value
+  if (stateFilter.value !== 'all') {
+    result = result.filter((t) => t.state === stateFilter.value)
+  }
+
+  const view = String(route.query.view ?? '')
+  if (view === 'waiting') {
+    result = result.filter((t) => t.state === 'open' && t.participant_count < t.min_players)
+  }
+  if (view === 'upcoming') {
+    const parsedDays = Number(route.query.days ?? 7)
+    const days = [1, 7, 30].includes(parsedDays) ? parsedDays : 7
+    const now = Date.now()
+    const end = now + days * 24 * 60 * 60 * 1000
+    result = result.filter((t) => {
+      if (t.state !== 'open' || !t.starts_at) return false
+      const startsAt = new Date(t.starts_at).getTime()
+      return startsAt >= now && startsAt <= end
+    })
+  }
+  return result
 })
 
-const states = ['all', 'draft', 'open', 'active', 'finished'] as const
+const filteredLabel = computed(() => {
+  if (route.query.view === 'waiting') return 'Waiting for players'
+  if (route.query.view === 'upcoming') return `Upcoming in the next ${route.query.days ?? 7} days`
+  return ''
+})
 </script>
 
 <template>
   <div class="mx-auto w-full max-w-6xl">
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-2xl font-bold text-black">Tournaments</h1>
+      <div><h1 class="text-2xl font-bold text-black">Tournaments</h1><p v-if="filteredLabel" class="mt-1 text-sm text-zinc-500">{{ filteredLabel }}</p></div>
       <RouterLink to="/tournaments/new" class="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Create Tournament</RouterLink>
     </div>
 

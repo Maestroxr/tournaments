@@ -1,192 +1,140 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import AppInput from '@/components/AppInput.vue'
+import AppAlert from '@/components/AppAlert.vue'
 import TournamentMetaFields from '@/components/TournamentMetaFields.vue'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 
 const router = useRouter()
 const name = ref('')
-const template = ref<'division' | 'knockout' | 'groups-knockout'>('division')
-const starts_date = ref('')
-const starts_time = ref('')
-const starts_at = computed(() => (starts_date.value && starts_time.value ? `${starts_date.value}T${starts_time.value}` : starts_date.value ? `${starts_date.value}T00:00` : ''))
-const min_players = ref(6)
-const max_players = ref<number | ''>('')
-const target_points = ref(5)
-const time_control = ref<string>('normal')
+const template = ref<'division' | 'knockout' | 'groups-knockout'>('knockout')
+const startsDate = ref('')
+const startsTime = ref('')
+const startsAt = computed(() => startsDate.value ? `${startsDate.value}T${startsTime.value || '00:00'}` : '')
+const minPlayers = ref(6)
+const maxPlayers = ref<number | ''>('')
+const previewPlayers = ref(6)
+const targetPoints = ref(5)
+const timeControl = ref('normal')
 const error = ref('')
+const submitted = ref(false)
 const loading = ref(false)
 
 const templateOptions = [
-  { id: 'division', label: 'Division', desc: 'Round-robin, all play all', icon: '⊞' },
-  { id: 'knockout', label: 'Knockout', desc: 'Single elimination', icon: '🏆' },
-  { id: 'groups-knockout', label: 'Groups → Knockout', desc: 'Preliminaries + Main Round', icon: '▦' },
+  { id: 'knockout', label: 'Knockout', description: 'One loss eliminates a player.', bestFor: 'Fast, decisive events', icon: '🏆' },
+  { id: 'division', label: 'League', description: 'Every player meets every other player.', bestFor: 'Fair ranking, more games', icon: '⊞' },
+  { id: 'groups-knockout', label: 'Groups + Knockout', description: 'Group play followed by elimination rounds.', bestFor: 'Larger events', icon: '▦' },
 ] as const
 
-const preview = computed(() => {
-  const n = max_players.value === '' || max_players.value === null ? Number(min_players.value) : Number(max_players.value)
-  const roundsFor = (players: number) => Math.ceil(Math.log2(Math.max(2, players)))
-  const roundsText = (players: number, mode: string) => {
-    if (mode === 'division') return `${Math.max(0, players - 1)} rounds (round-robin)`
-    return `${roundsFor(players)} rounds`
-  }
-  if (template.value === 'division') {
-    const r = n ? roundsText(n, 'division') : '— rounds'
-    return {
-      stages: [{ id: 'division', name: 'Division', mode: `division • ${r}` }],
-      podium: ['1st Division', '2nd Division', '3rd Division'],
-      note: `Division play. ${r}. Played by: All attendees`,
-    }
-  }
-  if (template.value === 'knockout') {
-    const r = n ? roundsText(n, 'knockout') : '— rounds'
-    // 4 players = 2 rounds (SF + Final), 8 = 3, 16 = 4
-    return {
-      stages: [{ id: 'main_round', name: 'Main Round', mode: `knockout • ${r}` }],
-      podium: ['1st Main Round', '2nd Main Round'],
-      note: `Single elimination • ${r}${n ? ` for ${n} players` : ''}`,
-    }
-  }
-  return {
-    stages: [
-      { id: 'preliminaries', name: 'Preliminaries', mode: `groups (3-4 per group)` },
-      { id: 'main_round', name: 'Main Round', mode: `knockout • ${n ? roundsText(n, 'knockout') + ' total' : ''}` },
-    ],
-    podium: ['1st Main Round', '2nd Main Round'],
-    note: `Preliminaries → Main Round ${n ? `• ${roundsText(n, 'knockout')} total` : ''}`,
-  }
-})
-
 const fieldErrors = computed(() => {
-  const errs: Record<string, string> = {}
-  const min = Number(min_players.value)
-  const max = max_players.value === '' || max_players.value === null ? null : Number(max_players.value)
-  const pts = Number(target_points.value)
-  if (!min || min < 2) errs.min_players = 'Min ≥2'
-  if (max !== null && (isNaN(max) || max < 2)) errs.max_players = 'Max ≥2'
-  if (max !== null && min && max < min) errs.max_players = 'Max must be ≥ min'
-  if (!pts || pts < 1) errs.target_points = 'Points ≥1'
-  if (starts_at.value) {
-    const d = new Date(starts_at.value)
-    if (isNaN(d.getTime())) errs.starts_at = 'Invalid date'
-    else if (d.getTime() < Date.now() - 60000) errs.starts_at = 'Starts at must be future'
+  const errors: Record<string, string> = {}
+  const min = Number(minPlayers.value)
+  const max = maxPlayers.value === '' ? null : Number(maxPlayers.value)
+  if (!name.value.trim()) errors.name = 'Enter a tournament name.'
+  if (!Number.isInteger(min) || min < 2) errors.min_players = 'Minimum must be at least 2.'
+  if (max !== null && (!Number.isInteger(max) || max < 2)) errors.max_players = 'Maximum must be at least 2.'
+  if (max !== null && max < min) errors.max_players = 'Maximum cannot be lower than minimum.'
+  if (!Number.isInteger(Number(targetPoints.value)) || Number(targetPoints.value) < 1) errors.target_points = 'Match length must be at least 1 point.'
+  if (startsAt.value) {
+    const date = new Date(startsAt.value)
+    if (Number.isNaN(date.getTime())) errors.starts_at = 'Enter a valid date and time.'
+    else if (date.getTime() < Date.now() - 60_000) errors.starts_at = 'Start time must be in the future.'
   }
-  if (!name.value.trim()) errs.name = 'Name required'
-  return errs
+  return errors
 })
-const hasFieldErrors = computed(() => Object.keys(fieldErrors.value).length > 0)
+const visibleErrors = computed(() => submitted.value ? fieldErrors.value : {})
+const selectedFormat = computed(() => templateOptions.find(option => option.id === template.value)!)
+const effectivePreviewPlayers = computed(() => {
+  const min = Math.max(2, Number(minPlayers.value) || 2)
+  const max = maxPlayers.value === '' ? Math.max(min, 64) : Math.max(min, Number(maxPlayers.value) || min)
+  return Math.min(max, Math.max(min, Number(previewPlayers.value) || min))
+})
+watch([minPlayers, maxPlayers], () => { previewPlayers.value = effectivePreviewPlayers.value })
+
+function roundNames(rounds: number) {
+  const names = ['Final', 'Semifinals', 'Quarterfinals', 'Round of 16', 'Round of 32', 'Round of 64']
+  return Array.from({ length: rounds }, (_, index) => names[rounds - index - 1] || `Round ${index + 1}`)
+}
+
+const preview = computed(() => {
+  const players = effectivePreviewPlayers.value
+  if (template.value === 'division') return { players, rounds: Math.max(1, players - 1), matches: players * (players - 1) / 2, byes: 0, stages: ['League standings'] }
+  if (template.value === 'groups-knockout') {
+    const knockoutPlayers = Math.max(2, 2 ** Math.floor(Math.log2(players)))
+    const rounds = Math.ceil(Math.log2(knockoutPlayers))
+    return { players, rounds, matches: null, byes: 0, stages: ['Group stage', ...roundNames(rounds)] }
+  }
+  const rounds = Math.ceil(Math.log2(Math.max(2, players)))
+  return { players, rounds, matches: players - 1, byes: 2 ** rounds - players, stages: roundNames(rounds) }
+})
+const playerRangeText = computed(() => maxPlayers.value === '' ? `The tournament may start with ${minPlayers.value} or more registered players.` : `The tournament may start with any number between ${minPlayers.value} and ${maxPlayers.value}.`)
 
 async function create() {
+  submitted.value = true
   error.value = ''
-  if (hasFieldErrors.value) {
-    error.value = Object.values(fieldErrors.value).join(' • ')
-    return
-  }
+  if (Object.keys(fieldErrors.value).length) { error.value = 'Review the highlighted fields before creating the draft.'; return }
   loading.value = true
   try {
-    await apiFetch('/api/admin/tournaments', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: name.value.trim(),
-        template: template.value,
-        starts_at: starts_at.value || null,
-        min_players: Number(min_players.value) || 6,
-        max_players: max_players.value === '' ? null : Number(max_players.value),
-        target_points: Number(target_points.value) || 5,
-        time_control: time_control.value,
-      }),
+    const created = await apiFetch<{ id: number }>('/api/admin/tournaments', {
+      method: 'POST', body: JSON.stringify({ name: name.value.trim(), template: template.value, starts_at: startsAt.value || null, min_players: Number(minPlayers.value), max_players: maxPlayers.value === '' ? null : Number(maxPlayers.value), target_points: Number(targetPoints.value), time_control: timeControl.value }),
     })
-    router.push('/tournaments')
-  } catch (e: unknown) {
-    if (e instanceof Error) {
-      try {
-        const body = JSON.parse((e as { body?: string }).body || '{}')
-        error.value = body.errors ? JSON.stringify(body.errors) : body.detail || e.message
-      } catch {
-        error.value = e.message
-      }
-    } else {
-      error.value = 'Failed to create tournament'
-    }
-  } finally {
-    loading.value = false
-  }
+    router.push({ name: 'tournament-detail', params: { id: created.id } })
+  } catch (caught: unknown) { error.value = formatApiError(caught) } finally { loading.value = false }
 }
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl">
-    <h1 class="mb-1 text-2xl font-bold text-black">Create Tournament</h1>
-    <p class="mb-6 text-sm text-zinc-600">YAML still powers the engine — but you configure knockout, times, players & points here.</p>
-    <form @submit.prevent="create" class="space-y-6">
-      <AppInput v-model="name" label="Tournament name" placeholder="e.g. Spring Championship" :error="error" />
+  <div class="mx-auto w-full max-w-4xl">
+    <header class="mb-7"><h1 class="text-2xl font-bold text-black">Create a tournament</h1><p class="mt-1 text-sm text-zinc-600">Set the rules, review what will happen, then create a private draft.</p></header>
+    <AppAlert v-if="error" class="mb-5" type="error" :message="error" dismissible @close="error = ''" />
+    <form class="space-y-5" @submit.prevent="create">
+      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+        <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">1</span><div><h2 class="font-semibold text-black">Basics</h2><p class="text-xs text-zinc-500">Name and schedule</p></div></div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <AppInput v-model="name" label="Tournament name" placeholder="e.g. Jerusalem Open" :error="visibleErrors.name" />
+          <div class="grid grid-cols-2 gap-3">
+            <label class="block"><span class="mb-1 block text-sm font-medium">Date <span class="font-normal text-zinc-400">(optional)</span></span><input v-model="startsDate" type="date" :class="['w-full rounded border px-3 py-2 text-sm', visibleErrors.starts_at ? 'border-red-500' : 'border-zinc-300']" /></label>
+            <label class="block"><span class="mb-1 block text-sm font-medium">Time</span><input v-model="startsTime" type="time" :disabled="!startsDate" class="w-full rounded border border-zinc-300 px-3 py-2 text-sm disabled:bg-zinc-100" /><span v-if="visibleErrors.starts_at" class="mt-1 block text-xs text-red-600">{{ visibleErrors.starts_at }}</span></label>
+          </div>
+        </div>
+      </section>
 
-      <div>
-        <label class="mb-2 block text-sm font-medium text-zinc-700">Knockout / Mode Template</label>
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <button
-            v-for="opt in templateOptions"
-            :key="opt.id"
-            type="button"
-            :class="[
-              'rounded-lg border p-3 text-left transition',
-              template === opt.id ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-200 bg-white hover:border-zinc-300 text-black',
-            ]"
-            @click="template = opt.id as typeof template"
-          >
-            <div class="text-sm font-semibold">{{ opt.icon }} {{ opt.label }}</div>
-            <div :class="['text-xs', template === opt.id ? 'text-zinc-300' : 'text-zinc-500']">{{ opt.desc }}</div>
+      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+        <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">2</span><div><h2 class="font-semibold text-black">Tournament format</h2><p class="text-xs text-zinc-500">How players advance and are eliminated</p></div></div>
+        <div class="grid gap-3 sm:grid-cols-3">
+          <button v-for="option in templateOptions" :key="option.id" type="button" :class="['rounded-xl border p-4 text-left transition', template === option.id ? 'border-emerald-600 bg-emerald-50 ring-1 ring-emerald-600' : 'border-zinc-200 hover:border-zinc-400']" @click="template = option.id">
+            <div class="mb-2 flex items-center justify-between"><span class="text-xl">{{ option.icon }}</span><span v-if="template === option.id" class="text-xs font-semibold text-emerald-700">Selected</span></div><div class="font-semibold text-black">{{ option.label }}</div><p class="mt-1 text-xs text-zinc-600">{{ option.description }}</p><p class="mt-2 text-xs font-medium text-zinc-500">Best for: {{ option.bestFor }}</p>
           </button>
         </div>
-      </div>
+      </section>
 
-      <TournamentMetaFields
-        :starts-date="starts_date"
-        :starts-time="starts_time"
-        :time-control="time_control"
-        :min-players="min_players"
-        :max-players="max_players"
-        :target-points="target_points"
-        :errors="fieldErrors"
-        @update:starts-date="starts_date = $event"
-        @update:starts-time="starts_time = $event"
-        @update:time-control="time_control = $event"
-        @update:min-players="min_players = $event"
-        @update:max-players="max_players = $event"
-        @update:target-points="target_points = $event"
-      />
+      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+        <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">3</span><div><h2 class="font-semibold text-black">Players</h2><p class="text-xs text-zinc-500">Start threshold and registration capacity</p></div></div>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label><span class="mb-1 block text-sm font-medium">Minimum players to start</span><input v-model.number="minPlayers" type="number" min="2" :class="['w-full rounded border px-3 py-2 text-sm', visibleErrors.min_players ? 'border-red-500' : 'border-zinc-300']" /><span v-if="visibleErrors.min_players" class="text-xs text-red-600">{{ visibleErrors.min_players }}</span></label>
+          <label><span class="mb-1 block text-sm font-medium">Registration capacity <span class="font-normal text-zinc-400">(optional)</span></span><input v-model="maxPlayers" type="number" min="2" placeholder="No limit" :class="['w-full rounded border px-3 py-2 text-sm', visibleErrors.max_players ? 'border-red-500' : 'border-zinc-300']" /><span v-if="visibleErrors.max_players" class="text-xs text-red-600">{{ visibleErrors.max_players }}</span></label>
+        </div><p class="mt-4 rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900">{{ playerRangeText }}</p>
+      </section>
 
-      <!-- Preview -->
-      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
-        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Preview (YAML generated)</div>
-        <div class="space-y-2 text-sm text-black">
-          <div v-for="s in preview.stages" :key="s.id" class="rounded bg-white p-2 border border-zinc-200">
-            <span class="font-medium">{{ s.name }}</span> <span class="text-zinc-500">— {{ s.mode }}</span>
-          </div>
-          <div class="text-xs text-zinc-600">{{ preview.note }} • {{ target_points }} pts • {{ time_control }} • {{ min_players }}–{{ max_players || '∞' }} players<span v-if="starts_at"> • {{ starts_at }}</span></div>
-          <div class="flex gap-2 text-xs">
-            <span v-for="p in preview.podium" :key="p" class="rounded-full bg-white border border-zinc-200 px-2 py-1">{{ p }}</span>
+      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+        <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">4</span><div><h2 class="font-semibold text-black">Match rules</h2><p class="text-xs text-zinc-500">Scoring and clock settings</p></div></div>
+        <TournamentMetaFields v-model:time-control="timeControl" v-model:target-points="targetPoints" rules-only :errors="visibleErrors" />
+      </section>
+
+      <section class="rounded-xl border border-zinc-200 bg-zinc-50 p-5">
+        <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white">5</span><div><h2 class="font-semibold text-black">Review</h2><p class="text-xs text-zinc-500">Preview the structure before creating the draft</p></div></div>
+        <div class="grid gap-5 lg:grid-cols-[1fr_1.4fr]">
+          <dl class="grid grid-cols-2 gap-3 text-sm"><div><dt class="text-xs text-zinc-500">Format</dt><dd class="font-medium text-black">{{ selectedFormat.label }}</dd></div><div><dt class="text-xs text-zinc-500">Match</dt><dd class="font-medium text-black">Race to {{ targetPoints }} points</dd></div><div><dt class="text-xs text-zinc-500">Players</dt><dd class="font-medium text-black">{{ minPlayers }}–{{ maxPlayers || 'No limit' }}</dd></div><div><dt class="text-xs text-zinc-500">Schedule</dt><dd class="font-medium text-black">{{ startsAt || 'Not scheduled' }}</dd></div></dl>
+          <div class="rounded-lg border border-zinc-200 bg-white p-4">
+            <div class="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 class="text-sm font-semibold text-black">Structure preview</h3><p class="text-xs text-zinc-500">The final bracket uses the actual player count at Start.</p></div><label class="flex items-center gap-2 text-xs text-zinc-600">Preview with <input v-model.number="previewPlayers" type="number" :min="Math.max(2, Number(minPlayers) || 2)" :max="maxPlayers || 64" class="w-16 rounded border border-zinc-300 px-2 py-1 text-black" /> players</label></div>
+            <div class="flex flex-wrap items-center gap-2" aria-label="Tournament progression preview"><template v-for="(stage, index) in preview.stages" :key="stage"><div class="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-center"><div class="text-xs font-semibold text-black">{{ stage }}</div><div class="text-[11px] text-zinc-500">{{ index === 0 ? `${preview.players} players` : 'Winners advance' }}</div></div><span v-if="index < preview.stages.length - 1" class="text-zinc-400">→</span></template></div>
+            <p class="mt-3 text-xs text-zinc-600"><template v-if="preview.matches !== null">{{ preview.matches }} matches · </template>{{ preview.rounds }} rounds<span v-if="preview.byes"> · {{ preview.byes }} first-round byes</span><span v-else-if="template === 'knockout'"> · no byes</span></p>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div class="flex gap-2">
-        <button
-          type="submit"
-          :disabled="loading"
-          class="rounded bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-        >
-          {{ loading ? 'Creating…' : 'Create Tournament' }}
-        </button>
-        <button
-          type="button"
-          class="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-black hover:bg-zinc-50"
-          @click="router.push('/tournaments')"
-        >
-          Cancel
-        </button>
-      </div>
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-5"><p class="text-xs text-zinc-500">Nothing is published yet. You will add players and review the draft next.</p><div class="flex gap-2"><button type="button" class="rounded border border-zinc-300 bg-white px-4 py-2 text-sm" @click="router.push('/tournaments')">Cancel</button><button type="submit" :disabled="loading" class="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">{{ loading ? 'Creating draft…' : 'Create draft and add players' }}</button></div></div>
     </form>
   </div>
 </template>
