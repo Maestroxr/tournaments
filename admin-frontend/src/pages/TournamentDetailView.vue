@@ -128,7 +128,7 @@ async function load() {
       router.replace(`/tournaments/${t.value.id}/progress`)
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Failed to load'
+    error.value = formatApiError(e)
   } finally {
     loading.value = false
   }
@@ -142,7 +142,7 @@ async function remove() {
     await apiFetch(`/api/admin/tournaments/${tid}`, { method: 'DELETE' })
     router.push('/tournaments')
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Delete failed'
+    error.value = formatApiError(e)
   }
 }
 

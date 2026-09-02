@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import Button from 'primevue/button'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 import type { AdminUserSummary } from '@/types/user'
 
 const props = defineProps<{
@@ -29,7 +29,7 @@ async function show() {
   try {
     user.value = await apiFetch<AdminUserSummary>(`/api/admin/users/${props.userId}`)
   } catch (caught: unknown) {
-    error.value = caught instanceof Error ? caught.message : 'Failed to load user'
+    error.value = formatApiError(caught)
   } finally {
     loading.value = false
   }

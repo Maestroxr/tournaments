@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import SelectButton from 'primevue/selectbutton'
 import AppAlert from '@/components/AppAlert.vue'
@@ -89,7 +89,7 @@ async function load() {
   try {
     data.value = await apiFetch<DashboardData>(`/api/admin/dashboard?days=${rangeDays.value}`)
   } catch (caught: unknown) {
-    error.value = caught instanceof Error ? caught.message : 'Failed to load dashboard'
+    error.value = formatApiError(caught)
   } finally {
     loading.value = false
   }

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
 import FinishedTournamentCard from '@/components/FinishedTournamentCard.vue'
 import TournamentCard from '@/components/TournamentCard.vue'
 import SearchBar from '@/components/SearchBar.vue'
+import AppAlert from '@/components/AppAlert.vue'
 import { tournamentStateFilterLabel } from '@/utils/adminLabels'
 
 interface Tournament {
@@ -57,7 +58,7 @@ async function load() {
     const qs = params.toString()
     tournaments.value = await apiFetch<Tournament[]>(`/api/admin/tournaments${qs ? `?${qs}` : ''}`)
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Failed to load'
+    error.value = formatApiError(e)
   } finally {
     loading.value = false
   }
@@ -122,7 +123,7 @@ const filteredLabel = computed(() => {
     </div>
 
     <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
-    <div v-else-if="error" class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</div>
+    <AppAlert v-else-if="error" type="error" :message="error" dismissible @close="error = ''" />
     <div v-else-if="filtered.length === 0" class="py-10 text-center text-sm text-zinc-500">No tournaments. <RouterLink to="/tournaments/new" class="text-emerald-600 hover:underline">Create one</RouterLink></div>
     <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       <template v-for="t in filtered" :key="t.id">

@@ -8,7 +8,8 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
 import AppInput from '@/components/AppInput.vue'
-import { apiFetch } from '@/services/api'
+import AppAlert from '@/components/AppAlert.vue'
+import { apiFetch, formatApiError } from '@/services/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -66,7 +67,7 @@ onMounted(async () => {
     balance.value = data.balance ?? '0.00'
     transactions.value = data.transactions ?? []
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : 'Failed to load user'
+    error.value = formatApiError(e)
   } finally {
     fetching.value = false
   }
@@ -85,7 +86,7 @@ async function save() {
     })
     router.push('/users')
   } catch (e: unknown) {
-    try { const b = JSON.parse((e as any).body || '{}'); error.value = b.detail || JSON.stringify(b.errors || b) } catch { error.value = e instanceof Error ? e.message : 'Failed' }
+    error.value = formatApiError(e)
   } finally {
     loading.value = false
   }
@@ -106,7 +107,7 @@ async function wallet(action: 'deposit' | 'withdraw') {
     walletAmount.value = null
     walletNote.value = ''
   } catch (e: unknown) {
-    try { const b = JSON.parse((e as any).body || '{}'); error.value = b.detail || JSON.stringify(b.errors || b) } catch { error.value = e instanceof Error ? e.message : 'Failed' }
+    error.value = formatApiError(e)
   } finally {
     loading.value = false
   }
@@ -120,9 +121,10 @@ function formatDate(value: string) {
 <template>
   <div class="mx-auto w-full max-w-lg">
     <h1 class="mb-4 text-2xl font-bold text-black">Edit User</h1>
+    <AppAlert v-if="error" class="mb-4" type="error" :message="error" dismissible @close="error = ''" />
     <p v-if="fetching" class="text-sm text-zinc-500">Loading…</p>
     <form v-else @submit.prevent="save" class="space-y-4">
-      <AppInput v-model="username" label="Username" placeholder="username" :error="fieldErrors.username || error" autocomplete="username" />
+      <AppInput v-model="username" label="Username" placeholder="username" :error="fieldErrors.username" autocomplete="username" />
       <AppInput v-model="email" label="Email" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
       <AppInput v-model="new_password" label="New password (leave blank to keep)" type="password" placeholder="••••••••" autocomplete="new-password" />
       <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> Staff (admin)</label>

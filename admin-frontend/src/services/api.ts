@@ -14,7 +14,7 @@ export class ApiError extends Error {
   statusText: string
   body: string
   constructor(status: number, statusText: string, body: string) {
-    super(`${status} ${statusText}: ${body}`)
+    super(`${status} ${statusText || 'Request failed'}`)
     this.status = status
     this.statusText = statusText
     this.body = body
@@ -45,13 +45,38 @@ export function formatApiError(e: unknown): string {
     try {
       const data = JSON.parse(e.body) as Record<string, unknown>
       const raw = (data.detail ?? data.errors ?? e.body) as unknown
-      const detail = typeof raw === 'string' ? `"${raw}"` : JSON.stringify(raw)
+      const detail = formatErrorValue(raw)
       return `${fallback}: ${detail}`
     } catch {
       return e.body.length > 240 ? fallback : `${fallback}: ${e.body}`
     }
   }
   return e instanceof Error ? e.message : String(e)
+}
+
+function formatErrorValue(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(formatErrorValue).filter(Boolean).join(' ')
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([field, messages]) => `${field}: ${formatErrorValue(messages)}`)
+      .filter(Boolean)
+      .join(' • ')
+  }
+  return value == null ? '' : String(value)
+}
+
+export function apiFieldErrors(e: unknown): Record<string, string> {
+  if (!(e instanceof ApiError) || !e.body.trim() || looksLikeHtml(e.body)) return {}
+  try {
+    const data = JSON.parse(e.body) as { errors?: Record<string, unknown> }
+    if (!data.errors || typeof data.errors !== 'object') return {}
+    return Object.fromEntries(
+      Object.entries(data.errors).map(([field, messages]) => [field, formatErrorValue(messages)]),
+    )
+  } catch {
+    return {}
+  }
 }
 
 export async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {

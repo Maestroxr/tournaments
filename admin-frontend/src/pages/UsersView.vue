@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Tag from 'primevue/tag'
 import SearchBar from '@/components/SearchBar.vue'
+import AppAlert from '@/components/AppAlert.vue'
 
 interface User { id: number; username: string; email: string; is_staff: boolean; is_active: boolean; balance: string }
 const users = ref<User[]>([])
@@ -19,13 +20,13 @@ async function load() {
   try {
     const qs = q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''
     users.value = await apiFetch<User[]>(`/api/admin/users${qs}`)
-  } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Failed' }
+  } catch (e: unknown) { error.value = formatApiError(e) }
   finally { loading.value = false }
 }
 onMounted(load)
 async function remove(id: number) {
   if (!confirm('Delete user?')) return
-  try { await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Delete failed' }
+  try { await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
 }
 </script>
 
@@ -36,7 +37,7 @@ async function remove(id: number) {
       <Button as="router-link" to="/users/new" label="Create User" size="small" severity="info" />
     </div>
     <div class="mb-3"><SearchBar v-model="q" placeholder="Search username..." @search="load" /></div>
-    <div v-if="error" class="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{{ error }}</div>
+    <AppAlert v-if="error" class="mb-3" type="error" :message="error" dismissible @close="error = ''" />
     <DataTable v-else :value="users" :loading="loading" data-key="id" striped-rows show-gridlines size="small">
       <template #empty>No users.</template>
       <Column field="id" header="ID" sortable />

@@ -33,6 +33,10 @@ def load_local_env(path):
             os.environ.setdefault(key, value)
 
 
+def env_list(name):
+    return [item.strip() for item in os.environ.get(name, '').split(',') if item.strip()]
+
+
 # `.env` lives beside the repository's README, not inside the Django package.
 # Deployment environments can still provide real environment variables, which always take priority.
 load_local_env(BASE_DIR.parent / '.env')

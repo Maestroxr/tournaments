@@ -12,4 +12,6 @@ ALLOWED_HOSTS = [
     os.environ['HOSTNAME'],
 ]
 
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+
 STATIC_ROOT = BASE_DIR / '../deployed'

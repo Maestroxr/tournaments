@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { apiFetch } from '@/services/api'
+import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
+import AppAlert from '@/components/AppAlert.vue'
 
 interface Participant {
   id: number
@@ -40,20 +41,20 @@ async function load() {
     const data = await apiFetch<AttendeesResponse>(`/api/admin/tournaments/${id}/attendees${qs}`)
     participants.value = data.participants
     available.value = data.available
-  } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Failed' }
+  } catch (e: unknown) { error.value = formatApiError(e) }
   finally { loading.value = false }
 }
 onMounted(load)
 
 async function addUser(uid: number) {
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ user_id: uid }) }); await load() } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Add failed' }
+  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ user_id: uid }) }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
 }
 async function addVirtual() {
   if (!newName.value.trim()) return
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ name: newName.value.trim() }) }); newName.value=''; await load() } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Add failed' }
+  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ name: newName.value.trim() }) }); newName.value=''; await load() } catch (e: unknown) { error.value = formatApiError(e) }
 }
 async function remove(pid: number) {
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees?participant_id=${pid}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = e instanceof Error ? e.message : 'Remove failed' }
+  try { await apiFetch(`/api/admin/tournaments/${id}/attendees?participant_id=${pid}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
 }
 </script>
 
@@ -70,7 +71,7 @@ async function remove(pid: number) {
 
     <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
     <div v-else>
-      <div v-if="error" class="mb-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">{{ error }}</div>
+      <AppAlert v-if="error" class="mb-3" type="error" :message="error" dismissible @close="error = ''" />
 
       <section class="mb-6" aria-labelledby="registered-heading">
         <div class="mb-3 flex items-center justify-between">
