@@ -3,6 +3,7 @@ from . import api
 
 urlpatterns = [
     path('csrf/', api.api_csrf, name='api-csrf'),
+    path('client/log', api.api_client_log, name='api-client-log'),
     path('auth/me', api.api_me, name='api-me'),
     path('auth/login', api.api_login, name='api-login'),
     path('auth/logout', api.api_logout, name='api-logout'),

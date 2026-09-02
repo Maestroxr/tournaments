@@ -1,8 +1,10 @@
 import json
+import logging
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
@@ -13,9 +15,46 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from gamelink.views import playable_seat
+from gamelink.views import _playable_refusal_reason, playable_seat
 from tournaments import models
 from .forms import SignupForm, AdminUserCreateForm, CreateTournamentForm
+
+logger = logging.getLogger(__name__)
+
+
+def _clip_client_value(value, limit=500):
+    text = str(value or "")
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+PLAYABILITY_MESSAGES = {
+    "disabled": "Game links are disabled on the tournaments server.",
+    "not_authenticated": "The player is not signed in.",
+    "tournament_not_active": "The tournament has not started yet.",
+    "fixture_not_in_current_stage": "This match is not in the current tournament stage.",
+    "fixture_not_in_current_level": "This match is not in the current round.",
+    "fixture_already_confirmed": "This match already has a confirmed result.",
+    "fixture_missing_player": "This match is still missing one of the players.",
+    "fixture_player_has_no_user": "One of the matched players is not linked to a user account.",
+    "user_not_in_fixture": "The signed-in player is not assigned to this match.",
+    "backgammon_url_is_empty": "The Backgammon game URL is not configured.",
+    "ready": "Ready to start the match.",
+}
+
+
+def _playability_payload(request, fixture):
+    seat, refusal = playable_seat(request.user, fixture)
+    reason = "ready" if seat is not None else _playable_refusal_reason(request.user, fixture)
+    if reason == "ready" and not getattr(settings, "GAMELINK_BACKGAMMON_URL", "").strip():
+        reason = "backgammon_url_is_empty"
+        refusal = 412
+    return {
+        "can_play": seat is not None and reason == "ready",
+        "seat": seat,
+        "reason": reason,
+        "status": refusal,
+        "message": PLAYABILITY_MESSAGES.get(reason, "This match is not ready yet."),
+    }
 
 
 def _parse_bool(value, default=True):
@@ -269,6 +308,33 @@ def _capacity_error(tournament):
 @require_http_methods(["GET"])
 def api_csrf(request):
     return JsonResponse({"detail": "CSRF cookie set"})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_client_log(request):
+    try:
+        data = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        data = {}
+
+    level = str(data.get("level") or "error").lower()
+    message = _clip_client_value(data.get("message"))
+    path = _clip_client_value(data.get("path"), 200)
+    source = _clip_client_value(data.get("source") or "frontend", 80)
+    details = _clip_client_value(data.get("details"), 1000)
+
+    log_message = "[client] source=%s path=%s message=%s details=%s"
+    log_args = (source, path, message, details)
+
+    if level in {"debug", "info"}:
+        logger.info(log_message, *log_args)
+    elif level == "warning":
+        logger.warning(log_message, *log_args)
+    else:
+        logger.error(log_message, *log_args)
+
+    return JsonResponse({"status": "logged"})
 
 
 @require_http_methods(["GET"])
@@ -748,6 +814,7 @@ def api_admin_tournament_progress(request, pk):
 
                     current_user = player1_user if is_player1 else player2_user if is_player2 else None
                     opponent = player2_user if is_player1 else player1_user if is_player2 else None
+                    playability = _playability_payload(request, fixture)
 
                     fixtures.append({
                         "id": fixture.id,
@@ -790,7 +857,8 @@ def api_admin_tournament_progress(request, pk):
                         # Use the exact predicate that StartGameView uses, so the Vue client
                         # never offers a game link for an old, settled, or otherwise unavailable
                         # fixture.  StartGameView repeats this check when the form is submitted.
-                        "can_play": playable_seat(request.user, fixture)[0] is not None,
+                        "can_play": playability["can_play"],
+                        "playability": playability,
 
                         "score1": fixture.score1,
                         "score2": fixture.score2,
