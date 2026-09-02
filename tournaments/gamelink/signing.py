@@ -80,6 +80,7 @@ def issue_ticket(user, fixture, seat, game_link):
         'opp' : opponent.name if opponent else '',
         'tp'  : game_link.target_points,
         'dbl' : game_link.doubling_enabled,
+        'tc'  : fixture.mode.tournament.time_control,
     }
     token = signing.dumps(payload, key = _ticket_secret(), salt = TICKET_SALT, compress = False)
     return token, jti

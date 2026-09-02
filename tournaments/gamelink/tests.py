@@ -87,6 +87,7 @@ class TicketTest(GameLinkTestBase):
         self.assertEqual(payload['fix'], self.fixture.pk)
         self.assertEqual(payload['seat'], 'p1')
         self.assertEqual(payload['tp'], 1)
+        self.assertEqual(payload['tc'], 'normal')
         self.assertEqual(payload['exp'], payload['iat'] + 120)
 
     def test_seat_p2_sees_itself_as_own(self):
@@ -1656,8 +1657,8 @@ class TicketContractTest(TestCase):
         'eyJ2IjoxLCJpc3MiOiJ0b3VybmFtZW50cyIsImF1ZCI6ImJhY2tnYW1tb24iLCJqdGkiOiI1ZjNjMWQyZS04YTRi'
         'LTRjNmQtOWUwZi0xYTJiM2M0ZDVlNmYiLCJpYXQiOjE3NTYzMDAwMDAsImV4cCI6MTc1NjMwMDEyMCwic3ViIjoi'
         'MGYyYTdiNmMtM2Q0ZS00ZjVhLThiOWMtMGQxZTJmM2E0YjVjIiwibmFtZSI6ImFsaWNlIiwidHJuIjoxNywiZml4'
-        'Ijo0ODIsInNlYXQiOiJwMSIsIm9wcCI6ImJvYiIsInRwIjoxfQ:1x0Qjf:'
-        'FgOctl42KMzHWqwdGqd57k_WoKZLIRZgN52CkAaCZCs'
+        'Ijo0ODIsInNlYXQiOiJwMSIsIm9wcCI6ImJvYiIsInRwIjoxLCJkYmwiOnRydWUsInRjIjoibm9ybWFsIn0:1x1hs5:'
+        'dMOvm_vHiAACg1_LE07AU5JhYfpoyCSYWVF6U_kpaMc'
     )
     VECTOR_PAYLOAD = {
         'v'   : 1,
@@ -1673,6 +1674,8 @@ class TicketContractTest(TestCase):
         'seat': 'p1',
         'opp' : 'bob',
         'tp'  : 1,
+        'dbl' : True,
+        'tc'  : 'normal',
     }
 
     def load(self, token = None, key = TICKET_SECRET):
@@ -1720,7 +1723,7 @@ class TicketContractTest(TestCase):
         minted = signing.loads(token, key = TICKET_SECRET, salt = TICKET_SALT, max_age = None)
 
         self.assertEqual(sorted(minted.keys()), sorted(self.VECTOR_PAYLOAD.keys()))
-        for claim in ('v', 'iss', 'aud', 'seat', 'tp'):
+        for claim in ('v', 'iss', 'aud', 'seat', 'tp', 'tc'):
             self.assertEqual(minted[claim], self.VECTOR_PAYLOAD[claim], claim)
         for claim, value in minted.items():
             self.assertIsInstance(value, type(self.VECTOR_PAYLOAD[claim]), claim)
