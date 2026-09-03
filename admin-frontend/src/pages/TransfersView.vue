@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import { transferKindLabel } from '@/utils/adminLabels'
+import { useI18n } from '@/i18n'
 
 interface Transfer {
   id: number
@@ -21,6 +22,7 @@ interface Transfer {
 const transfers = ref<Transfer[]>([])
 const loading = ref(false)
 const error = ref('')
+const { t } = useI18n()
 
 async function load() {
   loading.value = true
@@ -45,35 +47,35 @@ onMounted(load)
   <div class="mx-auto w-full max-w-6xl">
     <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-bold text-black">Transfers</h1>
-        <p class="mt-1 text-sm text-zinc-500">Wallet deposits, withdrawals, tournament fees, refunds and prizes.</p>
+        <h1 class="text-2xl font-bold text-black">{{ t('transfers.title') }}</h1>
+        <p class="mt-1 text-sm text-zinc-500">{{ t('transfers.subtitle') }}</p>
       </div>
-      <Button label="Refresh" size="small" severity="secondary" outlined @click="load" />
+      <Button :label="t('common.refresh')" size="small" severity="secondary" outlined @click="load" />
     </div>
 
     <div v-if="error" class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</div>
     <DataTable v-else :value="transfers" :loading="loading" data-key="id" striped-rows show-gridlines size="small">
-      <template #empty>No transfers yet.</template>
-      <Column header="Date" sortable sort-field="created_at">
+      <template #empty>{{ t('transfers.empty') }}</template>
+      <Column :header="t('transfers.date')" sortable sort-field="created_at">
         <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
       </Column>
-      <Column field="username" header="User" sortable />
-      <Column header="Type" sortable sort-field="kind">
+      <Column field="username" :header="t('common.user')" sortable />
+      <Column :header="t('common.type')" sortable sort-field="kind">
         <template #body="{ data }">{{ transferKindLabel(data.kind) }}</template>
       </Column>
-      <Column header="Tournament">
+      <Column :header="t('transfers.tournament')">
         <template #body="{ data }">{{ data.tournament_name || '-' }}</template>
       </Column>
-      <Column header="Amount" sortable sort-field="amount" body-class="text-right">
+      <Column :header="t('common.amount')" sortable sort-field="amount" body-class="text-right">
         <template #body="{ data }"><span :class="['font-semibold', Number(data.amount) >= 0 ? 'text-emerald-700' : 'text-red-700']">{{ Number(data.amount).toFixed(2) }}</span></template>
       </Column>
-      <Column header="Balance" sortable sort-field="balance_after" body-class="text-right">
+      <Column :header="t('users.balance')" sortable sort-field="balance_after" body-class="text-right">
         <template #body="{ data }">{{ Number(data.balance_after).toFixed(2) }}</template>
       </Column>
-      <Column header="Actor">
+      <Column :header="t('common.actor')">
         <template #body="{ data }">{{ data.actor_username || '-' }}</template>
       </Column>
-      <Column header="Note">
+      <Column :header="t('common.note')">
         <template #body="{ data }">{{ data.note || '-' }}</template>
       </Column>
     </DataTable>

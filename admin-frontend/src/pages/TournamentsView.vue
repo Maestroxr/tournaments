@@ -9,6 +9,7 @@ import TournamentCard from '@/components/TournamentCard.vue'
 import SearchBar from '@/components/SearchBar.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import { tournamentStateFilterLabel } from '@/utils/adminLabels'
+import { useI18n } from '@/i18n'
 
 interface Tournament {
   id: number
@@ -48,6 +49,7 @@ const stateFilter = ref<TournamentStateFilter>(
 )
 const loading = ref(false)
 const error = ref('')
+const { t } = useI18n()
 
 async function load() {
   loading.value = true
@@ -102,9 +104,9 @@ const filtered = computed(() => {
 })
 
 const filteredLabel = computed(() => {
-  if (route.query.view === 'waiting') return 'Waiting for players'
-  if (route.query.view === 'upcoming') return `Upcoming in the next ${route.query.days ?? 7} days`
-  if (stateFilter.value === 'finished') return 'Tournament history and saved results'
+  if (route.query.view === 'waiting') return t('transfers.waitingForPlayers')
+  if (route.query.view === 'upcoming') return t('transfers.upcomingDays', { days: String(route.query.days ?? 7) })
+  if (stateFilter.value === 'finished') return t('transfers.historyResults')
   return ''
 })
 
@@ -113,18 +115,18 @@ const filteredLabel = computed(() => {
 <template>
   <div class="mx-auto w-full max-w-6xl">
     <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
-      <div><h1 class="text-2xl font-bold text-black">Tournaments</h1><p v-if="filteredLabel" class="mt-1 text-sm text-zinc-500">{{ filteredLabel }}</p></div>
-      <Button as="router-link" to="/tournaments/new" label="Create Tournament" severity="success" />
+      <div><h1 class="text-2xl font-bold text-black">{{ t('tournaments.title') }}</h1><p v-if="filteredLabel" class="mt-1 text-sm text-zinc-500">{{ filteredLabel }}</p></div>
+      <Button as="router-link" to="/tournaments/new" :label="t('transfers.createTournament')" severity="success" />
     </div>
 
     <div class="mb-4 flex flex-wrap gap-3">
-      <div class="flex-1 min-w-[240px]"><SearchBar v-model="q" placeholder="Search by name..." @search="load" /></div>
+      <div class="flex-1 min-w-[240px]"><SearchBar v-model="q" :placeholder="t('tournaments.search')" @search="load" /></div>
       <Select v-model="stateFilter" :options="stateOptions" option-label="label" option-value="value" class="min-w-48" />
     </div>
 
-    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
+    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">{{ t('common.loading') }}</div>
     <AppAlert v-else-if="error" type="error" :message="error" dismissible @close="error = ''" />
-    <div v-else-if="filtered.length === 0" class="py-10 text-center text-sm text-zinc-500">No tournaments. <RouterLink to="/tournaments/new" class="text-emerald-600 hover:underline">Create one</RouterLink></div>
+    <div v-else-if="filtered.length === 0" class="py-10 text-center text-sm text-zinc-500">{{ t('tournaments.empty') }} <RouterLink to="/tournaments/new" class="text-emerald-600 hover:underline">{{ t('tournaments.createOne') }}</RouterLink></div>
     <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       <template v-for="t in filtered" :key="t.id">
         <FinishedTournamentCard v-if="t.state === 'finished'" :tournament="t" />

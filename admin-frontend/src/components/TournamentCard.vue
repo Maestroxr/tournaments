@@ -3,6 +3,7 @@ import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
 import UserQuickView from './UserQuickView.vue'
 import { timeControlLabel } from '@/utils/adminLabels'
+import { useI18n } from '@/i18n'
 
 interface Tournament {
   id: number
@@ -21,9 +22,10 @@ interface Tournament {
   prize_money: string
 }
 defineProps<{ tournament: Tournament }>()
+const { t } = useI18n()
 
 function formatDate(s: string | null) {
-  if (!s) return 'Not scheduled yet'
+  if (!s) return t('tournaments.notScheduledYet')
   try {
     const d = new Date(s)
     return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -31,12 +33,12 @@ function formatDate(s: string | null) {
 }
 
 function playerRange(min: number, max: number | null) {
-  return max === null ? `${min}+ players` : `${min}–${max} players`
+  return max === null ? t('tournaments.playersPlus', { count: min }) : t('tournaments.playersRange', { min, max })
 }
 
 function participantMessage(count: number) {
-  if (count === 1) return '1 player has already registered'
-  return `${count} players have already registered`
+  if (count === 1) return t('tournaments.registeredOne')
+  return t('tournaments.registeredMany', { count })
 }
 
 function participantProgress(count: number, max: number | null) {
@@ -45,11 +47,11 @@ function participantProgress(count: number, max: number | null) {
 }
 
 function scheduleLabel(startsAt: string | null) {
-  return startsAt ? 'Scheduled start' : 'Start time'
+  return startsAt ? t('tournaments.scheduledStart') : t('tournaments.startTime')
 }
 
 function primaryActionLabel(state: string) {
-  return state === 'draft' ? 'Edit tournament' : 'Manage tournament'
+  return state === 'draft' ? t('tournaments.editTournament') : t('tournaments.manageTournament')
 }
 
 function primaryActionTo(tournament: Tournament) {
@@ -64,7 +66,7 @@ function primaryActionTo(tournament: Tournament) {
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">
         <p class="mb-1 text-xs font-medium tracking-wide text-zinc-400 uppercase">
-          Tournament #{{ tournament.id }}
+          {{ t('tournaments.tournamentNumber', { id: tournament.id }) }}
         </p>
         <h3 class="truncate text-lg font-semibold leading-tight text-zinc-950">{{ tournament.name }}</h3>
       </div>
@@ -72,10 +74,10 @@ function primaryActionTo(tournament: Tournament) {
     </div>
 
     <p class="mt-2 text-xs text-zinc-500">
-      Created by
+      {{ t('tournaments.createdBy') }}
       <UserQuickView
         :user-id="tournament.creator_id"
-        :username="tournament.creator || 'Unknown user'"
+        :username="tournament.creator || t('tournaments.unknownUser')"
       />
     </p>
 
@@ -93,13 +95,13 @@ function primaryActionTo(tournament: Tournament) {
       <div class="mt-4 border-t border-zinc-200 pt-4">
         <div class="flex items-center justify-between gap-3">
           <div>
-            <p class="text-xs font-medium text-zinc-500">Registration</p>
+            <p class="text-xs font-medium text-zinc-500">{{ t('tournaments.registration') }}</p>
             <p class="mt-0.5 text-sm font-semibold text-zinc-900">
-              {{ tournament.participant_count }} / {{ tournament.max_players ?? 'Unlimited' }} players
+              {{ tournament.participant_count }} / {{ tournament.max_players ?? t('tournaments.unlimited') }} {{ t('nav.users').toLowerCase() }}
             </p>
           </div>
           <span class="rounded-md bg-white px-2 py-1 text-xs font-medium text-zinc-600 ring-1 ring-zinc-200">
-            Min. {{ tournament.min_players }}
+            {{ t('tournaments.minPlayersShort', { count: tournament.min_players }) }}
           </span>
         </div>
         <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-200" aria-hidden="true">
@@ -112,24 +114,24 @@ function primaryActionTo(tournament: Tournament) {
     </section>
 
     <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
-      <TournamentMetaItem label="Match format" :value="`Race to ${tournament.target_points}`" />
-      <TournamentMetaItem label="Time control" :value="timeControlLabel(tournament.time_control)" />
+      <TournamentMetaItem :label="t('tournaments.matchFormat')" :value="t('tournaments.raceTo', { points: tournament.target_points })" />
+      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control)" />
       <TournamentMetaItem
-        label="Doubling cube"
-        :value="tournament.doubling_enabled ? 'Enabled' : 'Disabled'"
+        :label="t('tournaments.doublingCube')"
+        :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')"
       />
-      <TournamentMetaItem label="Capacity" :value="playerRange(tournament.min_players, tournament.max_players)" />
+      <TournamentMetaItem :label="t('tournaments.capacity')" :value="playerRange(tournament.min_players, tournament.max_players)" />
     </dl>
 
     <section class="mt-5 grid grid-cols-2 divide-x divide-zinc-200 rounded-lg border border-zinc-200 bg-white">
       <div class="px-4 py-3">
-        <p class="text-xs font-medium text-zinc-500">Entry fee</p>
+        <p class="text-xs font-medium text-zinc-500">{{ t('tournaments.entryFee') }}</p>
         <p class="mt-1 text-base font-semibold tabular-nums text-zinc-900">
           ${{ Number(tournament.entry_fee || 0).toFixed(2) }}
         </p>
       </div>
       <div class="px-4 py-3">
-        <p class="text-xs font-medium text-zinc-500">Prize pool</p>
+        <p class="text-xs font-medium text-zinc-500">{{ t('tournaments.prizePool') }}</p>
         <p class="mt-1 text-base font-semibold tabular-nums text-emerald-700">
           ${{ Number(tournament.prize_money || 0).toFixed(2) }}
         </p>

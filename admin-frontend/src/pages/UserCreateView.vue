@@ -6,6 +6,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import AppInput from '@/components/AppInput.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import { apiFetch, apiFieldErrors, formatApiError } from '@/services/api'
+import { useI18n } from '@/i18n'
 
 const router = useRouter()
 const username = ref('')
@@ -17,14 +18,15 @@ const error = ref('')
 const submitted = ref(false)
 const loading = ref(false)
 const serverFieldErrors = ref<Record<string, string>>({})
+const { t } = useI18n()
 
 const clientFieldErrors = computed(() => {
   const errs: Record<string, string> = {}
-  if (!username.value.trim()) errs.username = 'Username required.'
-  else if (/^testuser-[0-9]+$/.test(username.value.trim())) errs.username = 'This username is reserved.'
-  if (!password1.value) errs.password1 = 'Password required.'
-  if (password1.value !== password2.value) errs.password2 = 'Passwords must match.'
-  if (email.value && !/^\S+@\S+\.\S+$/.test(email.value)) errs.email = 'Enter a valid email address.'
+  if (!username.value.trim()) errs.username = t('users.usernameRequired')
+  else if (/^testuser-[0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameReserved')
+  if (!password1.value) errs.password1 = t('users.passwordRequired')
+  if (password1.value !== password2.value) errs.password2 = t('users.passwordsMustMatch')
+  if (email.value && !/^\S+@\S+\.\S+$/.test(email.value)) errs.email = t('users.validEmail')
   return errs
 })
 const visibleClientErrors = computed(() => submitted.value ? clientFieldErrors.value : {})
@@ -42,7 +44,7 @@ async function create() {
   submitted.value = true
   error.value = ''
   serverFieldErrors.value = {}
-  if (hasErrors.value) { error.value = 'Review the highlighted fields before creating the user.'; return }
+  if (hasErrors.value) { error.value = t('users.reviewFields'); return }
   loading.value = true
   try {
     await apiFetch('/api/admin/users', {
@@ -59,7 +61,7 @@ async function create() {
   } catch (caught: unknown) {
     serverFieldErrors.value = apiFieldErrors(caught)
     error.value = Object.keys(serverFieldErrors.value).length
-      ? 'Review the highlighted fields before creating the user.'
+      ? t('users.reviewFields')
       : formatApiError(caught)
   } finally { loading.value = false }
 }
@@ -67,25 +69,25 @@ async function create() {
 
 <template>
   <div class="mx-auto w-full max-w-lg">
-    <h1 class="mb-1 text-2xl font-bold text-black">Create User</h1>
-    <p class="mb-4 text-sm text-zinc-600">Like tournament create — validated grid, black text, full API mapping.</p>
+    <h1 class="mb-1 text-2xl font-bold text-black">{{ t('users.createTitle') }}</h1>
+    <p class="mb-4 text-sm text-zinc-600">{{ t('users.intro') }}</p>
     <AppAlert v-if="error" class="mb-5" type="error" :message="error" dismissible @close="error = ''" />
     <form @submit.prevent="create" class="space-y-4">
       <div class="grid gap-4 sm:grid-cols-2">
-        <AppInput v-model="username" label="Username" placeholder="username" :error="fieldErrors.username" autocomplete="username" @update:model-value="clearServerError('username')" />
-        <AppInput v-model="email" label="Email (optional)" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" @update:model-value="clearServerError('email')" />
-        <AppInput v-model="password1" label="Password" type="password" placeholder="Password" :error="fieldErrors.password1" autocomplete="new-password" @update:model-value="clearServerError('password1')" />
-        <AppInput v-model="password2" label="Password confirmation" type="password" placeholder="Confirm password" :error="fieldErrors.password2" autocomplete="new-password" @update:model-value="clearServerError('password2')" />
+        <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" :error="fieldErrors.username" autocomplete="username" @update:model-value="clearServerError('username')" />
+        <AppInput v-model="email" :label="t('users.emailOptional')" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" @update:model-value="clearServerError('email')" />
+        <AppInput v-model="password1" :label="t('users.password')" type="password" :placeholder="t('users.password')" :error="fieldErrors.password1" autocomplete="new-password" @update:model-value="clearServerError('password1')" />
+        <AppInput v-model="password2" :label="t('users.confirmPassword')" type="password" :placeholder="t('users.confirmPassword')" :error="fieldErrors.password2" autocomplete="new-password" @update:model-value="clearServerError('password2')" />
       </div>
-      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> Staff (admin access)</label>
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> {{ t('users.staffAccess') }}</label>
 
       <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
-        Preview: <span class="font-medium text-black">{{ username || '—' }}</span> • {{ email || 'no email' }} • {{ is_staff ? 'staff' : 'user' }}
+        {{ t('users.preview') }}: <span class="font-medium text-black">{{ username || '—' }}</span> • {{ email || t('common.noEmail') }} • {{ is_staff ? t('common.staff') : t('common.user') }}
       </div>
 
       <div class="flex gap-2">
-        <Button type="submit" :label="loading ? 'Creating...' : 'Create User'" :loading="loading" severity="info" />
-        <Button label="Cancel" severity="secondary" outlined @click="router.push('/users')" />
+        <Button type="submit" :label="loading ? t('common.creating') : t('users.createTitle')" :loading="loading" severity="info" />
+        <Button :label="t('common.cancel')" severity="secondary" outlined @click="router.push('/users')" />
       </div>
     </form>
   </div>

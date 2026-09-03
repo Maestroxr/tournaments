@@ -10,6 +10,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import AppInput from '@/components/AppInput.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import { apiFetch, formatApiError } from '@/services/api'
+import { useI18n } from '@/i18n'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,6 +28,7 @@ const transactions = ref<WalletTransaction[]>([])
 const error = ref('')
 const loading = ref(false)
 const fetching = ref(true)
+const { t } = useI18n()
 
 interface UserDetail {
   id: number
@@ -51,9 +53,9 @@ interface WalletTransaction {
 
 const fieldErrors = computed(() => {
   const errs: Record<string, string> = {}
-  if (!username.value.trim()) errs.username = 'Username required'
-  else if (/^testuser-[0-9]+$/.test(username.value.trim())) errs.username = 'Username reserved'
-  if (email.value && !/^\S+@\S+\.\S+$/.test(email.value)) errs.email = 'Invalid email'
+  if (!username.value.trim()) errs.username = t('users.usernameRequiredShort')
+  else if (/^testuser-[0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameReservedShort')
+  if (email.value && !/^\S+@\S+\.\S+$/.test(email.value)) errs.email = t('users.invalidEmail')
   return errs
 })
 
@@ -95,7 +97,7 @@ async function save() {
 async function wallet(action: 'deposit' | 'withdraw') {
   error.value = ''
   const amount = Number(walletAmount.value)
-  if (!Number.isFinite(amount) || amount <= 0) { error.value = 'Enter a positive amount.'; return }
+  if (!Number.isFinite(amount) || amount <= 0) { error.value = t('users.positiveAmount'); return }
   loading.value = true
   try {
     const data = await apiFetch<UserDetail>(`/api/admin/users/${id}/wallet`, {
@@ -120,51 +122,51 @@ function formatDate(value: string) {
 
 <template>
   <div class="mx-auto w-full max-w-lg">
-    <h1 class="mb-4 text-2xl font-bold text-black">Edit User</h1>
+    <h1 class="mb-4 text-2xl font-bold text-black">{{ t('users.editTitle') }}</h1>
     <AppAlert v-if="error" class="mb-4" type="error" :message="error" dismissible @close="error = ''" />
-    <p v-if="fetching" class="text-sm text-zinc-500">Loading…</p>
+    <p v-if="fetching" class="text-sm text-zinc-500">{{ t('common.loading') }}</p>
     <form v-else @submit.prevent="save" class="space-y-4">
-      <AppInput v-model="username" label="Username" placeholder="username" :error="fieldErrors.username" autocomplete="username" />
-      <AppInput v-model="email" label="Email" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
-      <AppInput v-model="new_password" label="New password (leave blank to keep)" type="password" placeholder="••••••••" autocomplete="new-password" />
-      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> Staff (admin)</label>
-      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_active" /> Active</label>
-      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-600">Preview: {{ username || '—' }} • {{ email || 'no email' }} • {{ is_staff ? 'staff' : 'user' }} • {{ is_active ? 'active' : 'inactive' }} • Balance {{ Number(balance || 0).toFixed(2) }}</div>
+      <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" :error="fieldErrors.username" autocomplete="username" />
+      <AppInput v-model="email" :label="t('users.email')" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
+      <AppInput v-model="new_password" :label="t('users.newPassword')" type="password" placeholder="••••••••" autocomplete="new-password" />
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> {{ t('users.staffAdmin') }}</label>
+      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_active" /> {{ t('common.active') }}</label>
+      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-600">{{ t('users.preview') }}: {{ username || '—' }} • {{ email || t('common.noEmail') }} • {{ is_staff ? t('common.staff') : t('common.user') }} • {{ is_active ? t('common.active') : t('common.inactive') }} • {{ t('users.balance') }} {{ Number(balance || 0).toFixed(2) }}</div>
       <div class="flex gap-2">
-        <Button type="submit" :label="loading ? 'Saving...' : 'Save'" :loading="loading" severity="info" />
-        <Button label="Cancel" severity="secondary" outlined @click="router.push('/users')" />
+        <Button type="submit" :label="loading ? t('common.saving') : t('common.save')" :loading="loading" severity="info" />
+        <Button :label="t('common.cancel')" severity="secondary" outlined @click="router.push('/users')" />
       </div>
     </form>
 
     <section v-if="!fetching" class="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
       <div class="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h2 class="font-semibold text-black">Wallet</h2>
-          <p class="text-sm text-zinc-500">Current balance: <span class="font-semibold text-emerald-700">{{ Number(balance || 0).toFixed(2) }}</span></p>
+          <h2 class="font-semibold text-black">{{ t('users.wallet') }}</h2>
+          <p class="text-sm text-zinc-500">{{ t('users.currentBalance') }}: <span class="font-semibold text-emerald-700">{{ Number(balance || 0).toFixed(2) }}</span></p>
         </div>
       </div>
       <div class="grid gap-3 sm:grid-cols-[120px_1fr]">
-        <InputNumber v-model="walletAmount" :min="0.01" :min-fraction-digits="2" :max-fraction-digits="2" placeholder="Amount" fluid />
-        <InputText v-model="walletNote" placeholder="Note" class="w-full" />
+        <InputNumber v-model="walletAmount" :min="0.01" :min-fraction-digits="2" :max-fraction-digits="2" :placeholder="t('common.amount')" fluid />
+        <InputText v-model="walletNote" :placeholder="t('common.note')" class="w-full" />
       </div>
       <div class="mt-3 flex gap-2">
-        <Button label="Deposit" size="small" severity="success" :loading="loading" @click="wallet('deposit')" />
-        <Button label="Withdraw" size="small" severity="danger" outlined :loading="loading" @click="wallet('withdraw')" />
+        <Button :label="t('users.deposit')" size="small" severity="success" :loading="loading" @click="wallet('deposit')" />
+        <Button :label="t('users.withdraw')" size="small" severity="danger" outlined :loading="loading" @click="wallet('withdraw')" />
       </div>
 
       <DataTable class="mt-4" :value="transactions" data-key="id" size="small" striped-rows show-gridlines>
-        <template #empty>No wallet activity yet.</template>
-        <Column header="Date" sortable sort-field="created_at">
+        <template #empty>{{ t('users.noWallet') }}</template>
+        <Column :header="t('transfers.date')" sortable sort-field="created_at">
           <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
         </Column>
-        <Column field="kind" header="Type" sortable />
-        <Column header="Amount" sortable sort-field="amount" body-class="text-right">
+        <Column field="kind" :header="t('common.type')" sortable />
+        <Column :header="t('common.amount')" sortable sort-field="amount" body-class="text-right">
           <template #body="{ data }"><span :class="['font-medium', Number(data.amount) >= 0 ? 'text-emerald-700' : 'text-red-700']">{{ Number(data.amount).toFixed(2) }}</span></template>
         </Column>
-        <Column header="Balance" sortable sort-field="balance_after" body-class="text-right">
+        <Column :header="t('users.balance')" sortable sort-field="balance_after" body-class="text-right">
           <template #body="{ data }">{{ Number(data.balance_after).toFixed(2) }}</template>
         </Column>
-        <Column header="Note">
+        <Column :header="t('common.note')">
           <template #body="{ data }">{{ data.tournament_name || data.note || '-' }}</template>
         </Column>
       </DataTable>
