@@ -4,10 +4,12 @@ import { computed, onMounted } from 'vue'
 import AppNavbar from '@/components/AppNavbar.vue'
 import AppBreadcrumb, { type BreadcrumbItem } from '@/components/AppBreadcrumb.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useI18n } from '@/i18n'
 
 
 const route = useRoute()
 const auth = useAuthStore()
+const { direction } = useI18n()
 
 onMounted(() => {
   // Fetch real username from API (GET /api/auth/me) — replaces legacy localStorage fallback
@@ -24,13 +26,12 @@ const breadcrumbItems = computed<BreadcrumbItem[] | null>(() => {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col">
-    <!-- Mirrors base.html order: breadcrumb first, then tabs -->
-    <div v-if="breadcrumbItems">
+  <div class="admin-shell flex min-h-screen flex-col" :dir="direction">
+    <div v-if="breadcrumbItems" class="admin-breadcrumb">
       <AppBreadcrumb :items="breadcrumbItems" />
     </div>
     <AppNavbar />
-    <main class="flex-1 w-full p-6 bg-amber-50 text-black">
+    <main class="admin-main flex-1 w-full">
       <RouterView />
     </main>
   </div>

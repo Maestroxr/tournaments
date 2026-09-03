@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { RouterLink, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useI18n } from '@/i18n'
 
 const auth = useAuthStore()
 const route = useRoute()
+const { t } = useI18n()
 
 function isDashboardActive(): boolean {
   return route.name === 'dashboard' || route.path === '/' || route.path === '/dashboard'
@@ -27,13 +29,12 @@ function isTransfersActive(): boolean {
   return String(route.name ?? '').startsWith('transfers') || route.path.startsWith('/transfers')
 }
 
-const baseBtn =
-  'inline-flex items-center gap-1.5 rounded border px-3 py-1 text-sm font-normal transition-colors whitespace-nowrap no-underline'
+const baseBtn = 'admin-nav-link'
 </script>
 
 <template>
   <!-- Mirrors tournaments/frontend/templates/frontend/base.html:62-68 — Tailwind only, uses @theme colors -->
-  <nav class="mb-2 flex flex-wrap gap-2" aria-label="Secondary">
+  <nav class="admin-nav" :aria-label="t('nav.primary')">
     <RouterLink
       to="/dashboard"
       :class="[
@@ -43,7 +44,7 @@ const baseBtn =
           : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
       ]"
     >
-      Dashboard
+      {{ t('nav.dashboard') }}
     </RouterLink>
     <RouterLink
       to="/tournaments"
@@ -54,7 +55,7 @@ const baseBtn =
           : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
       ]"
     >
-      Tournaments
+      {{ t('nav.tournaments') }}
     </RouterLink>
     <RouterLink
       to="/tournaments?state=finished"
@@ -62,7 +63,7 @@ const baseBtn =
         ? 'bg-dark text-white border-dark hover:bg-dark-hover'
         : 'bg-white text-dark border-dark hover:bg-dark hover:text-white']"
     >
-      History
+      {{ t('nav.history') }}
     </RouterLink>
     <RouterLink
       to="/users"
@@ -73,7 +74,7 @@ const baseBtn =
           : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
       ]"
     >
-      Users
+      {{ t('nav.users') }}
     </RouterLink>
     <RouterLink
       to="/transfers"
@@ -84,7 +85,7 @@ const baseBtn =
           : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
       ]"
     >
-      Transfers
+      {{ t('nav.transfers') }}
     </RouterLink>
 
     <template v-if="auth.isLoggedIn">
@@ -92,13 +93,13 @@ const baseBtn =
         to="/tournaments/new"
         :class="[baseBtn, 'bg-white text-success border-success hover:bg-success hover:text-white']"
       >
-        <i class="bi bi-plus-lg" aria-hidden="true"></i> Create Tournament
+        <i class="bi bi-plus-lg" aria-hidden="true"></i> {{ t('nav.createTournament') }}
       </RouterLink>
       <RouterLink
         to="/users/new"
         :class="[baseBtn, 'bg-white text-primary border-primary hover:bg-primary hover:text-white']"
       >
-        <i class="bi bi-person-plus" aria-hidden="true"></i> Create User
+        <i class="bi bi-person-plus" aria-hidden="true"></i> {{ t('nav.createUser') }}
       </RouterLink>
     </template>
   </nav>

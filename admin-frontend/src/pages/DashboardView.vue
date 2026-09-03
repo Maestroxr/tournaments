@@ -133,8 +133,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl">
-    <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
+  <div class="admin-dashboard mx-auto w-full max-w-6xl">
+    <header class="admin-page-header mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
         <h1 class="text-2xl font-bold text-black">Dashboard</h1>
         <p class="mt-1 text-sm text-zinc-600">Tournament operations at a glance</p>
@@ -145,7 +145,7 @@ onMounted(load)
       </div>
     </header>
 
-    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-2">
+    <div class="admin-range-bar mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-2">
       <SelectButton v-model="rangeDays" :options="ranges" option-label="label" option-value="value" aria-label="Dashboard time range" @update:model-value="selectRange($event as RangeDays)" />
       <div class="flex items-center gap-3 px-2 text-xs text-zinc-500">
         <span v-if="data">Updated at {{ formatUpdatedAt(data.updated_at) }}</span>
@@ -166,7 +166,7 @@ onMounted(load)
             v-for="kpi in kpiCards"
             :key="kpi.key"
             :to="kpi.to"
-            class="group rounded-lg border border-zinc-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-sm"
+            class="admin-kpi group rounded-lg border border-zinc-200 bg-white p-4 transition hover:-translate-y-0.5 hover:border-zinc-300 hover:shadow-sm"
           >
             <span class="flex items-start justify-between gap-2">
               <span class="text-xs font-medium text-zinc-500">{{ kpi.label }}</span>
@@ -186,7 +186,7 @@ onMounted(load)
           </div>
           <span class="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{{ data.attention.length }} items</span>
         </div>
-        <div v-if="data.attention.length" class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
+        <div v-if="data.attention.length" class="admin-attention overflow-hidden rounded-lg border border-zinc-200 bg-white">
           <div v-for="item in data.attention" :key="`${item.kind}-${item.id}`" class="flex flex-col gap-3 border-b border-zinc-100 p-4 last:border-0 sm:flex-row sm:items-center">
             <span :class="['inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border', severityClass(item.severity)]">
               <i :class="['bi', severityIcon(item.severity)]" aria-hidden="true"></i>
@@ -218,7 +218,7 @@ onMounted(load)
             <RouterLink to="/tournaments?state=active" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline">View all</RouterLink>
           </div>
           <div v-if="data.active_tournaments.length" class="grid gap-3 sm:grid-cols-2">
-            <article v-for="tournament in data.active_tournaments" :key="tournament.id" class="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+            <article v-for="tournament in data.active_tournaments" :key="tournament.id" class="admin-tournament-card rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
                   <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Tournament #{{ tournament.id }}</p>

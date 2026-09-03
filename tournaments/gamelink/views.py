@@ -186,11 +186,22 @@ class StartGameView(LoginRequiredMixin, View):
             if game_link.status == 'completed':
                 return HttpResponse(status = 412)
 
+            update_fields = []
+            if game_link.target_points != fixture.mode.tournament.target_points:
+                game_link.target_points = fixture.mode.tournament.target_points
+                update_fields.append('target_points')
+            if game_link.doubling_enabled != fixture.mode.tournament.doubling_enabled:
+                game_link.doubling_enabled = fixture.mode.tournament.doubling_enabled
+                update_fields.append('doubling_enabled')
+
             # Both players may take a while to click through, and the second one to arrive must
             # not find the link timed out from under them.
             if game_link.expires_at <= now:
                 game_link.expires_at = now + link_ttl
-                game_link.save(update_fields = ['expires_at'])
+                update_fields.append('expires_at')
+
+            if update_fields:
+                game_link.save(update_fields = update_fields)
 
             token, jti = issue_ticket(request.user, fixture, seat, game_link)
             IssuedTicket.objects.create(
@@ -453,18 +464,27 @@ class LiveSnapshotCallbackView(View):
     def post(self, request):
         if not settings.GAMELINK_ENABLED:
             return _reject(request, 404, 'the game link is disabled')
+        if _declared_length(request) > settings.GAMELINK_MAX_BODY:
+            return _reject(request, 413, 'declared body length exceeds GAMELINK_MAX_BODY')
         try:
             raw = request.body
         except RequestDataTooBig:
             return _reject(request, 413, 'body exceeds DATA_UPLOAD_MAX_MEMORY_SIZE')
+        if len(raw) > settings.GAMELINK_MAX_BODY:
+            return _reject(request, 413, 'body exceeds GAMELINK_MAX_BODY')
         timestamp = request.headers.get('X-Gamelink-Timestamp', '')
         nonce = request.headers.get('X-Gamelink-Nonce', '')
         signature = request.headers.get('X-Gamelink-Signature', '')
-        if (len(raw) > settings.GAMELINK_MAX_BODY or not _TIMESTAMP_PATTERN.match(timestamp)
-                or not _NONCE_PATTERN.match(nonce) or not signature
-                or abs(int(time.time()) - int(timestamp)) > settings.GAMELINK_CLOCK_SKEW
-                or not verify_result_signature(raw, timestamp, nonce, signature)):
-            return _reject(request, 401, 'live snapshot authentication failed')
+        if not _TIMESTAMP_PATTERN.match(timestamp):
+            return _reject(request, 401, 'missing or malformed X-Gamelink-Timestamp')
+        if not _NONCE_PATTERN.match(nonce):
+            return _reject(request, 401, 'missing or malformed X-Gamelink-Nonce')
+        if not signature:
+            return _reject(request, 401, 'missing X-Gamelink-Signature')
+        if abs(int(time.time()) - int(timestamp)) > settings.GAMELINK_CLOCK_SKEW:
+            return _reject(request, 401, 'timestamp is outside GAMELINK_CLOCK_SKEW')
+        if not verify_result_signature(raw, timestamp, nonce, signature):
+            return _reject(request, 401, 'signature does not verify')
         try:
             body = json.loads(raw.decode('utf-8'))
             fixture_id = body['fixture_id']

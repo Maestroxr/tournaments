@@ -3,9 +3,11 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
+import { useI18n } from '@/i18n'
 
 defineProps<{ modelValue: string; placeholder?: string }>()
 defineEmits<{ (e: 'update:modelValue', v: string): void; (e: 'search', v: string): void }>()
+const { t } = useI18n()
 </script>
 <template>
   <div class="flex gap-2">
@@ -13,12 +15,12 @@ defineEmits<{ (e: 'update:modelValue', v: string): void; (e: 'search', v: string
       <InputIcon class="bi bi-search" />
       <InputText
       :value="modelValue"
-      :placeholder="placeholder ?? 'Search...'"
+      :placeholder="placeholder ?? t('common.search')"
         class="w-full"
       @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
       @keydown.enter="$emit('search', modelValue)"
       />
     </IconField>
-    <Button label="Search" size="small" severity="contrast" @click="$emit('search', modelValue)" />
+    <Button :label="t('common.search')" size="small" severity="contrast" @click="$emit('search', modelValue)" />
   </div>
 </template>

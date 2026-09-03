@@ -3,9 +3,12 @@ import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import Button from 'primevue/button'
 import AppTabs from '@/components/AppTabs.vue'
+import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
+import { useI18n } from '@/i18n'
 
 const auth = useAuthStore()
 const router = useRouter()
+const { t } = useI18n()
 
 async function handleLogout() {
   await auth.logout()
@@ -14,25 +17,26 @@ async function handleLogout() {
 </script>
 
 <template>
-  <!-- Header wraps the dedicated AppTabs component (mirrors base.html:62-68) -->
-  <header class="border-b border-zinc-200 bg-white">
-    <div class="flex w-full items-center gap-3 px-6 py-3">
+  <header class="admin-topbar">
+    <div class="admin-topbar-inner">
+      <RouterLink to="/dashboard" class="admin-brand" :aria-label="t('nav.brand')">
+        <span class="admin-brand-mark" aria-hidden="true">B</span>
+        <span>{{ t('nav.brand') }}</span>
+      </RouterLink>
       <AppTabs v-if="auth.isLoggedIn" />
 
-      <!-- Right: auth — exact replica of base.html:71-76 — Tailwind only -->
-      <div class="ml-auto flex items-center gap-3">
+      <div class="admin-account">
         <template v-if="auth.isLoggedIn">
-          <h1 class="m-0 text-right leading-none">
-            <p class="text-muted text-sm font-normal">
-              <i class="bi bi-person" aria-hidden="true"></i> {{ auth.user?.username }}
-              <span class="ml-2 inline-block rounded bg-emerald-50 px-1.5 py-0.5 text-xs font-bold text-emerald-700">Balance {{ Number(auth.user?.balance || 0).toFixed(2) }}</span>
-              <span class="inline-block rounded bg-dark px-1.5 py-0.5 text-xs font-bold text-white">admin</span>
-            </p>
-          </h1>
-          <Button label="Logout" icon="bi bi-box-arrow-right" size="small" severity="contrast" outlined @click="handleLogout" />
+          <div class="admin-account-meta">
+            <span class="admin-account-name"><i class="bi bi-person" aria-hidden="true"></i> {{ auth.user?.username }}</span>
+            <span class="admin-balance">{{ Number(auth.user?.balance || 0).toFixed(2) }}</span>
+          </div>
+          <LanguageSwitcher />
+          <Button :label="t('common.logout')" icon="bi bi-box-arrow-right" size="small" text @click="handleLogout" />
         </template>
         <template v-else>
-          <Button as="router-link" to="/login" label="Login" icon="bi bi-door-open" size="small" severity="secondary" />
+          <LanguageSwitcher />
+          <Button as="router-link" to="/login" :label="t('common.login')" icon="bi bi-door-open" size="small" severity="secondary" />
         </template>
       </div>
     </div>
