@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import DatePicker from 'primevue/datepicker'
@@ -55,9 +55,13 @@ const entryFee = ref(0)
 const prizeMoney = ref(0)
 const error = ref('')
 const suggestionError = ref('')
+const appliedSuggestion = ref('')
+const settingsHighlighted = ref(false)
 const submitted = ref(false)
 const loading = ref(false)
 const loadingSuggestions = ref(false)
+const settingsSection = ref<HTMLElement | null>(null)
+let highlightTimer: ReturnType<typeof window.setTimeout> | null = null
 
 type ExistingTournament = {
   id: number
@@ -159,7 +163,7 @@ const preview = computed(() => {
 })
 const playerRangeText = computed(() => maxPlayers.value === '' ? `The tournament may start with ${minPlayers.value} or more registered players.` : `The tournament may start with any number between ${minPlayers.value} and ${maxPlayers.value}.`)
 
-function applySuggestion(tournament: ExistingTournament) {
+async function applySuggestion(tournament: ExistingTournament) {
   minPlayers.value = Number(tournament.min_players ?? 6)
   maxPlayers.value = tournament.max_players == null ? '' : Number(tournament.max_players)
   targetPoints.value = Number(tournament.target_points ?? 5)
@@ -167,6 +171,14 @@ function applySuggestion(tournament: ExistingTournament) {
   doublingEnabled.value = tournament.doubling_enabled !== false
   entryFee.value = Number(tournament.entry_fee ?? 0)
   prizeMoney.value = Number(tournament.prize_money ?? 0)
+  appliedSuggestion.value = `Settings loaded from ${tournament.name}. You can change anything below.`
+  settingsHighlighted.value = true
+  if (highlightTimer) window.clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => {
+    settingsHighlighted.value = false
+  }, 2200)
+  await nextTick()
+  settingsSection.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
 function describeSuggestion(tournament: ExistingTournament) {
@@ -234,17 +246,13 @@ async function create() {
             class="rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-left transition hover:border-emerald-500 hover:bg-emerald-50"
             @click="applySuggestion(suggestion.tournament)"
           >
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <div class="font-semibold text-black">{{ suggestion.tournament.name }}</div>
-                <p class="mt-1 text-xs text-zinc-600">{{ describeSuggestion(suggestion.tournament) }}</p>
-              </div>
-              <span v-if="suggestion.duplicateCount > 1" class="rounded-full bg-zinc-900 px-2 py-1 text-[11px] font-semibold text-white">
-                {{ suggestion.duplicateCount }} same
-              </span>
-            </div>
+            <div class="font-semibold text-black">{{ suggestion.tournament.name }}</div>
+            <p class="mt-1 text-xs text-zinc-600">{{ describeSuggestion(suggestion.tournament) }}</p>
           </button>
         </div>
+        <p v-if="appliedSuggestion" class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800">
+          {{ appliedSuggestion }}
+        </p>
       </section>
 
       <section class="rounded-xl border border-zinc-200 bg-white p-5">
@@ -267,7 +275,10 @@ async function create() {
         </div>
       </section>
 
-      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+      <section
+        ref="settingsSection"
+        :class="['rounded-xl border bg-white p-5 transition', settingsHighlighted ? 'border-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.18)]' : 'border-zinc-200']"
+      >
         <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">3</span><div><h2 class="font-semibold text-black">Players</h2><p class="text-xs text-zinc-500">Start threshold and registration capacity</p></div></div>
         <div class="grid gap-4 sm:grid-cols-2">
           <label><span class="mb-1 block text-sm font-medium">Minimum players to start</span><InputNumber v-model="minPlayers" :min="2" show-buttons fluid :invalid="Boolean(visibleErrors.min_players)" /><span v-if="visibleErrors.min_players" class="text-xs text-red-600">{{ visibleErrors.min_players }}</span></label>

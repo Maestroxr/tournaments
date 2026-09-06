@@ -279,10 +279,39 @@ describe('TournamentCreateView', () => {
     expect(wrapper.text()).toContain('Use existing settings')
     expect(wrapper.text()).toContain('Monday Knockout')
     expect(wrapper.text()).not.toContain('Copy of Monday')
-    expect(wrapper.text()).toContain('2 same')
+    expect(wrapper.text()).not.toContain('same')
     expect(wrapper.text()).toContain('Fast Final')
     expect(wrapper.text()).toContain('8-No limit players')
     expect(wrapper.text()).toContain('No doubling')
+  })
+
+  it('confirms when previous settings are applied', async () => {
+    apiFetchMock.mockImplementation(async (path, opts) => {
+      if (path === '/api/admin/tournaments' && opts?.method === 'POST') return { id: 8 }
+      if (path === '/api/admin/tournaments') return [
+        {
+          id: 1,
+          name: 'Monday Knockout',
+          state: 'finished',
+          min_players: 8,
+          max_players: 16,
+          target_points: 7,
+          time_control: 'fast',
+          doubling_enabled: false,
+          entry_fee: '10.00',
+          prize_money: '50.00',
+        },
+      ]
+      return {}
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('button[type="button"]').trigger('click')
+
+    expect(wrapper.text()).toContain('Settings loaded from Monday Knockout. You can change anything below.')
+    expect(inputAt(wrapper, 3).element.value).toBe('8')
+    expect(inputAt(wrapper, 4).element.value).toBe('16')
   })
 
   it('updates the preview when player settings change', async () => {
