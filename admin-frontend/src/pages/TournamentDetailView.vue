@@ -19,6 +19,7 @@ const route = useRoute()
 const router = useRouter()
 const loading = ref(true)
 const error = ref('')
+const loadFailed = ref(false)
 interface TournamentParticipant {
   id: number
   name: string
@@ -118,6 +119,7 @@ function parseTournamentMeta() {
 async function load() {
   loading.value = true
   error.value = ''
+  loadFailed.value = false
   try {
     const tid = props.id || String(route.params.id)
     t.value = await apiFetch<TournamentDetail>(`/api/admin/tournaments/${tid}`)
@@ -129,6 +131,7 @@ async function load() {
     }
   } catch (e: unknown) {
     error.value = formatApiError(e)
+    loadFailed.value = true
   } finally {
     loading.value = false
   }
@@ -234,6 +237,11 @@ function podiumLabel(reference: string, index: number) {
 <template>
   <div class="mx-auto w-full max-w-3xl">
     <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
+    <div v-else-if="loadFailed" class="mx-auto max-w-xl py-12 text-center">
+      <h1 class="text-2xl font-bold text-black">Tournament unavailable</h1>
+      <AppAlert class="mt-4 text-left" type="error" :message="error" />
+      <Button as="router-link" to="/tournaments" class="mt-4" label="Back to tournaments" severity="contrast" />
+    </div>
     <div v-else-if="t" class="space-y-4">
       <AppAlert v-if="error" type="error" :message="error" dismissible @close="error=''" />
       <header class="flex flex-wrap items-start justify-between gap-3">

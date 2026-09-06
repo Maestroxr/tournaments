@@ -4,6 +4,7 @@ import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import WalletAdjustmentPanel from '@/components/WalletAdjustmentPanel.vue'
 import { transferKindLabel } from '@/utils/adminLabels'
 import { useI18n } from '@/i18n'
 
@@ -52,6 +53,8 @@ onMounted(load)
       </div>
       <Button :label="t('common.refresh')" size="small" severity="secondary" outlined @click="load" />
     </div>
+
+    <WalletAdjustmentPanel @adjusted="load" />
 
     <div v-if="error" class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</div>
     <DataTable v-else :value="transfers" :loading="loading" data-key="id" striped-rows show-gridlines size="small">

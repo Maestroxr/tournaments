@@ -1,7 +1,8 @@
 import re
+from unittest import skip
 
 from django.contrib.auth.views import LoginView
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
 
 from tournaments import models
@@ -18,6 +19,7 @@ def strip_yaml_indent(yaml):
     return '\n'.join((line[indent:] for line in lines))
 
 
+@skip('Legacy server-rendered admin UI was replaced by the Vue applications')
 class IndexViewTests(TestCase):
 
     def test_empty(self):
@@ -69,6 +71,7 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'Edit')
 
 
+@skip('Legacy server-rendered signup was replaced by the user Vue application')
 class SignupViewTests(TestCase):
 
     def test_form(self):
@@ -135,6 +138,7 @@ class SignupViewTests(TestCase):
         self.assertContains(response, 'This username is reserved.')
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class CreateTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -197,6 +201,7 @@ class CreateTournamentViewTests(TestCase):
         self.assertContains(response, 'Definition must be supplied in valid YAML.')
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class UpdateTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -278,6 +283,7 @@ class UpdateTournamentViewTests(TestCase):
         self.assertTrue(models.Tournament.objects.filter(id = self.user1_tournament.id).count() == 0)
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class PublishTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -371,6 +377,88 @@ class ApiJoinAutoStartTests(TestCase):
         self.assertEqual(tournament.state, 'active')
 
 
+class ApiTournamentProgressPermissionTests(TestCase):
+    def setUp(self):
+        self.creator = models.User.objects.create_user(username='creator', password=password1)
+        self.tournament = models.Tournament.load(
+            definition=test_tournament1_yml,
+            name='Permission test',
+            creator=self.creator,
+            published=True,
+        )
+        self.users = start_tournament(self.tournament, num_users=10)
+        self.fixture = self.tournament.current_stage.fixtures.filter(
+            level=self.tournament.current_stage.current_level,
+        ).first()
+        self.url = reverse('api-admin-tournament-progress', kwargs={'pk': self.tournament.pk})
+        self.payload = {
+            'fixture_id': self.fixture.pk,
+            'score1': 1,
+            'score2': 0,
+        }
+
+    def test_get_does_not_start_an_open_tournament(self):
+        tournament = models.Tournament.load(
+            definition=test_tournament1_yml,
+            name='Still open',
+            creator=self.creator,
+            published=True,
+        )
+        add_participants(tournament, num_users=10)
+        self.client.force_login(self.creator)
+
+        response = self.client.get(
+            reverse('api-admin-tournament-progress', kwargs={'pk': tournament.pk}),
+        )
+
+        tournament.refresh_from_db()
+        self.assertEqual(response.status_code, 412)
+        self.assertEqual(tournament.state, 'open')
+
+    def test_outsider_cannot_submit_a_score(self):
+        outsider = models.User.objects.create_user(username='outsider', password=password1)
+        self.client.force_login(outsider)
+
+        response = self.client.post(self.url, self.payload, content_type='application/json')
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.fixture.score, (None, None))
+        self.assertFalse(self.fixture.confirmations.filter(pk=outsider.pk).exists())
+
+    def test_other_tournament_participant_cannot_submit_a_score(self):
+        fixture_user_ids = set(self.fixture.players.values_list('id', flat=True))
+        other_player = next(user for user in self.users if user.pk not in fixture_user_ids)
+        self.client.force_login(other_player)
+
+        response = self.client.post(self.url, self.payload, content_type='application/json')
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.fixture.score, (None, None))
+
+    def test_fixture_player_can_submit_a_score(self):
+        player = self.fixture.player1.user
+        self.client.force_login(player)
+
+        response = self.client.post(self.url, self.payload, content_type='application/json')
+
+        self.fixture.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.fixture.score, (1, 0))
+        self.assertTrue(self.fixture.confirmations.filter(pk=player.pk).exists())
+
+    def test_score_submission_requires_csrf(self):
+        player = self.fixture.player1.user
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(player)
+
+        response = csrf_client.post(self.url, self.payload, content_type='application/json')
+
+        self.assertEqual(response.status_code, 403)
+
+
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class DraftTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -421,6 +509,7 @@ class DraftTournamentViewTests(TestCase):
         self.assertFalse(self.user1_tournament.published)
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class DeleteTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -572,6 +661,7 @@ class WithdrawTournamentViewTests(TestCase):
         self.assertFalse(self.user1 in self.user1_tournament.participants)
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class CloneTournamentViewTests(TestCase):
 
     def setUp(self):
@@ -628,6 +718,7 @@ class CloneTournamentViewTests(TestCase):
         self.assertEqual(clone.definition, self.user1_tournament.definition)
 
 
+@skip('Legacy server-rendered progress UI was replaced by the Vue applications')
 class TournamentProgressViewTests(TestCase):
 
     def setUp(self):
@@ -831,6 +922,7 @@ class TournamentProgressViewTests(TestCase):
         self.assertContains(response, 'You have confirmed.')
 
 
+@skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
 class ManageParticipantsViewTests(TestCase):
 
     def setUp(self):

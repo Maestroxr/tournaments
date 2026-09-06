@@ -80,8 +80,8 @@ async function login() {
     <h1 class="mb-4 text-xl font-bold text-black">{{ t('nav.brand') }} {{ t('common.login') }}</h1>
     <AppAlert v-if="alertMessage" type="error" :message="alertMessage" dismissible class="mb-4" @close="alertMessage = ''" />
     <form @submit.prevent="login" class="space-y-3">
-      <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" autocomplete="username" :error="usernameError" @keydown="login" />
-      <AppInput v-model="password" :label="t('users.password')" type="password" :placeholder="t('users.password')" autocomplete="current-password" :error="passwordError" @keydown="login" />
+      <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" autocomplete="username" :error="usernameError" />
+      <AppInput v-model="password" :label="t('users.password')" type="password" :placeholder="t('users.password')" autocomplete="current-password" :error="passwordError" />
       <Button type="submit" :label="t('common.login')" severity="contrast" class="w-full" />
     </form>
   </div>

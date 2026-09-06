@@ -760,30 +760,15 @@ def api_admin_tournament_attendees(request, pk):
         return JsonResponse({"detail": "Not found"}, status=404)
 
 
-@csrf_exempt
 @require_http_methods(["GET", "POST"])
 def api_admin_tournament_progress(request, pk):
-    # Allow any authenticated user to view/progress (like TournamentProgressView), but keep staff check for start via separate endpoint
-    # For progress, participant or staff can view/edit
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
     t = get_object_or_404(models.Tournament, pk=pk)
     if t.state == "draft":
         return JsonResponse({"detail": "Tournament is draft"}, status=412)
-    # If open, try to start it (like TournamentProgressView GET does)
     if t.state == "open":
-        # if t.creator and t.creator_id != request.user.id:
-        #     return JsonResponse({"detail": "Only creator can start"}, status=403)
-        required = t.min_players
-        if t.participations.count() < required:
-            return JsonResponse({"detail": f"Need at least {required} attendees"}, status=412)
-        from django.core.exceptions import ValidationError
-        try:
-            t.test()
-        except ValidationError as e:
-            return JsonResponse({"detail": "; ".join(e.messages) if hasattr(e, "messages") else str(e)}, status=400)
-        t.shuffle_participants()
-        t.update_state()
+        return JsonResponse({"detail": "Tournament has not started"}, status=412)
     if request.method == "GET":
         stages = {}
         current_stage_idx = None
@@ -915,6 +900,10 @@ def api_admin_tournament_progress(request, pk):
         return JsonResponse({"detail": "Fixture not in current stage"}, status=412)
     if fixture.level != t.current_stage.current_level:
         return JsonResponse({"detail": "Fixture not in current level"}, status=412)
+    if not fixture.players.filter(id=request.user.id).exists():
+        return JsonResponse({"detail": "You are not a player in this match"}, status=403)
+    if not t.participations.filter(participant__user=request.user).exists():
+        return JsonResponse({"detail": "You are not a participant in this tournament"}, status=403)
     try:
         new_score = (int(str(data.get("score1")).strip()),
                      int(str(data.get("score2")).strip()))

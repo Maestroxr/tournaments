@@ -129,6 +129,12 @@ const router = createRouter({
         ]) satisfies BreadcrumbFactory,
       },
     },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/pages/NotFoundView.vue'),
+      meta: { breadcrumb: [{ label: '404' }] satisfies BreadcrumbItem[] },
+    },
   ],
 })
 

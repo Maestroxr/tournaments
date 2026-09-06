@@ -28,6 +28,7 @@ const transactions = ref<WalletTransaction[]>([])
 const error = ref('')
 const loading = ref(false)
 const fetching = ref(true)
+const loadFailed = ref(false)
 const { t } = useI18n()
 
 interface UserDetail {
@@ -70,6 +71,7 @@ onMounted(async () => {
     transactions.value = data.transactions ?? []
   } catch (e: unknown) {
     error.value = formatApiError(e)
+    loadFailed.value = true
   } finally {
     fetching.value = false
   }
@@ -125,7 +127,10 @@ function formatDate(value: string) {
     <h1 class="mb-4 text-2xl font-bold text-black">{{ t('users.editTitle') }}</h1>
     <AppAlert v-if="error" class="mb-4" type="error" :message="error" dismissible @close="error = ''" />
     <p v-if="fetching" class="text-sm text-zinc-500">{{ t('common.loading') }}</p>
-    <form v-else @submit.prevent="save" class="space-y-4">
+    <div v-else-if="loadFailed" class="text-center">
+      <Button as="router-link" to="/users" :label="t('nav.users')" severity="contrast" />
+    </div>
+    <form v-else-if="!loadFailed" @submit.prevent="save" class="space-y-4">
       <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" :error="fieldErrors.username" autocomplete="username" />
       <AppInput v-model="email" :label="t('users.email')" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
       <AppInput v-model="new_password" :label="t('users.newPassword')" type="password" placeholder="••••••••" autocomplete="new-password" />
@@ -138,7 +143,7 @@ function formatDate(value: string) {
       </div>
     </form>
 
-    <section v-if="!fetching" class="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
+    <section v-if="!fetching && !loadFailed" class="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
       <div class="mb-3 flex items-center justify-between gap-3">
         <div>
           <h2 class="font-semibold text-black">{{ t('users.wallet') }}</h2>

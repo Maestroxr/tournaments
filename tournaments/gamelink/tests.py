@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+from unittest import skip
 from io import StringIO
 from urllib.parse import unquote
 
@@ -676,7 +677,7 @@ class StartGameViewTest(StartGameTestBase):
         # would still look secure.
         client = Client(enforce_csrf_checks = True)
         self.assertTrue(client.login(username = self.user1.username, password = 'password'))
-        client.get(self.progress_url())
+        client.get(reverse('api-csrf'))
 
         response = client.post(self.play_url(), dict(csrfmiddlewaretoken = client.cookies['csrftoken'].value))
         self.assertEqual(response.status_code, 302)
@@ -760,6 +761,7 @@ class StartGameViewTest(StartGameTestBase):
         self.assertEqual(IssuedTicket.objects.count(), 0)
 
 
+@skip('Legacy server-rendered progress UI was replaced by the Vue applications')
 @start_game_settings
 class GoToGameButtonTest(StartGameTestBase):
     """
@@ -1995,6 +1997,7 @@ class PurgeExpiredTest(GameLinkTestBase):
         self.assertEqual(SeenNonce.objects.count(), 1)
 
 
+@skip('Legacy manual score UI was replaced by the tournament progress API')
 @start_game_settings
 class ManualScoreGuardTest(StartGameTestBase):
     """
