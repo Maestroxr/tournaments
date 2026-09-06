@@ -93,12 +93,10 @@ async function adjust(action: 'deposit' | 'withdraw') {
 </script>
 
 <template>
-  <section class="mb-6 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm">
-    <div
-      class="border-b border-zinc-200 bg-[linear-gradient(120deg,#f8fafc_0%,#ecfdf5_100%)] px-5 py-4"
-    >
-      <h2 class="text-lg font-bold text-zinc-950">{{ t('transfers.walletTitle') }}</h2>
-      <p class="mt-1 text-sm text-zinc-600">{{ t('transfers.walletSubtitle') }}</p>
+  <section class="wallet-adjustment-panel mb-6 overflow-hidden rounded-lg border shadow-sm">
+    <div class="wallet-adjustment-header border-b px-5 py-4">
+      <h2 class="wallet-adjustment-title text-lg font-bold">{{ t('transfers.walletTitle') }}</h2>
+      <p class="wallet-adjustment-subtitle mt-1 text-sm">{{ t('transfers.walletSubtitle') }}</p>
     </div>
 
     <div class="space-y-4 p-5">
@@ -207,3 +205,23 @@ async function adjust(action: 'deposit' | 'withdraw') {
     </div>
   </section>
 </template>
+
+<style scoped>
+.wallet-adjustment-panel {
+  border-color: #263653;
+  background: #111a30;
+}
+
+.wallet-adjustment-header {
+  border-color: #31425f;
+  background: #151f38;
+}
+
+.wallet-adjustment-title {
+  color: #f3f6ff;
+}
+
+.wallet-adjustment-subtitle {
+  color: #aab8d4;
+}
+</style>
