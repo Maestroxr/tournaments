@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import DatePicker from 'primevue/datepicker'
@@ -54,8 +54,31 @@ const doublingEnabled = ref(true)
 const entryFee = ref(0)
 const prizeMoney = ref(0)
 const error = ref('')
+const suggestionError = ref('')
 const submitted = ref(false)
 const loading = ref(false)
+const loadingSuggestions = ref(false)
+
+type ExistingTournament = {
+  id: number
+  name: string
+  state: string
+  min_players?: number
+  max_players?: number | null
+  target_points?: number
+  time_control?: string
+  doubling_enabled?: boolean
+  entry_fee?: string | number
+  prize_money?: string | number
+}
+
+type TournamentSuggestion = {
+  tournament: ExistingTournament
+  duplicateCount: number
+  key: string
+}
+
+const existingTournaments = ref<ExistingTournament[]>([])
 
 const templateOptions = [
   { id: 'knockout', label: 'Knockout', description: 'One loss eliminates a player.', bestFor: 'Fast, decisive events', icon: '🏆' },
@@ -83,6 +106,30 @@ const fieldErrors = computed(() => {
 })
 const visibleErrors = computed(() => submitted.value ? fieldErrors.value : {})
 const selectedFormat = computed(() => templateOptions.find(option => option.id === template.value)!)
+const normalizeMoney = (value: string | number | undefined) => Number(value ?? 0).toFixed(2)
+const settingsKey = (tournament: ExistingTournament) => JSON.stringify({
+  min_players: Number(tournament.min_players ?? 6),
+  max_players: tournament.max_players ?? null,
+  target_points: Number(tournament.target_points ?? 5),
+  time_control: tournament.time_control ?? 'normal',
+  doubling_enabled: tournament.doubling_enabled !== false,
+  entry_fee: normalizeMoney(tournament.entry_fee),
+  prize_money: normalizeMoney(tournament.prize_money),
+})
+const tournamentSuggestions = computed<TournamentSuggestion[]>(() => {
+  const bySettings = new Map<string, TournamentSuggestion>()
+  for (const tournament of existingTournaments.value) {
+    const key = settingsKey(tournament)
+    const existing = bySettings.get(key)
+    if (existing) {
+      existing.duplicateCount += 1
+      continue
+    }
+    bySettings.set(key, { tournament, duplicateCount: 1, key })
+  }
+  return [...bySettings.values()]
+})
+const hasTournamentSuggestions = computed(() => tournamentSuggestions.value.length > 0)
 const maxPlayersModel = computed<number | null>({
   get: () => maxPlayers.value === '' ? null : Number(maxPlayers.value),
   set: (value) => { maxPlayers.value = value === null ? '' : value },
@@ -112,6 +159,44 @@ const preview = computed(() => {
 })
 const playerRangeText = computed(() => maxPlayers.value === '' ? `The tournament may start with ${minPlayers.value} or more registered players.` : `The tournament may start with any number between ${minPlayers.value} and ${maxPlayers.value}.`)
 
+function applySuggestion(tournament: ExistingTournament) {
+  minPlayers.value = Number(tournament.min_players ?? 6)
+  maxPlayers.value = tournament.max_players == null ? '' : Number(tournament.max_players)
+  targetPoints.value = Number(tournament.target_points ?? 5)
+  timeControl.value = tournament.time_control ?? 'normal'
+  doublingEnabled.value = tournament.doubling_enabled !== false
+  entryFee.value = Number(tournament.entry_fee ?? 0)
+  prizeMoney.value = Number(tournament.prize_money ?? 0)
+}
+
+function describeSuggestion(tournament: ExistingTournament) {
+  const max = tournament.max_players == null ? 'No limit' : tournament.max_players
+  return [
+    `${tournament.min_players ?? 6}-${max} players`,
+    `Race to ${tournament.target_points ?? 5}`,
+    tournament.time_control ?? 'normal',
+    tournament.doubling_enabled === false ? 'No doubling' : 'Doubling',
+    `Entry ${normalizeMoney(tournament.entry_fee)}`,
+    `Prize ${normalizeMoney(tournament.prize_money)}`,
+  ].join(' · ')
+}
+
+async function loadExistingTournaments() {
+  loadingSuggestions.value = true
+  suggestionError.value = ''
+  try {
+    existingTournaments.value = await apiFetch<ExistingTournament[]>('/api/admin/tournaments')
+  } catch (caught: unknown) {
+    suggestionError.value = formatApiError(caught)
+  } finally {
+    loadingSuggestions.value = false
+  }
+}
+
+onMounted(() => {
+  void loadExistingTournaments()
+})
+
 async function create() {
   submitted.value = true
   error.value = ''
@@ -131,6 +216,37 @@ async function create() {
     <header class="mb-7"><h1 class="text-2xl font-bold text-black">Create a tournament</h1><p class="mt-1 text-sm text-zinc-600">Set the rules, review what will happen, then create a private draft.</p></header>
     <AppAlert v-if="error" class="mb-5" type="error" :message="error" dismissible @close="error = ''" />
     <form class="space-y-5" @submit.prevent="create">
+      <section class="rounded-xl border border-zinc-200 bg-white p-5">
+        <div class="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 class="font-semibold text-black">Use existing settings</h2>
+            <p class="text-xs text-zinc-500">Different tournament settings are shown once. Exact duplicates are grouped.</p>
+          </div>
+          <span v-if="loadingSuggestions" class="text-xs font-medium text-zinc-500">Loading...</span>
+        </div>
+        <p v-if="suggestionError" class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{{ suggestionError }}</p>
+        <p v-else-if="!loadingSuggestions && !hasTournamentSuggestions" class="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-600">No previous tournament settings found.</p>
+        <div v-else class="grid gap-3 sm:grid-cols-2">
+          <button
+            v-for="suggestion in tournamentSuggestions"
+            :key="suggestion.key"
+            type="button"
+            class="rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-left transition hover:border-emerald-500 hover:bg-emerald-50"
+            @click="applySuggestion(suggestion.tournament)"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="font-semibold text-black">{{ suggestion.tournament.name }}</div>
+                <p class="mt-1 text-xs text-zinc-600">{{ describeSuggestion(suggestion.tournament) }}</p>
+              </div>
+              <span v-if="suggestion.duplicateCount > 1" class="rounded-full bg-zinc-900 px-2 py-1 text-[11px] font-semibold text-white">
+                {{ suggestion.duplicateCount }} same
+              </span>
+            </div>
+          </button>
+        </div>
+      </section>
+
       <section class="rounded-xl border border-zinc-200 bg-white p-5">
         <div class="mb-4 flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white">1</span><div><h2 class="font-semibold text-black">Basics</h2><p class="text-xs text-zinc-500">Name and schedule</p></div></div>
         <div class="grid gap-4 sm:grid-cols-2">

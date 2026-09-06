@@ -15,6 +15,7 @@ vi.mock('@/services/api', () => ({
 
 const routerPush = vi.fn()
 const apiFetchMock = vi.mocked(apiFetch)
+const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0))
 
 const AppInputStub = defineComponent({
   name: 'AppInput',
@@ -172,7 +173,11 @@ function inputAt(wrapper: VueWrapper, index: number): DOMWrapper<HTMLInputElemen
 describe('TournamentCreateView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    apiFetchMock.mockResolvedValue({ id: 8 })
+    apiFetchMock.mockImplementation(async (path, opts) => {
+      if (path === '/api/admin/tournaments' && opts?.method === 'POST') return { id: 8 }
+      if (path === '/api/admin/tournaments') return []
+      return {}
+    })
   })
 
   it('defaults to a knockout draft and explains the generated structure', () => {
@@ -192,7 +197,7 @@ describe('TournamentCreateView', () => {
 
     await wrapper.find('form').trigger('submit.prevent')
 
-    expect(apiFetchMock).not.toHaveBeenCalled()
+    expect(apiFetchMock).not.toHaveBeenCalledWith('/api/admin/tournaments', expect.objectContaining({ method: 'POST' }))
     expect(wrapper.text()).toContain('Review the highlighted fields before creating the draft.')
     expect(wrapper.text()).toContain('Enter a tournament name.')
   })
@@ -223,6 +228,61 @@ describe('TournamentCreateView', () => {
       }),
     })
     expect(routerPush).toHaveBeenCalledWith({ name: 'tournament-detail', params: { id: 8 } })
+  })
+
+  it('shows unique previous settings and groups exact duplicates', async () => {
+    apiFetchMock.mockImplementation(async (path, opts) => {
+      if (path === '/api/admin/tournaments' && opts?.method === 'POST') return { id: 8 }
+      if (path === '/api/admin/tournaments') return [
+        {
+          id: 1,
+          name: 'Monday Knockout',
+          state: 'finished',
+          min_players: 6,
+          max_players: 16,
+          target_points: 5,
+          time_control: 'normal',
+          doubling_enabled: true,
+          entry_fee: '0.00',
+          prize_money: '0.00',
+        },
+        {
+          id: 2,
+          name: 'Copy of Monday',
+          state: 'finished',
+          min_players: 6,
+          max_players: 16,
+          target_points: 5,
+          time_control: 'normal',
+          doubling_enabled: true,
+          entry_fee: '0.00',
+          prize_money: '0.00',
+        },
+        {
+          id: 3,
+          name: 'Fast Final',
+          state: 'finished',
+          min_players: 8,
+          max_players: null,
+          target_points: 7,
+          time_control: 'fast',
+          doubling_enabled: false,
+          entry_fee: '10.00',
+          prize_money: '50.00',
+        },
+      ]
+      return {}
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Use existing settings')
+    expect(wrapper.text()).toContain('Monday Knockout')
+    expect(wrapper.text()).not.toContain('Copy of Monday')
+    expect(wrapper.text()).toContain('2 same')
+    expect(wrapper.text()).toContain('Fast Final')
+    expect(wrapper.text()).toContain('8-No limit players')
+    expect(wrapper.text()).toContain('No doubling')
   })
 
   it('updates the preview when player settings change', async () => {
