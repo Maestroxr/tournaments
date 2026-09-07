@@ -446,7 +446,7 @@ class TournamentRegistration(models.Model):
             return True
         if self.status != self.STATUS_REGISTERED:
             return False
-        return self.payment_status == self.PAYMENT_UNPAID or self.checked_in_at is None
+        return self.payment_status == self.PAYMENT_UNPAID
 
 
 class UserContact(models.Model):

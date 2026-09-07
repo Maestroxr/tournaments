@@ -43,39 +43,36 @@ describe('attendee confirmation dialogs', () => {
     expect(wrapper.emitted('confirm')).toEqual([[false]])
   })
 
-  it('lets the manager decide whether a returning player is charged again', async () => {
+  it('always uses the ordinary full entry-fee charge', async () => {
     useI18n().locale.value = 'en'
     const wrapper = mount(AddPlayerDialog, {
       props: {
         user: { id: 7, username: 'Dana', balance: '50.00' },
         entryFee: 50,
-        previouslyPaid: true,
       },
       global: { plugins: [PrimeVue], stubs: { Dialog: dialogStub } },
     })
 
-    expect(wrapper.text()).toContain('previous payment was not refunded')
-    expect(wrapper.text()).toContain('Tournament entry fee−0.00')
-    await wrapper.getComponent(Checkbox).setValue(true)
     expect(wrapper.text()).toContain('Tournament entry fee−50.00')
+    expect(wrapper.text()).toContain('Charge and add player')
+    expect(wrapper.findComponent(Checkbox).exists()).toBe(false)
     await wrapper.get('.p-button-success').trigger('click')
-    expect(wrapper.emitted('confirm')).toEqual([[true]])
+    expect(wrapper.emitted('confirm')).toEqual([[]])
   })
 
-  it('keeps the charge-again choice when continuing to add balance', async () => {
+  it('offers the ordinary balance top-up when the full fee is not covered', async () => {
     useI18n().locale.value = 'en'
     const wrapper = mount(AddPlayerDialog, {
       props: {
         user: { id: 7, username: 'Dana', balance: '20.00' },
         entryFee: 50,
-        previouslyPaid: true,
-        initialChargeAgain: true,
       },
       global: { plugins: [PrimeVue], stubs: { Dialog: dialogStub } },
     })
 
-    expect(wrapper.getComponent(Checkbox).props('modelValue')).toBe(true)
+    expect(wrapper.text()).toContain('Insufficient balance')
+    expect(wrapper.get('.p-button-success').attributes('disabled')).toBeDefined()
     await wrapper.get('.p-button-warn').trigger('click')
-    expect(wrapper.emitted('topUp')).toEqual([[true]])
+    expect(wrapper.emitted('topUp')).toEqual([[]])
   })
 })

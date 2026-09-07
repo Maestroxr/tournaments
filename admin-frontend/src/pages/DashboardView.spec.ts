@@ -36,7 +36,7 @@ const response = {
     severity: 'warning',
     message: 'legacy server text',
     action_label: 'legacy server text',
-    action_to: '/tournaments/3/progress',
+    action_to: '/tournaments/3/live',
   }],
   active_tournaments: [{
     id: 3,
@@ -81,8 +81,17 @@ const response = {
     amount: '-50.00',
     tournament_name: 'Open Tel Aviv',
     created_at: '2026-09-07T11:30:00Z',
-    to: '/tournaments/4',
+    to: '/tournaments/4/overview',
   }],
+  finance: {
+    revenue: '900.00',
+    refunds: '50.00',
+    prizes: '300.00',
+    expenses: '350.00',
+    net: '550.00',
+    outstanding: '100.00',
+    outstanding_count: 2,
+  },
 }
 
 function view() {
@@ -90,7 +99,7 @@ function view() {
     global: {
       plugins: [PrimeVue],
       stubs: {
-        RouterLink: { template: '<a><slot /></a>' },
+        RouterLink: { props: ['to'], template: '<a :data-to="to"><slot /></a>' },
       },
     },
   })
@@ -122,14 +131,19 @@ describe('DashboardView localization', () => {
     expect(kpis[0]?.classes()).toContain('admin-kpi--critical')
     expect(kpis[1]?.classes()).toContain('admin-kpi--warning')
     expect(wrapper.text()).toContain('Today and upcoming')
-    expect(wrapper.text()).toContain('Registration readiness')
+    expect(wrapper.text()).toContain('Registration progress')
     expect(wrapper.text()).toContain('Unpaid: 1')
-    expect(wrapper.text()).toContain('Checked in: 2')
+    expect(wrapper.text()).not.toContain('Checked in')
     expect(wrapper.get('[aria-label="Registration progress for Open Tel Aviv"]').attributes('aria-valuenow')).toBe('63')
     expect(wrapper.text()).not.toContain('Recently added users')
     expect(wrapper.text()).not.toContain('New users')
     expect(wrapper.text()).toContain('Recent activity')
     expect(wrapper.text()).toContain('organizer charged an entry fee of $50.00 for dana')
+    expect(wrapper.text()).toContain('Financial snapshot')
+    expect(wrapper.text()).toContain('$550.00')
+    expect(wrapper.findAll('a').some(link => link.attributes('data-to') === '/transfers/finance')).toBe(true)
+    expect(wrapper.findAll('.admin-attention a').some(link => link.attributes('data-to') === '/tournaments/3/live')).toBe(true)
+    expect(wrapper.findAll('.dashboard-upcoming-grid a').some(link => link.attributes('data-to') === '/tournaments/4/players')).toBe(true)
     expect(wrapper.findAll('.admin-tournament-card')).toHaveLength(0)
     const html = wrapper.html()
     expect(html.indexOf('attention-heading')).toBeLessThan(html.indexOf('upcoming-heading'))
@@ -187,9 +201,9 @@ describe('DashboardView localization', () => {
     expect(wrapper.text()).toContain('תפעול טורנירים במבט מהיר')
     expect(wrapper.text()).toContain('2 משחקים ממתינים לתוצאה')
     expect(wrapper.text()).toContain('מתנהל כעת')
-    expect(wrapper.text()).toContain('צפייה בהתקדמות')
+    expect(wrapper.text()).toContain('פתיחת חדר הבקרה')
     expect(wrapper.text()).toContain('היום ובקרוב')
-    expect(wrapper.text()).toContain('מוכנות להרשמה')
+    expect(wrapper.text()).toContain('התקדמות ההרשמה')
     expect(wrapper.text()).toContain('5/8')
     expect(wrapper.text()).toContain('פעילות אחרונה')
     expect(wrapper.text()).toContain('organizer גבה דמי כניסה בסך')
@@ -217,10 +231,49 @@ describe('DashboardView localization', () => {
     expect(focus).not.toContain('Create tournament')
     expect(focus).toContain('Unpaid')
     expect(focus).toContain('1')
-    expect(focus).toContain('Checked in')
-    expect(focus).toContain('2')
+    expect(focus).not.toContain('Checked in')
     expect(wrapper.find('.dashboard-upcoming-grid').exists()).toBe(false)
     expect(wrapper.text()).toContain('The next tournament is shown in the action area above.')
+  })
+
+  it('alerts the admin and offers the start flow when registration reaches the minimum', async () => {
+    const baseTournament = response.upcoming_tournaments[0]!
+    const readyTournament = {
+      ...baseTournament,
+      participant_count: 8,
+      registration_summary: {
+        ...baseTournament.registration_summary,
+        registered: 8,
+      },
+    }
+    api.mockResolvedValue({
+      ...response,
+      active_tournaments: [],
+      upcoming_tournaments: [readyTournament],
+      attention: [{
+        ...readyTournament,
+        kind: 'ready_to_start',
+        severity: 'info',
+        message: 'server fallback',
+        action_label: 'server fallback',
+        action_to: '/tournaments/4/overview',
+      }],
+    })
+    const wrapper = view()
+    await flushPromises()
+
+    const focus = wrapper.get('.dashboard-focus-card')
+    expect(focus.text()).toContain('Start tournament')
+    expect(focus.findAll('a').some(link => link.attributes('data-to') === '/tournaments/4/overview')).toBe(true)
+    expect(wrapper.get('.admin-attention').text()).toContain('Ready to start')
+    expect(wrapper.get('.admin-attention').text()).toContain('8 players are registered')
+    expect(wrapper.get('.admin-attention').text()).toContain('The tournament can be started now')
+    expect(wrapper.get('.admin-attention a[data-to="/tournaments/4/overview"]').text()).toContain('Start tournament')
+
+    const registrationFilter = wrapper.findAll('button').find(button => button.text().includes('Registration'))
+    await registrationFilter?.trigger('click')
+    expect(wrapper.findAll('.admin-attention > div')).toHaveLength(1)
+    expect(wrapper.get('.admin-attention').text()).toContain('Ready to start')
   })
 
   it('falls back to a draft when there is no active or upcoming tournament', async () => {
@@ -230,7 +283,7 @@ describe('DashboardView localization', () => {
       name: 'Draft Cup',
       state: 'draft',
       kind: 'draft',
-      action_to: '/tournaments/9?edit=1',
+      action_to: '/tournaments/9/overview?edit=1',
     }
     api.mockResolvedValue({
       ...response,
@@ -336,5 +389,6 @@ describe('DashboardView localization', () => {
     expect(cards[0]?.text()).not.toContain('אליפות ירושלים')
     expect(cards[0]?.text()).toContain('Next: Dana vs. Noam')
     expect(cards[0]?.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('50')
+    expect(cards[0]?.findAll('a').some(link => link.attributes('data-to') === '/tournaments/12/live')).toBe(true)
   })
 })

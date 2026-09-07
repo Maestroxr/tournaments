@@ -129,14 +129,25 @@ const router = createRouter({
     },
     {
       path: '/transfers',
-      name: 'transfers',
-      component: () => import('@/pages/TransfersView.vue'),
+      component: () => import('@/layouts/TransfersWorkspaceLayout.vue'),
       meta: {
         breadcrumb: [
           { label: 'Dashboard', to: '/dashboard' },
           { label: 'Transfers' },
         ] satisfies BreadcrumbItem[],
       },
+      children: [
+        {
+          path: '',
+          name: 'transfers',
+          component: () => import('@/pages/TransfersView.vue'),
+        },
+        {
+          path: 'finance',
+          name: 'transfers-finance',
+          component: () => import('@/pages/FinancialOverviewView.vue'),
+        },
+      ],
     },
     {
       path: '/users/new',

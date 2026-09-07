@@ -11,6 +11,15 @@ const route = useRoute()
 const auth = useAuthStore()
 const { direction, t } = useI18n()
 
+const breadcrumbTranslationKeys: Record<string, string> = {
+  Dashboard: 'nav.dashboard',
+  Tournaments: 'nav.tournaments',
+  'Create Tournament': 'nav.createTournament',
+  Users: 'nav.users',
+  Create: 'common.create',
+  Transfers: 'nav.transfers',
+}
+
 onMounted(() => {
   // Fetch real username from API (GET /api/auth/me) — replaces legacy localStorage fallback
   if (typeof localStorage !== 'undefined') localStorage.removeItem('token')
@@ -22,7 +31,10 @@ const breadcrumbItems = computed<BreadcrumbItem[] | null>(() => {
   const meta = route.meta as { breadcrumb?: BreadcrumbItem[] | ((r: typeof route) => BreadcrumbItem[]) }
   if (!meta.breadcrumb) return null
   const items = typeof meta.breadcrumb === 'function' ? meta.breadcrumb(route) : meta.breadcrumb
-  return items.map(item => item.label === 'Dashboard' ? { ...item, label: t('nav.dashboard') } : item)
+  return items.map((item) => {
+    const translationKey = breadcrumbTranslationKeys[item.label]
+    return translationKey ? { ...item, label: t(translationKey) } : item
+  })
 })
 </script>
 

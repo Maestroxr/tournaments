@@ -86,6 +86,7 @@ body {
 }
 
 .admin-topbar {
+  width: 100%;
   min-height: 64px;
   background: #11182d;
   border-bottom: 1px solid rgba(142, 180, 255, 0.22);
@@ -97,6 +98,7 @@ body {
   align-items: center;
   gap: 24px;
   width: 100%;
+  box-sizing: border-box;
   min-height: 64px;
   padding: 0 clamp(20px, 3vw, 48px);
 }
@@ -129,7 +131,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 .admin-account-meta {
@@ -141,7 +143,7 @@ body {
 }
 
 .admin-account-name { white-space: nowrap; }
-.admin-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.admin-nav { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 3px; min-width: 0; }
 .admin-topbar .admin-nav-link {
   display: inline-flex;
   align-items: center;
@@ -202,7 +204,7 @@ body {
 
 .admin-dashboard .admin-attention {
   border-color: #d9e0ec !important;
-  border-left: 3px solid #d9b65d !important;
+  border-inline-start: 3px solid #d9b65d !important;
 }
 
 .admin-dashboard .admin-tournament-card {
@@ -327,7 +329,7 @@ body,
 .admin-dashboard .admin-kpi,
 .admin-dashboard .admin-tournament-card { background: #111a30 !important; border-color: #263653 !important; }
 .admin-dashboard .admin-kpi > span:nth-child(2) { color: #f3f6ff !important; }
-.admin-dashboard .admin-attention { background: #111a30 !important; border-color: #263653 !important; border-left-color: #d9b65d !important; }
+.admin-dashboard .admin-attention { background: #111a30 !important; border-color: #263653 !important; border-inline-start-color: #d9b65d !important; }
 
 .admin-main .p-inputtext,
 .admin-main .p-select,
@@ -347,8 +349,16 @@ body,
 
 @media (max-width: 920px) {
   .admin-topbar-inner { flex-wrap: wrap; padding-block: 10px; gap: 10px 18px; }
-  .admin-account { margin-left: 0; }
+  .admin-nav { order: 3; flex-basis: 100%; }
+  .admin-account { margin-inline-start: auto; }
   .admin-main { padding: 20px; }
+}
+
+@media (max-width: 360px) {
+  .admin-topbar-inner { padding-inline: 12px; }
+  .admin-account { max-width: 100%; gap: 6px; }
+  .admin-account-name { display: none; }
+  .p-toast { width: calc(100vw - 24px) !important; max-width: calc(100vw - 24px) !important; }
 }
 
 h1,
@@ -457,7 +467,7 @@ code {
   width: 100%;
   max-width: 100%;
   margin: 0;
-  text-align: left;
+  text-align: start;
   border-inline: none;
   min-height: 100svh;
   display: flex;
@@ -591,6 +601,15 @@ code {
     right: 0;
     border-right-color: var(--border);
   }
+}
+
+[dir='rtl'] h1,
+[dir='rtl'] h2 {
+  letter-spacing: normal;
+}
+
+.admin-shell {
+  text-align: start;
 }
 
 /* Keep operations rules after legacy starter styles so they always win. */

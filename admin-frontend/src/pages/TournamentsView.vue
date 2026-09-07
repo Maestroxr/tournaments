@@ -38,18 +38,21 @@ interface Tournament {
   }[]
 }
 const route = useRoute()
+const { t } = useI18n()
 const tournaments = ref<Tournament[]>([])
 const q = ref('')
 const states = ['current', 'all', 'draft', 'open', 'active', 'finished'] as const
 type TournamentStateFilter = typeof states[number]
-const stateOptions = states.map((state) => ({ value: state, label: tournamentStateFilterLabel(state) }))
+const stateOptions = computed(() => states.map((state) => ({
+  value: state,
+  label: tournamentStateFilterLabel(state, t),
+})))
 const requestedState = String(route.query.state ?? 'current')
 const stateFilter = ref<TournamentStateFilter>(
   states.includes(requestedState as TournamentStateFilter) ? requestedState as TournamentStateFilter : 'current',
 )
 const loading = ref(false)
 const error = ref('')
-const { t } = useI18n()
 
 async function load() {
   loading.value = true

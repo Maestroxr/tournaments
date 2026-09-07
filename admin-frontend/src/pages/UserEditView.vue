@@ -142,7 +142,7 @@ async function refreshWallet() {
     <AppAlert v-if="error" class="mb-5" type="error" :message="error" dismissible @close="error = ''" />
 
     <section v-if="fetching" class="rounded-xl border border-zinc-200 bg-white p-8 text-center">
-      <i class="bi bi-arrow-repeat mr-2 animate-spin text-sky-300" />
+      <i class="bi bi-arrow-repeat me-2 animate-spin text-sky-300" />
       <span class="text-sm text-zinc-500">{{ t('users.loadingUser') }}</span>
     </section>
     <div v-else-if="loadFailed" class="rounded-xl border border-zinc-200 bg-white p-8 text-center">

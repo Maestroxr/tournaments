@@ -4,6 +4,8 @@ import { RouterView, useRoute } from 'vue-router'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
 import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
+import TournamentReadyAlert from '@/components/tournament/TournamentReadyAlert.vue'
+import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
 import TournamentWorkspaceSidebar from '@/components/tournament/TournamentWorkspaceSidebar.vue'
 import { apiFetch, formatApiError } from '@/services/api'
 import {
@@ -17,7 +19,17 @@ const { t } = useI18n()
 const tournament = ref<TournamentWorkspaceSummary | null>(null)
 const loading = ref(true)
 const error = ref('')
+const starting = ref(false)
+const showStartDialog = ref(false)
+const startError = ref('')
 const id = computed(() => String(route.params.id))
+const canStart = computed(() => {
+  const current = tournament.value
+  return current?.state === 'open'
+    && current.min_players != null
+    && current.participant_count >= current.min_players
+})
+const showReadyAlert = computed(() => canStart.value && route.name !== 'tournament-detail')
 
 async function load() {
   loading.value = true
@@ -31,6 +43,27 @@ async function load() {
     error.value = formatApiError(caught)
   } finally {
     loading.value = false
+  }
+}
+
+function requestStart() {
+  if (starting.value || !canStart.value) return
+  startError.value = ''
+  showStartDialog.value = true
+}
+
+async function start() {
+  if (!showStartDialog.value || starting.value || !canStart.value) return
+  starting.value = true
+  startError.value = ''
+  try {
+    await apiFetch(`/api/admin/tournaments/${id.value}/start`, { method: 'POST' })
+    showStartDialog.value = false
+    await load()
+  } catch (caught: unknown) {
+    startError.value = formatApiError(caught)
+  } finally {
+    starting.value = false
   }
 }
 
@@ -76,6 +109,14 @@ watch(id, () => void load(), { immediate: true })
         />
       </section>
 
+      <TournamentReadyAlert
+        v-if="showReadyAlert && tournament?.min_players != null"
+        :participant-count="tournament.participant_count"
+        :min-players="tournament.min_players"
+        :starting="starting"
+        @start="requestStart"
+      />
+
       <div v-if="loading" class="tournament-workspace-loading" role="status">
         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
         <span>{{ t('common.loading') }}</span>
@@ -88,6 +129,15 @@ watch(id, () => void load(), { immediate: true })
       </div>
       <RouterView v-else />
     </section>
+    <StartTournamentDialog
+      v-if="showStartDialog && tournament"
+      :name="tournament.name"
+      :participant-count="tournament.participant_count"
+      :busy="starting"
+      :error="startError"
+      @confirm="start"
+      @cancel="showStartDialog = false"
+    />
   </div>
 </template>
 

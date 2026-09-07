@@ -77,7 +77,7 @@ const startsTimeObject = computed<Date | null>({
     <div v-if="!rulesOnly" class="grid grid-cols-1 gap-4 sm:grid-cols-3">
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.date') }}</span>
-        <DatePicker v-model="startsDateObject" date-format="yy-mm-dd" show-icon fluid manual-input :min-date="minStartsDateObject" :input-class="['w-full rounded border px-3 py-2 text-sm text-black focus:outline-none', errors?.starts_at ? 'border-red-500 focus:border-red-500' : 'border-zinc-300 focus:border-zinc-900']" />
+        <DatePicker v-model="startsDateObject" date-format="dd/mm/yy" show-icon fluid manual-input :min-date="minStartsDateObject" :input-class="['w-full rounded border px-3 py-2 text-sm text-black focus:outline-none', errors?.starts_at ? 'border-red-500 focus:border-red-500' : 'border-zinc-300 focus:border-zinc-900']" />
       </label>
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.time') }}</span>

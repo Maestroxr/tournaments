@@ -68,6 +68,29 @@ class TournamentLifecycleTests(TestCase):
         self.assertIsNotNone(self.tournament.draw_confirmed_at)
         self.assertTrue(Fixture.objects.filter(mode__tournament=self.tournament).exists())
 
+    def test_paid_players_can_start_without_check_in(self):
+        participants = [self.add_player(user) for user in self.players[:2]]
+        for participant in participants:
+            TournamentRegistration.objects.create(
+                tournament=self.tournament,
+                participant=participant,
+                payment_status=TournamentRegistration.PAYMENT_PAID,
+                checked_in_at=None,
+            )
+
+        attendees = self.client.get(reverse(
+            "api-admin-tournament-attendees",
+            kwargs={"pk": self.tournament.pk},
+        )).json()
+        started = self.post("api-admin-tournament-start")
+
+        self.assertEqual(attendees["summary"]["checked_in"], 0)
+        self.assertEqual(attendees["summary"]["attention"], 0)
+        self.assertEqual(attendees["summary"]["ready"], 2)
+        self.assertEqual(started.status_code, 200, started.content)
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "active")
+
     def test_existing_confirmed_draw_order_is_preserved_when_starting(self):
         participants = [self.add_player(user) for user in self.players[:2]]
         self.assertEqual(self.tournament.lifecycle_state, "registration_open")
@@ -122,6 +145,13 @@ class TournamentLifecycleTests(TestCase):
             {active["next_match"]["player1"], active["next_match"]["player2"]},
             {participant.name for participant in participants},
         )
+        pending = next(
+            item for item in response.json()["attention"]
+            if item["kind"] == "pending_matches"
+        )
+        self.assertEqual(
+            pending["action_to"], f"/tournaments/{self.tournament.id}/live",
+        )
 
     def test_dashboard_exposes_upcoming_registration_readiness(self):
         participant = self.add_player(self.players[0])
@@ -147,6 +177,53 @@ class TournamentLifecycleTests(TestCase):
             "attention": 1,
             "ready": 0,
         })
+
+    def test_dashboard_flags_open_tournament_as_ready_at_player_threshold(self):
+        for user in self.players[:2]:
+            self.add_player(user)
+
+        response = self.client.get(reverse("api-admin-dashboard"))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        ready = next(
+            item for item in response.json()["attention"]
+            if item["kind"] == "ready_to_start"
+        )
+        self.assertEqual(ready["id"], self.tournament.id)
+        self.assertEqual(ready["severity"], "info")
+        self.assertEqual(ready["message"], "Minimum player count reached")
+        self.assertEqual(ready["action_label"], "Start tournament")
+        self.assertEqual(
+            ready["action_to"], f"/tournaments/{self.tournament.id}/overview",
+        )
+
+    def test_dashboard_does_not_keep_waiting_alert_once_tournament_is_ready(self):
+        for user in self.players[:2]:
+            self.add_player(user)
+
+        response = self.client.get(reverse("api-admin-dashboard"))
+
+        tournament_alerts = [
+            item for item in response.json()["attention"]
+            if item["id"] == self.tournament.id
+        ]
+        self.assertEqual(
+            [item["kind"] for item in tournament_alerts],
+            ["ready_to_start"],
+        )
+
+    def test_dashboard_removes_ready_alert_after_tournament_starts(self):
+        for user in self.players[:2]:
+            self.add_player(user)
+        started = self.post("api-admin-tournament-start")
+        self.assertEqual(started.status_code, 200, started.content)
+
+        response = self.client.get(reverse("api-admin-dashboard"))
+
+        self.assertFalse(any(
+            item["kind"] == "ready_to_start" and item["id"] == self.tournament.id
+            for item in response.json()["attention"]
+        ))
 
     def test_dashboard_exposes_recent_operational_activity(self):
         WalletTransaction.create_entry(

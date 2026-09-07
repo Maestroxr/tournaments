@@ -75,7 +75,7 @@ describe('AttendeesView', () => {
     expect(api.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
   })
 
-  it('keeps the manager choice to charge a returning player after top-up', async () => {
+  it('treats a returning player as an ordinary paid registration', async () => {
     const returning = (balance: string) => ({
       participants: [{
         id: 11, name: 'Dana', username: 'Dana', user_id: 7,
@@ -84,20 +84,31 @@ describe('AttendeesView', () => {
       available: [{ id: 7, username: 'Dana', balance }],
       tournament: { state: 'open', entry_fee: '50.00', max_players: 8 },
     })
-    api.mockResolvedValueOnce(returning('20.00')).mockResolvedValueOnce(returning('50.00'))
+    api.mockResolvedValue(returning('50.00')).mockResolvedValueOnce(returning('20.00'))
     const wrapper = view()
     await flushPromises()
 
+    expect(wrapper.getComponent(AttendeeUserRow).props('entryFee')).toBe(50)
     wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
     await flushPromises()
-    wrapper.getComponent(AddPlayerDialog).vm.$emit('topUp', true)
+    expect(wrapper.findComponent(AddPlayerDialog).exists()).toBe(false)
+
+    wrapper.getComponent(AttendeeUserRow).vm.$emit('topUp')
     await flushPromises()
     wrapper.getComponent(WalletTopUpDialog).vm.$emit('saved', '50.00')
     await flushPromises()
 
-    expect(wrapper.getComponent(AddPlayerDialog).props()).toMatchObject({
-      previouslyPaid: true,
-      initialChargeAgain: true,
+    const dialog = wrapper.getComponent(AddPlayerDialog)
+    expect(dialog.props()).toMatchObject({
+      entryFee: 50,
+      user: { id: 7, balance: '50.00' },
+    })
+    expect(dialog.props()).not.toHaveProperty('previouslyPaid')
+    dialog.vm.$emit('confirm')
+    await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 7 }),
     })
   })
 
@@ -115,7 +126,7 @@ describe('AttendeesView', () => {
     await flushPromises()
     expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
       method: 'POST',
-      body: JSON.stringify({ user_id: 7, charge_again: false }),
+      body: JSON.stringify({ user_id: 7 }),
     })
   })
 
@@ -131,7 +142,7 @@ describe('AttendeesView', () => {
     expect(wrapper.getComponent(AttendeeUserRow).text()).not.toContain('Balance')
     expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
       method: 'POST',
-      body: JSON.stringify({ user_id: 7, charge_again: false }),
+      body: JSON.stringify({ user_id: 7 }),
     })
   })
 

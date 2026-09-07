@@ -2,7 +2,7 @@ import csv
 import json
 import logging
 import random
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
@@ -363,10 +363,9 @@ def _registration_summary(tournament):
             checked_in += 1
         payment_status = registration.payment_status if registration else models.TournamentRegistration.PAYMENT_PAID
         needs_payment = payment_status == models.TournamentRegistration.PAYMENT_UNPAID
-        needs_check_in = not registration or registration.checked_in_at is None
         if needs_payment:
             unpaid += 1
-        if needs_payment or needs_check_in:
+        if needs_payment:
             attention += 1
     waitlisted = sum(
         registration.status == models.TournamentRegistration.STATUS_WAITLISTED
@@ -460,6 +459,11 @@ def _add_to_active_roster(tournament, registration, actor):
         return
     if tournament.max_players is not None and tournament.participations.count() >= tournament.max_players:
         raise ValidationError('Tournament is full.')
+    if (
+        registration.status == models.TournamentRegistration.STATUS_WITHDRAWN
+        and tournament.entry_fee > 0
+    ):
+        registration.payment_status = models.TournamentRegistration.PAYMENT_UNPAID
     _charge_registration(tournament, registration, actor)
     models.Participation.objects.create(
         tournament=tournament,
@@ -893,8 +897,6 @@ def _attendee_rows(tournament):
         elif status == models.TournamentRegistration.STATUS_REGISTERED:
             if payment_status == models.TournamentRegistration.PAYMENT_UNPAID:
                 attention_reasons.append('payment')
-            if checked_in_at is None:
-                attention_reasons.append('check_in')
         rows.append({
             'id': participant.id,
             'name': participant.name,
@@ -1015,11 +1017,6 @@ def api_admin_tournament_attendees(request, pk):
                 return JsonResponse({'detail': 'Already registered'}, status=400)
             if existing:
                 registration = existing
-                if bool(data.get('charge_again')) and (
-                    registration.status == models.TournamentRegistration.STATUS_WITHDRAWN
-                    and registration.payment_status == models.TournamentRegistration.PAYMENT_PAID
-                ):
-                    registration.payment_status = models.TournamentRegistration.PAYMENT_UNPAID
             else:
                 registration = _ensure_registration(
                     t,
@@ -1638,62 +1635,193 @@ def api_admin_tournament_confirm_results(request, pk):
     return JsonResponse(_serialize_tournament(tournament, request))
 
 
-@csrf_exempt
+def _admin_finance_payload(days=30):
+    now = timezone.now()
+    local_today = timezone.localdate(now)
+    finance_kinds = {
+        models.WalletTransaction.KIND_TOURNAMENT_ENTRY,
+        models.WalletTransaction.KIND_TOURNAMENT_REFUND,
+        models.WalletTransaction.KIND_TOURNAMENT_PRIZE,
+    }
+    transactions = (
+        models.WalletTransaction.objects
+        .filter(kind__in=finance_kinds)
+        .select_related("tournament")
+        .order_by("created_at", "id")
+    )
+    if days:
+        start_date = local_today - timedelta(days=days - 1)
+        start_at = timezone.make_aware(
+            datetime.combine(start_date, time.min),
+            timezone.get_current_timezone(),
+        )
+        transactions = transactions.filter(created_at__gte=start_at)
+
+    revenue = Decimal("0.00")
+    refunds = Decimal("0.00")
+    prizes = Decimal("0.00")
+    ignored_transactions = 0
+    daily = {}
+    by_tournament = {}
+
+    def empty_bucket():
+        return {
+            "revenue": Decimal("0.00"),
+            "refunds": Decimal("0.00"),
+            "prizes": Decimal("0.00"),
+        }
+
+    for item in transactions:
+        if item.kind == models.WalletTransaction.KIND_TOURNAMENT_ENTRY:
+            if item.amount >= 0:
+                ignored_transactions += 1
+                continue
+            value = -item.amount
+            bucket_key = "revenue"
+            revenue += value
+        elif item.kind == models.WalletTransaction.KIND_TOURNAMENT_REFUND:
+            if item.amount <= 0:
+                ignored_transactions += 1
+                continue
+            value = item.amount
+            bucket_key = "refunds"
+            refunds += value
+        elif item.kind == models.WalletTransaction.KIND_TOURNAMENT_PRIZE:
+            if item.amount <= 0:
+                ignored_transactions += 1
+                continue
+            value = item.amount
+            bucket_key = "prizes"
+            prizes += value
+
+        local_date = timezone.localtime(item.created_at).date().isoformat()
+        daily.setdefault(local_date, empty_bucket())[bucket_key] += value
+        if item.tournament_id:
+            tournament_bucket = by_tournament.setdefault(item.tournament_id, {
+                "id": item.tournament_id,
+                "name": item.tournament.name,
+                **empty_bucket(),
+            })
+            tournament_bucket[bucket_key] += value
+
+    unpaid_registrations = list(
+        models.TournamentRegistration.objects
+        .filter(
+            status=models.TournamentRegistration.STATUS_REGISTERED,
+            payment_status=models.TournamentRegistration.PAYMENT_UNPAID,
+        )
+        .select_related("tournament")
+    )
+    outstanding = sum(
+        (registration.tournament.entry_fee for registration in unpaid_registrations),
+        Decimal("0.00"),
+    )
+
+    if days:
+        dates = [
+            (local_today - timedelta(days=offset)).isoformat()
+            for offset in range(days - 1, -1, -1)
+        ]
+    else:
+        dates = sorted(daily)
+
+    trend = []
+    for date in dates:
+        bucket = daily.get(date, empty_bucket())
+        expenses = bucket["refunds"] + bucket["prizes"]
+        trend.append({
+            "date": date,
+            "revenue": str(bucket["revenue"]),
+            "expenses": str(expenses),
+            "net": str(bucket["revenue"] - expenses),
+        })
+
+    tournaments = []
+    for bucket in by_tournament.values():
+        expenses = bucket["refunds"] + bucket["prizes"]
+        tournaments.append({
+            "id": bucket["id"],
+            "name": bucket["name"],
+            "revenue": str(bucket["revenue"]),
+            "refunds": str(bucket["refunds"]),
+            "prizes": str(bucket["prizes"]),
+            "expenses": str(expenses),
+            "net": str(bucket["revenue"] - expenses),
+        })
+    tournaments.sort(
+        key=lambda item: Decimal(item["revenue"]) + Decimal(item["expenses"]),
+        reverse=True,
+    )
+
+    expenses = refunds + prizes
+    return {
+        "updated_at": now.isoformat(),
+        "range_days": days,
+        "currency": "USD",
+        "summary": {
+            "revenue": str(revenue),
+            "refunds": str(refunds),
+            "prizes": str(prizes),
+            "expenses": str(expenses),
+            "net": str(revenue - expenses),
+            "outstanding": str(outstanding),
+            "outstanding_count": len(unpaid_registrations),
+        },
+        "trend": trend,
+        "tournaments": tournaments[:12],
+        "ignored_transactions": ignored_transactions,
+    }
+
+
 @require_http_methods(["GET"])
-def api_admin_dashboard(request):
+def api_admin_finance(request):
     err = _require_staff(request)
     if err:
         return err
-
     try:
-        days = int(request.GET.get("days", 7))
+        days = int(request.GET.get("days", 30))
     except (TypeError, ValueError):
-        days = 7
-    if days not in {1, 7, 30}:
-        days = 7
+        days = 30
+    if days not in {0, 7, 30, 90}:
+        return JsonResponse({"detail": "Invalid finance range"}, status=400)
+    return JsonResponse(_admin_finance_payload(days))
 
-    now = timezone.now()
-    period_end = now + timedelta(days=days)
+
+def _admin_tournaments_by_state():
     tournaments = list(
         models.Tournament.objects
         .prefetch_related("participations", "registrations", "stages__fixtures")
         .order_by("starts_at", "-id")
     )
-
     by_state = {"draft": [], "open": [], "active": [], "finished": []}
     for tournament in tournaments:
         by_state[tournament.state].append(tournament)
+    return by_state
 
-    def tournament_summary(tournament, *, include_registration=False):
-        participant_count = tournament.participations.count()
-        summary = {
-            "id": tournament.id,
-            "name": tournament.name,
-            "state": tournament.state,
-            "starts_at": tournament.starts_at.isoformat() if tournament.starts_at else None,
-            "participant_count": participant_count,
-            "min_players": tournament.min_players,
-            "max_players": tournament.max_players,
-        }
-        if include_registration:
-            summary.update({
-                "entry_fee": str(tournament.entry_fee),
-                "registration_summary": _registration_summary(tournament),
-            })
-        return summary
 
-    waiting = [
-        tournament for tournament in by_state["open"]
-        if tournament.participations.count() < tournament.min_players
-    ]
-    upcoming = [
-        tournament for tournament in by_state["open"]
-        if tournament.starts_at and now <= tournament.starts_at <= period_end
-    ]
+def _admin_tournament_summary(tournament, *, include_registration=False):
+    participant_count = tournament.participations.count()
+    summary = {
+        "id": tournament.id,
+        "name": tournament.name,
+        "state": tournament.state,
+        "starts_at": tournament.starts_at.isoformat() if tournament.starts_at else None,
+        "participant_count": participant_count,
+        "min_players": tournament.min_players,
+        "max_players": tournament.max_players,
+    }
+    if include_registration:
+        summary.update({
+            "entry_fee": str(tournament.entry_fee),
+            "registration_summary": _registration_summary(tournament),
+        })
+    return summary
 
+
+def _admin_active_tournament_summaries(tournaments):
     pending_match_count = 0
-    active_tournaments = []
-    for tournament in by_state["active"]:
+    summaries = []
+    for tournament in tournaments:
         stage = tournament.current_stage
         current_fixture_query = stage.current_fixtures if stage else None
         current_fixtures = list(
@@ -1718,7 +1846,7 @@ def api_admin_dashboard(request):
         pending_match_count += pending
         stage_name = stage.name or stage.identifier if stage else "Tournament"
         round_name = stage.get_level_name(stage.current_level) if stage else None
-        summary = tournament_summary(tournament)
+        summary = _admin_tournament_summary(tournament)
         summary.update({
             "stage": stage_name,
             "round": round_name or "Current round",
@@ -1732,54 +1860,140 @@ def api_admin_dashboard(request):
                 "player2": next_fixture.player2.name,
             } if next_fixture else None,
         })
-        active_tournaments.append(summary)
+        summaries.append(summary)
+    return summaries, pending_match_count
 
-    attention = []
+
+def _admin_operational_notifications(*, by_state, active_tournaments, now, draft_limit=None):
+    notifications = []
     for tournament in by_state["open"]:
         participant_count = tournament.participations.count()
         missing = max(tournament.min_players - participant_count, 0)
         if tournament.starts_at and tournament.starts_at < now:
-            attention.append({
-                **tournament_summary(tournament),
+            notification = {
+                **_admin_tournament_summary(tournament),
                 "kind": "overdue",
                 "severity": "critical",
                 "message": "Start time has passed",
                 "action_label": "Review tournament",
-                "action_to": f"/tournaments/{tournament.id}",
-            })
+                "action_to": f"/tournaments/{tournament.id}/overview",
+            }
         elif missing:
-            attention.append({
-                **tournament_summary(tournament),
+            notification = {
+                **_admin_tournament_summary(tournament),
                 "kind": "waiting_players",
                 "severity": "warning",
                 "message": f"Needs {missing} more player{'s' if missing != 1 else ''}",
                 "action_label": "Manage players",
-                "action_to": f"/tournaments/{tournament.id}/attendees",
-            })
+                "action_to": f"/tournaments/{tournament.id}/players",
+            }
+        else:
+            notification = {
+                **_admin_tournament_summary(tournament),
+                "kind": "ready_to_start",
+                "severity": "info",
+                "message": "Minimum player count reached",
+                "action_label": "Start tournament",
+                "action_to": f"/tournaments/{tournament.id}/overview",
+            }
+        notification["notification_id"] = f"{notification['kind']}:{tournament.id}"
+        notifications.append(notification)
 
     for tournament in active_tournaments:
         if tournament["pending_matches"]:
-            attention.append({
+            notifications.append({
                 **tournament,
+                "notification_id": f"pending_matches:{tournament['id']}",
                 "kind": "pending_matches",
                 "severity": "warning",
                 "message": f"{tournament['pending_matches']} match{'es' if tournament['pending_matches'] != 1 else ''} waiting for results",
-                "action_label": "View progress",
-                "action_to": f"/tournaments/{tournament['id']}/progress",
+                "action_label": "Open control room",
+                "action_to": f"/tournaments/{tournament['id']}/live",
             })
 
-    for tournament in by_state["draft"][:3]:
-        attention.append({
-            **tournament_summary(tournament),
+    drafts = by_state["draft"] if draft_limit is None else by_state["draft"][:draft_limit]
+    for tournament in drafts:
+        notifications.append({
+            **_admin_tournament_summary(tournament),
+            "notification_id": f"draft:{tournament.id}",
             "kind": "draft",
             "severity": "info",
             "message": "Draft has not been published",
             "action_label": "Continue editing",
-            "action_to": f"/tournaments/{tournament.id}?edit=1",
+            "action_to": f"/tournaments/{tournament.id}/overview?edit=1",
         })
 
     severity_order = {"critical": 0, "warning": 1, "info": 2}
-    attention.sort(key=lambda item: (severity_order[item["severity"]], item["id"]))
+    notifications.sort(key=lambda item: (severity_order[item["severity"]], item["id"]))
+    return notifications
+
+
+def _admin_notification_counts(notifications):
+    return {
+        "critical": sum(1 for item in notifications if item["severity"] == "critical"),
+        "warning": sum(1 for item in notifications if item["severity"] == "warning"),
+        "info": sum(1 for item in notifications if item["severity"] == "info"),
+    }
+
+
+@require_http_methods(["GET"])
+def api_admin_notifications(request):
+    err = _require_staff(request)
+    if err:
+        return err
+
+    now = timezone.now()
+    by_state = _admin_tournaments_by_state()
+    active_tournaments, _ = _admin_active_tournament_summaries(by_state["active"])
+    notifications = _admin_operational_notifications(
+        by_state=by_state,
+        active_tournaments=active_tournaments,
+        now=now,
+    )
+    return JsonResponse({
+        "updated_at": now.isoformat(),
+        "total": len(notifications),
+        "counts": _admin_notification_counts(notifications),
+        "notifications": notifications,
+    })
+
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def api_admin_dashboard(request):
+    err = _require_staff(request)
+    if err:
+        return err
+
+    try:
+        days = int(request.GET.get("days", 7))
+    except (TypeError, ValueError):
+        days = 7
+    if days not in {1, 7, 30}:
+        days = 7
+
+    now = timezone.now()
+    period_end = now + timedelta(days=days)
+    by_state = _admin_tournaments_by_state()
+
+    waiting = [
+        tournament for tournament in by_state["open"]
+        if tournament.participations.count() < tournament.min_players
+    ]
+    upcoming = [
+        tournament for tournament in by_state["open"]
+        if tournament.starts_at and now <= tournament.starts_at <= period_end
+    ]
+
+    active_tournaments, pending_match_count = _admin_active_tournament_summaries(
+        by_state["active"]
+    )
+    attention = _admin_operational_notifications(
+        by_state=by_state,
+        active_tournaments=active_tournaments,
+        now=now,
+        draft_limit=3,
+    )
 
     active_attention = sum(1 for item in attention if item["kind"] == "pending_matches")
     total_missing_players = sum(
@@ -1810,7 +2024,7 @@ def api_admin_dashboard(request):
             ]),
             "tournament_name": tournament.name,
             "created_at": event.created_at.isoformat(),
-            "to": f"/tournaments/{tournament.id}/progress",
+            "to": f"/tournaments/{tournament.id}/live",
             "_occurred_at": event.created_at,
         })
 
@@ -1830,7 +2044,7 @@ def api_admin_dashboard(request):
             "tournament_name": event.tournament.name if event.tournament else None,
             "created_at": event.created_at.isoformat(),
             "to": (
-                f"/tournaments/{event.tournament_id}"
+                f"/tournaments/{event.tournament_id}/overview"
                 if event.tournament_id else f"/users/{event.user_id}/edit"
             ),
             "_occurred_at": event.created_at,
@@ -1850,7 +2064,7 @@ def api_admin_dashboard(request):
             "subject": event.participant.name,
             "tournament_name": event.tournament.name,
             "created_at": event.registered_at.isoformat(),
-            "to": f"/tournaments/{event.tournament_id}/attendees",
+            "to": f"/tournaments/{event.tournament_id}/players",
             "_occurred_at": event.registered_at,
         })
 
@@ -1885,10 +2099,11 @@ def api_admin_dashboard(request):
         "attention": attention[:8],
         "active_tournaments": active_tournaments[:6],
         "upcoming_tournaments": [
-            tournament_summary(item, include_registration=True)
+            _admin_tournament_summary(item, include_registration=True)
             for item in upcoming[:6]
         ],
         "recent_activity": recent_activity,
+        "finance": _admin_finance_payload(30)["summary"],
     })
 
 

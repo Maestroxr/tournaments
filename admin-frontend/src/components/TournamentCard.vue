@@ -23,14 +23,14 @@ interface Tournament {
   prize_money: string
 }
 defineProps<{ tournament: Tournament }>()
-const { t } = useI18n()
+const { locale, t } = useI18n()
 const router = useRouter()
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduledYet')
   try {
     const d = new Date(s)
-    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    return d.toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-GB', { dateStyle: 'medium', timeStyle: 'short' })
   } catch { return s }
 }
 
@@ -134,7 +134,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
 
     <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
       <TournamentMetaItem :label="t('tournaments.matchFormat')" :value="t('tournaments.raceTo', { points: tournament.target_points })" />
-      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control)" />
+      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, t)" />
       <TournamentMetaItem
         :label="t('tournaments.doublingCube')"
         :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')"
@@ -164,7 +164,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
         class="inline-flex items-center justify-center gap-2 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-black focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2"
       >
         {{ primaryActionLabel(tournament.state) }}
-        <i class="bi bi-arrow-right" aria-hidden="true"></i>
+        <i class="bi bi-arrow-right rtl:rotate-180" aria-hidden="true"></i>
       </RouterLink>
     </div>
   </article>

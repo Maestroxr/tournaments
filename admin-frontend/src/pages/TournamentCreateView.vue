@@ -579,7 +579,7 @@ async function create() {
                   ><span class="mb-1 block text-sm font-medium">{{ t('tournaments.date') }}</span
                   ><DatePicker
                     v-model="startsDateObject"
-                    date-format="yy-mm-dd"
+                    date-format="dd/mm/yy"
                     show-icon
                     fluid
                     manual-input
@@ -907,7 +907,7 @@ async function create() {
               :loading="loading"
               :disabled="nextButtonDisabled"
               severity="success"
-              icon="bi bi-arrow-right-circle"
+              :icon="direction === 'rtl' ? 'bi bi-arrow-left-circle' : 'bi bi-arrow-right-circle'"
               :icon-pos="direction === 'rtl' ? 'right' : 'left'"
             />
           </footer>

@@ -1,30 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
-import Checkbox from 'primevue/checkbox'
 import AppAlert from '@/components/AppAlert.vue'
 import { useI18n } from '@/i18n'
 
 const props = defineProps<{
   user: { id: number; username: string; balance?: string | null }
   entryFee: number
-  previouslyPaid?: boolean
-  initialChargeAgain?: boolean
   busy?: boolean
   error?: string
 }>()
-const emit = defineEmits<{ confirm: [chargeAgain: boolean]; cancel: []; topUp: [chargeAgain: boolean] }>()
+const emit = defineEmits<{ confirm: []; cancel: []; topUp: [] }>()
 const { t, locale } = useI18n()
 const formatMoney = (value: number) => value.toLocaleString(
   locale.value === 'he' ? 'he-IL' : 'en-US',
   { minimumFractionDigits: 2, maximumFractionDigits: 2 },
 )
 const balance = computed(() => Number(props.user.balance ?? 0))
-const chargeAgain = ref(Boolean(props.previouslyPaid && props.initialChargeAgain))
-const amountToCharge = computed(() => props.previouslyPaid && !chargeAgain.value ? 0 : props.entryFee)
-const sufficientBalance = computed(() => balance.value >= amountToCharge.value)
-const balanceAfter = computed(() => Math.max(0, balance.value - amountToCharge.value))
+const sufficientBalance = computed(() => balance.value >= props.entryFee)
+const balanceAfter = computed(() => Math.max(0, balance.value - props.entryFee))
 function cancel() { if (!props.busy) emit('cancel') }
 </script>
 
@@ -42,20 +37,16 @@ function cancel() { if (!props.busy) emit('cancel') }
     </div>
     <dl class="attendee-confirm-dialog__amounts">
       <div><dt>{{ t('attendees.currentBalance') }}</dt><dd>{{ formatMoney(balance) }}</dd></div>
-      <div><dt>{{ t('attendees.entryFeeLabel') }}</dt><dd class="is-charge">−{{ formatMoney(amountToCharge) }}</dd></div>
+      <div><dt>{{ t('attendees.entryFeeLabel') }}</dt><dd class="is-charge">−{{ formatMoney(entryFee) }}</dd></div>
       <div><dt>{{ t('attendees.balanceAfterCharge') }}</dt><dd>{{ formatMoney(balanceAfter) }}</dd></div>
     </dl>
-    <label v-if="previouslyPaid" class="attendee-confirm-dialog__choice" for="charge-player-again">
-      <Checkbox v-model="chargeAgain" binary input-id="charge-player-again" :disabled="busy" />
-      <span><strong>{{ t('attendees.chargeAgainOption', { amount: formatMoney(entryFee) }) }}</strong><small>{{ t('attendees.previousPaymentKept') }}</small></span>
-    </label>
-    <AppAlert v-if="!sufficientBalance" type="warning" :message="t('attendees.chargeAgainInsufficient')" />
+    <AppAlert v-if="!sufficientBalance" type="warning" :message="t('attendees.insufficientBalance')" />
     <AppAlert v-if="error" type="error" :message="error" />
     <template #footer>
       <div class="attendee-confirm-dialog__footer">
         <Button :label="t('common.cancel')" severity="secondary" outlined :disabled="busy" @click="cancel" />
-        <Button v-if="!sufficientBalance" :label="t('attendees.topUp')" icon="bi bi-wallet2" severity="warn" :disabled="busy" @click="emit('topUp', chargeAgain)" />
-        <Button :label="t(previouslyPaid ? 'attendees.confirmRestoreAction' : 'attendees.confirmAddAction')" icon="bi bi-person-plus" severity="success" :loading="busy" :disabled="busy || !sufficientBalance" @click="emit('confirm', chargeAgain)" />
+        <Button v-if="!sufficientBalance" :label="t('attendees.topUp')" icon="bi bi-wallet2" severity="warn" :disabled="busy" @click="emit('topUp')" />
+        <Button :label="t('attendees.confirmAddAction')" icon="bi bi-person-plus" severity="success" :loading="busy" :disabled="busy || !sufficientBalance" @click="emit('confirm')" />
       </div>
     </template>
   </Dialog>
@@ -70,9 +61,5 @@ function cancel() { if (!props.busy) emit('cancel') }
 .attendee-confirm-dialog__amounts div { display: flex; justify-content: space-between; gap: 16px; color: #aebed5; font-size: 13px; }
 .attendee-confirm-dialog__amounts dd { margin: 0; color: #f0f5ff; font-weight: 700; }
 .attendee-confirm-dialog__amounts .is-charge { color: #ffbd86; }
-.attendee-confirm-dialog__choice { display: flex; align-items: flex-start; gap: 11px; margin: 16px 0; padding: 13px; border: 1px solid #385575; border-radius: 11px; background: #16283e; cursor: pointer; }
-.attendee-confirm-dialog__choice span { display: grid; gap: 3px; }
-.attendee-confirm-dialog__choice strong { color: #d8eaff; font-size: 13px; }
-.attendee-confirm-dialog__choice small { color: #94a9c3; font-size: 11px; }
 .attendee-confirm-dialog__footer { display: flex; justify-content: flex-end; gap: 10px; width: 100%; }
 </style>

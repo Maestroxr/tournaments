@@ -1,4 +1,5 @@
 const BASE = '/tournaments-api'
+export const ADMIN_NOTIFICATIONS_CHANGED_EVENT = 'admin-notifications-changed'
 
 type FetchOpts = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
 
@@ -90,6 +91,9 @@ export async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T
   if (!res.ok) {
     const body = await res.text()
     throw new ApiError(res.status, res.statusText, body)
+  }
+  if (opts.method && !['GET', 'HEAD'].includes(opts.method.toUpperCase()) && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(ADMIN_NOTIFICATIONS_CHANGED_EVENT))
   }
   if (res.status === 204) return null as unknown as T
   return (await res.json()) as T

@@ -6,6 +6,7 @@ import SelectButton from 'primevue/selectbutton'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
 import { useI18n } from '@/i18n'
+import type { FinanceSummary } from '@/types/finance'
 
 type RangeDays = 1 | 7 | 30
 type Severity = 'critical' | 'warning' | 'info'
@@ -14,7 +15,6 @@ type ActivityKind = 'fixture' | 'wallet' | 'registration'
 
 interface RegistrationSummary {
   registered: number
-  checked_in: number
   unpaid: number
   waitlisted: number
   attention: number
@@ -48,7 +48,7 @@ interface ActiveTournament extends TournamentSummary {
 }
 
 interface AttentionItem extends TournamentSummary {
-  kind: 'overdue' | 'waiting_players' | 'pending_matches' | 'draft'
+  kind: 'overdue' | 'waiting_players' | 'ready_to_start' | 'pending_matches' | 'draft'
   severity: Severity
   pending_matches?: number
   message: string
@@ -91,6 +91,7 @@ interface DashboardData {
   active_tournaments: ActiveTournament[]
   upcoming_tournaments: TournamentSummary[]
   recent_activity: ActivityItem[]
+  finance: FinanceSummary
 }
 
 type DashboardPayload = Partial<Omit<DashboardData, 'kpis' | 'counts'>> & {
@@ -99,6 +100,15 @@ type DashboardPayload = Partial<Omit<DashboardData, 'kpis' | 'counts'>> & {
 }
 
 const emptyKpi = (): KpiValue => ({ value: 0, context: '' })
+const emptyFinance = (): FinanceSummary => ({
+  revenue: '0.00',
+  refunds: '0.00',
+  prizes: '0.00',
+  expenses: '0.00',
+  net: '0.00',
+  outstanding: '0.00',
+  outstanding_count: 0,
+})
 
 function normalizeDashboardData(payload: DashboardPayload): DashboardData {
   const activeTournaments = Array.isArray(payload.active_tournaments)
@@ -135,6 +145,7 @@ function normalizeDashboardData(payload: DashboardPayload): DashboardData {
       ? payload.upcoming_tournaments
       : [],
     recent_activity: Array.isArray(payload.recent_activity) ? payload.recent_activity : [],
+    finance: { ...emptyFinance(), ...payload.finance },
   }
 }
 
@@ -168,7 +179,7 @@ const focusCard = computed(() => {
           ),
       actionLabel: t('dashboard.primary.openControlRoom'),
       icon: 'bi bi-play-circle',
-      to: `/tournaments/${active.id}/progress`,
+      to: `/tournaments/${active.id}/live`,
       state: active.state,
       meta: [
         { label: t('dashboard.players'), value: active.participant_count, icon: 'bi-people', direction: 'ltr' as const },
@@ -186,14 +197,15 @@ const focusCard = computed(() => {
   const upcoming = data.value?.upcoming_tournaments?.[0]
   if (upcoming) {
     const registration = upcoming.registration_summary
+    const readyToStart = isReadyToStart(upcoming)
     return {
       kind: 'upcoming',
       eyebrow: t('dashboard.upcoming'),
       title: upcoming.name,
       description: formatDate(upcoming.starts_at),
-      actionLabel: t('dashboard.actions.managePlayers'),
-      icon: 'bi bi-people',
-      to: `/tournaments/${upcoming.id}/attendees`,
+      actionLabel: t(readyToStart ? 'dashboard.actions.startTournament' : 'dashboard.actions.managePlayers'),
+      icon: readyToStart ? 'bi bi-play-circle' : 'bi bi-people',
+      to: `/tournaments/${upcoming.id}/${readyToStart ? 'overview' : 'players'}`,
       state: upcoming.state,
       meta: [
         {
@@ -204,7 +216,6 @@ const focusCard = computed(() => {
         },
         ...(registration ? [
           { label: t('dashboard.unpaid'), value: registration.unpaid, icon: 'bi-credit-card', direction: 'ltr' as const },
-          { label: t('dashboard.checkedIn'), value: registration.checked_in, icon: 'bi-person-check', direction: 'ltr' as const },
         ] : []),
       ],
     }
@@ -240,6 +251,10 @@ const focusCard = computed(() => {
 
 function countText(count: number, singularKey: string, pluralKey: string) {
   return t(count === 1 ? singularKey : pluralKey, { count })
+}
+
+function isReadyToStart(tournament: TournamentSummary) {
+  return tournament.state === 'open' && tournament.participant_count >= tournament.min_players
 }
 
 const kpiCards = computed(() => {
@@ -324,7 +339,7 @@ const sortedAttention = computed(() => {
 
 const filteredAttention = computed(() => sortedAttention.value.filter(item => {
   if (attentionFilter.value === 'critical') return item.severity === 'critical'
-  if (attentionFilter.value === 'registration') return item.kind === 'waiting_players'
+  if (attentionFilter.value === 'registration') return ['waiting_players', 'ready_to_start'].includes(item.kind)
   if (attentionFilter.value === 'results') return item.kind === 'pending_matches'
   return true
 }))
@@ -332,7 +347,7 @@ const filteredAttention = computed(() => sortedAttention.value.filter(item => {
 const attentionFilters = computed<{ value: AttentionFilter; label: string; count: number }[]>(() => [
   { value: 'all', label: t('dashboard.attentionFilters.all'), count: sortedAttention.value.length },
   { value: 'critical', label: t('dashboard.attentionFilters.critical'), count: sortedAttention.value.filter(item => item.severity === 'critical').length },
-  { value: 'registration', label: t('dashboard.attentionFilters.registration'), count: sortedAttention.value.filter(item => item.kind === 'waiting_players').length },
+  { value: 'registration', label: t('dashboard.attentionFilters.registration'), count: sortedAttention.value.filter(item => ['waiting_players', 'ready_to_start'].includes(item.kind)).length },
   { value: 'results', label: t('dashboard.attentionFilters.results'), count: sortedAttention.value.filter(item => item.kind === 'pending_matches').length },
 ])
 
@@ -397,6 +412,9 @@ function attentionLabel(kind: AttentionItem['kind']) {
 
 function attentionMessage(item: AttentionItem) {
   if (item.kind === 'overdue') return t('dashboard.attentionMessages.overdue')
+  if (item.kind === 'ready_to_start') {
+    return t('dashboard.attentionMessages.readyToStart', { count: item.participant_count })
+  }
   if (item.kind === 'waiting_players') {
     const count = Math.max(item.min_players - item.participant_count, 0)
     return countText(
@@ -418,8 +436,9 @@ function attentionMessage(item: AttentionItem) {
 
 function attentionActionLabel(kind: AttentionItem['kind']) {
   if (kind === 'overdue') return t('dashboard.actions.reviewTournament')
+  if (kind === 'ready_to_start') return t('dashboard.actions.startTournament')
   if (kind === 'waiting_players') return t('dashboard.actions.managePlayers')
-  if (kind === 'pending_matches') return t('dashboard.actions.viewProgress')
+  if (kind === 'pending_matches') return t('dashboard.primary.openControlRoom')
   return t('dashboard.actions.continueEditing')
 }
 
@@ -430,6 +449,7 @@ function attentionUrgency(item: AttentionItem) {
   if (item.kind === 'waiting_players' && item.starts_at) {
     return t('dashboard.attentionUrgency.startsAt', { date: formatDate(item.starts_at) })
   }
+  if (item.kind === 'ready_to_start') return t('dashboard.attentionUrgency.readyNow')
   if (item.kind === 'pending_matches') return t('dashboard.attentionUrgency.resultNow')
   if (item.kind === 'draft') return t('dashboard.attentionUrgency.notPublished')
   return t('dashboard.notScheduled')
@@ -613,15 +633,12 @@ onMounted(load)
                 <i :class="['bi me-1', tournament.registration_summary.unpaid ? 'bi-credit-card' : 'bi-check-circle']" aria-hidden="true"></i>
                 {{ tournament.registration_summary.unpaid ? t('dashboard.unpaidCount', { count: tournament.registration_summary.unpaid }) : t('dashboard.paymentsSettled') }}
               </span>
-              <span class="rounded-full bg-zinc-100 px-2 py-1 font-medium text-zinc-600">
-                <i class="bi bi-person-check me-1" aria-hidden="true"></i>{{ t('dashboard.checkedInCount', { count: tournament.registration_summary.checked_in }) }}
-              </span>
               <span v-if="tournament.registration_summary.waitlisted" class="rounded-full bg-blue-50 px-2 py-1 font-medium text-blue-700">
                 {{ t('dashboard.waitlistedCount', { count: tournament.registration_summary.waitlisted }) }}
               </span>
             </div>
-            <RouterLink :to="`/tournaments/${tournament.id}/attendees`" class="mt-4 block rounded-lg border border-zinc-300 px-3 py-2 text-center text-sm font-medium text-zinc-800 hover:bg-zinc-50">
-              {{ t('dashboard.actions.managePlayers') }}
+            <RouterLink :to="`/tournaments/${tournament.id}/${isReadyToStart(tournament) ? 'overview' : 'players'}`" class="mt-4 block rounded-lg border border-zinc-300 px-3 py-2 text-center text-sm font-medium text-zinc-800 hover:bg-zinc-50">
+              {{ t(isReadyToStart(tournament) ? 'dashboard.actions.startTournament' : 'dashboard.actions.managePlayers') }}
             </RouterLink>
           </li>
         </ul>
@@ -649,6 +666,34 @@ onMounted(load)
             <span class="mt-2 block text-3xl font-bold tracking-tight text-black" dir="ltr">{{ kpi.value }}</span>
             <span class="mt-1 block text-xs leading-5 text-zinc-500">{{ kpi.context }}</span>
           </RouterLink>
+        </div>
+      </section>
+
+      <section aria-labelledby="finance-preview-heading">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 id="finance-preview-heading" class="text-lg font-semibold text-black">{{ t('dashboard.finance.title') }}</h2>
+            <p class="text-sm text-zinc-500">{{ t('dashboard.finance.subtitle') }}</p>
+          </div>
+          <RouterLink to="/transfers/finance" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline">{{ t('dashboard.finance.open') }}</RouterLink>
+        </div>
+        <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div class="rounded-lg border border-zinc-200 bg-white p-4">
+            <span class="text-xs font-medium text-zinc-500">{{ t('finance.revenue') }}</span>
+            <strong class="mt-2 block text-xl font-bold text-emerald-700" dir="ltr">{{ formatMoney(data.finance.revenue) }}</strong>
+          </div>
+          <div class="rounded-lg border border-zinc-200 bg-white p-4">
+            <span class="text-xs font-medium text-zinc-500">{{ t('finance.expenses') }}</span>
+            <strong class="mt-2 block text-xl font-bold text-red-700" dir="ltr">{{ formatMoney(data.finance.expenses) }}</strong>
+          </div>
+          <div class="rounded-lg border border-zinc-200 bg-white p-4">
+            <span class="text-xs font-medium text-zinc-500">{{ t('finance.net') }}</span>
+            <strong :class="['mt-2 block text-xl font-bold', Number(data.finance.net) >= 0 ? 'text-emerald-700' : 'text-red-700']" dir="ltr">{{ formatMoney(data.finance.net) }}</strong>
+          </div>
+          <div class="rounded-lg border border-zinc-200 bg-white p-4">
+            <span class="text-xs font-medium text-zinc-500">{{ t('finance.outstanding') }}</span>
+            <strong class="mt-2 block text-xl font-bold text-amber-700" dir="ltr">{{ formatMoney(data.finance.outstanding) }}</strong>
+          </div>
         </div>
       </section>
 
@@ -689,16 +734,16 @@ onMounted(load)
               <span v-else>{{ t('dashboard.noNextMatch') }}</span>
             </p>
             <div class="mt-3 grid grid-cols-2 divide-x divide-zinc-100 border-y border-zinc-100 py-3 text-sm">
-              <div class="pr-3">
+              <div class="pe-3">
                 <p class="text-xs text-zinc-500">{{ t('dashboard.players') }}</p>
                 <p class="mt-0.5 font-semibold text-black" dir="ltr"><i class="bi bi-people me-1 text-zinc-400" aria-hidden="true"></i>{{ tournament.participant_count }}</p>
               </div>
-              <div class="pl-3">
+              <div class="ps-3">
                 <p class="text-xs text-zinc-500">{{ t('dashboard.pendingMatches') }}</p>
                 <p :class="['mt-0.5 font-semibold', tournament.pending_matches ? 'text-amber-700' : 'text-emerald-700']" dir="ltr"><i class="bi bi-hourglass-split me-1" aria-hidden="true"></i>{{ tournament.pending_matches }}</p>
               </div>
             </div>
-            <RouterLink :to="`/tournaments/${tournament.id}/progress`" class="mt-4 block rounded-lg bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black">{{ t('dashboard.actions.viewProgress') }}</RouterLink>
+            <RouterLink :to="`/tournaments/${tournament.id}/live`" class="mt-4 block rounded-lg bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white hover:bg-black">{{ t('dashboard.primary.openControlRoom') }}</RouterLink>
           </article>
         </div>
       </section>

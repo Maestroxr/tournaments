@@ -89,10 +89,22 @@ class AttendeeOperationsTests(TestCase):
         blocked = self.client.post(reverse('api-join', kwargs={'pk': self.tournament.pk}))
         self.assertEqual(blocked.status_code, 412)
 
-    def test_bulk_check_in_and_payment_status_update_attention(self):
+    def test_check_in_does_not_affect_readiness_but_payment_does(self):
         self.post_player(self.players[0])
         participant_id = self.participant_id(self.players[0])
-        self.patch([participant_id], 'mark_unpaid')
+
+        initial = self.client.get(self.url).json()
+        self.assertIsNone(initial['participants'][0]['checked_in_at'])
+        self.assertFalse(initial['participants'][0]['requires_attention'])
+        self.assertEqual(initial['participants'][0]['attention_reasons'], [])
+        self.assertEqual(initial['summary']['attention'], 0)
+        self.assertEqual(initial['summary']['ready'], 1)
+
+        unpaid = self.patch([participant_id], 'mark_unpaid').json()
+        self.assertTrue(unpaid['participants'][0]['requires_attention'])
+        self.assertEqual(unpaid['participants'][0]['attention_reasons'], ['payment'])
+        self.assertEqual(unpaid['summary']['attention'], 1)
+        self.assertEqual(unpaid['summary']['ready'], 0)
 
         response = self.patch([participant_id], 'check_in')
 
@@ -100,9 +112,28 @@ class AttendeeOperationsTests(TestCase):
         row = response.json()['participants'][0]
         self.assertIsNotNone(row['checked_in_at'])
         self.assertTrue(row['requires_attention'])
+        self.assertEqual(row['attention_reasons'], ['payment'])
         paid = self.patch([participant_id], 'mark_paid').json()
         self.assertFalse(paid['participants'][0]['requires_attention'])
         self.assertEqual(paid['summary']['ready'], 1)
+
+    def test_registration_attention_does_not_require_check_in(self):
+        participant = Participant.get_or_create_for_user(self.players[0])
+        registration = TournamentRegistration.objects.create(
+            tournament=self.tournament,
+            participant=participant,
+            payment_status=TournamentRegistration.PAYMENT_PAID,
+        )
+
+        self.assertIsNone(registration.checked_in_at)
+        self.assertFalse(registration.requires_attention)
+
+        registration.payment_status = TournamentRegistration.PAYMENT_UNPAID
+        self.assertTrue(registration.requires_attention)
+
+        registration.status = TournamentRegistration.STATUS_WAITLISTED
+        registration.payment_status = TournamentRegistration.PAYMENT_PAID
+        self.assertTrue(registration.requires_attention)
 
     def test_withdrawal_refunds_and_keeps_history(self):
         self.post_player(self.players[0])
@@ -122,7 +153,7 @@ class AttendeeOperationsTests(TestCase):
         self.tournament.refresh_from_db()
         self.assertTrue(self.tournament.registration_open)
 
-    def test_withdrawal_can_remove_without_refunding(self):
+    def test_restoring_without_a_refund_charges_the_entry_fee_again(self):
         self.post_player(self.players[0])
         participant_id = self.participant_id(self.players[0])
 
@@ -136,21 +167,68 @@ class AttendeeOperationsTests(TestCase):
         self.assertEqual(registration.payment_status, TournamentRegistration.PAYMENT_PAID)
         self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('25.00'))
 
+        self.tournament.entry_fee = Decimal('20.00')
+        self.tournament.save(update_fields=['entry_fee'])
+
         restored = self.post_player(self.players[0])
 
         self.assertEqual(restored.status_code, 200, restored.content)
-        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('25.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('5.00'))
         self.assertEqual(WalletTransaction.objects.filter(
-            user=self.players[0], kind=WalletTransaction.KIND_TOURNAMENT_ENTRY).count(), 1)
+            user=self.players[0], kind=WalletTransaction.KIND_TOURNAMENT_ENTRY).count(), 2)
+        self.assertEqual(WalletTransaction.objects.filter(
+            user=self.players[0],
+            kind=WalletTransaction.KIND_TOURNAMENT_ENTRY,
+        ).first().amount, Decimal('-20.00'))
 
         removed_again = self.patch([participant_id], 'withdraw', refund=False)
         self.assertEqual(removed_again.status_code, 200, removed_again.content)
-        charged_again = self.post_player(self.players[0], charge_again=True)
+        insufficient = self.post_player(self.players[0], charge_again=False)
 
-        self.assertEqual(charged_again.status_code, 200, charged_again.content)
-        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('0.00'))
+        self.assertEqual(insufficient.status_code, 400, insufficient.content)
+        self.assertEqual(insufficient.json()['code'], 'insufficient_funds')
+        self.assertEqual(insufficient.json()['shortfall'], '15.00')
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('5.00'))
         self.assertEqual(WalletTransaction.objects.filter(
             user=self.players[0], kind=WalletTransaction.KIND_TOURNAMENT_ENTRY).count(), 2)
+        registration.refresh_from_db()
+        self.assertEqual(registration.status, TournamentRegistration.STATUS_WITHDRAWN)
+        self.assertFalse(self.tournament.participations.filter(participant_id=participant_id).exists())
+
+    def test_restoring_to_a_free_tournament_stays_free(self):
+        self.tournament.entry_fee = Decimal('0.00')
+        self.tournament.save(update_fields=['entry_fee'])
+        initial_balance = WalletTransaction.balance_for_user(self.players[0])
+
+        added = self.post_player(self.players[0])
+        participant_id = self.participant_id(self.players[0])
+        removed = self.patch([participant_id], 'withdraw', refund=False)
+        restored = self.post_player(self.players[0], charge_again=True)
+
+        self.assertEqual(added.status_code, 200, added.content)
+        self.assertEqual(removed.status_code, 200, removed.content)
+        self.assertEqual(restored.status_code, 200, restored.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), initial_balance)
+        self.assertFalse(WalletTransaction.objects.filter(
+            user=self.players[0],
+            tournament=self.tournament,
+            kind=WalletTransaction.KIND_TOURNAMENT_ENTRY,
+        ).exists())
+
+    def test_restore_action_also_charges_a_withdrawn_paid_player(self):
+        self.post_player(self.players[0])
+        participant_id = self.participant_id(self.players[0])
+        self.patch([participant_id], 'withdraw', refund=False)
+
+        restored = self.patch([participant_id], 'restore')
+
+        self.assertEqual(restored.status_code, 200, restored.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('0.00'))
+        self.assertEqual(WalletTransaction.objects.filter(
+            user=self.players[0],
+            tournament=self.tournament,
+            kind=WalletTransaction.KIND_TOURNAMENT_ENTRY,
+        ).count(), 2)
 
     def test_waitlisted_player_can_be_promoted_after_a_place_opens(self):
         self.post_player(self.players[0])

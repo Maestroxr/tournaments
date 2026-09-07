@@ -10,6 +10,7 @@ import TournamentLiveAttention from '@/components/tournament/TournamentLiveAtten
 import TournamentLiveMatchGroup from '@/components/tournament/TournamentLiveMatchGroup.vue'
 import TournamentBracketMatch from '@/components/tournament/TournamentBracketMatch.vue'
 import TournamentMatchDialog from '@/components/tournament/TournamentMatchDialog.vue'
+import TournamentResultsConfirmDialog from '@/components/tournament/TournamentResultsConfirmDialog.vue'
 import { apiFetch, ApiError } from '@/services/api'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture, TournamentProgressData } from '@/types/tournamentProgress'
@@ -139,15 +140,27 @@ describe('Tournament workspace', () => {
       }
       return finished
     })
-    vi.stubGlobal('confirm', vi.fn(() => true))
+    const nativeConfirm = vi.fn()
+    vi.stubGlobal('confirm', nativeConfirm)
     const { wrapper } = await view('/tournaments/20/results')
 
     const approve = wrapper.findAll('button').find(button => button.text().includes('Approve final results'))!
     await approve.trigger('click')
     await flushPromises()
 
+    expect(nativeConfirm).not.toHaveBeenCalled()
+    expect(wrapper.getComponent(TournamentResultsConfirmDialog).props()).toMatchObject({
+      tournamentName: 'Club cup',
+      busy: false,
+    })
+    expect(api.mock.calls.some(([path]) => String(path).endsWith('/results/confirm'))).toBe(false)
+
+    wrapper.getComponent(TournamentResultsConfirmDialog).vm.$emit('confirm')
+    await flushPromises()
+
     expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/results/confirm', { method: 'POST' })
     expect(wrapper.text()).toContain('Final results approved')
+    expect(wrapper.findComponent(TournamentResultsConfirmDialog).exists()).toBe(false)
   })
 
   it('routes not-yet-started tournaments back to setup', async () => {

@@ -18,6 +18,8 @@ urlpatterns = [
     # Admin (staff only)
     path('admin/tournaments/<int:pk>/matches/<int:fixture_id>', admin_match, name='api-admin-match'),
     path('admin/dashboard', api.api_admin_dashboard, name='api-admin-dashboard'),
+    path('admin/notifications', api.api_admin_notifications, name='api-admin-notifications'),
+    path('admin/finance', api.api_admin_finance, name='api-admin-finance'),
     path('admin/tournaments', api.api_admin_tournaments, name='api-admin-tournaments'),
     path('admin/tournaments/<int:pk>', api.api_admin_tournament_detail, name='api-admin-tournament-detail'),
     path('admin/tournaments/<int:pk>/publish', api.api_admin_tournament_publish, name='api-admin-tournament-publish'),

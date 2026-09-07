@@ -107,8 +107,32 @@ function handlePrimeSelection(value: StepProgressId) {
 }
 
 @media (max-width: 540px) {
+  .app-step-progress__viewport {
+    overflow-x: hidden;
+  }
+
   .app-step-progress__list.is-mobile-compact {
-    min-width: 34rem;
+    min-width: 0;
+    overflow-x: visible;
+  }
+
+  .app-step-progress__list.is-mobile-compact :deep(.p-step) {
+    min-width: 0;
+    flex: 1 1 25%;
+    gap: 4px;
+    padding-inline: 2px;
+  }
+
+  .app-step-progress__list.is-mobile-compact :deep(.p-step-header) {
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .app-step-progress__list.is-mobile-compact :deep(.p-step-title) {
+    min-width: 0;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
   }
 }
 </style>

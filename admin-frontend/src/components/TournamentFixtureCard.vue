@@ -176,7 +176,7 @@ function isWinner(slot: 1 | 2) {
       >
         <i class="bi bi-eye" aria-hidden="true"></i>
         {{ t('tournaments.adminAction') }}
-        <i class="bi bi-chevron-right fixture-card__admin-arrow" aria-hidden="true"></i>
+        <i class="bi bi-chevron-right fixture-card__admin-arrow rtl:rotate-180" aria-hidden="true"></i>
       </button>
     </div>
 

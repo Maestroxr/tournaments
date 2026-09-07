@@ -11,7 +11,6 @@ export interface TournamentWorkspaceSummary {
   max_players?: number | null
   registration_summary?: {
     registered: number
-    checked_in: number
     unpaid: number
     waitlisted: number
     attention: number

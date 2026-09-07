@@ -23,7 +23,7 @@ interface Transfer {
 const transfers = ref<Transfer[]>([])
 const loading = ref(false)
 const error = ref('')
-const { t } = useI18n()
+const { locale, t } = useI18n()
 
 async function load() {
   loading.value = true
@@ -38,17 +38,17 @@ async function load() {
 }
 
 function formatDate(value: string) {
-  try { return new Date(value).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) } catch { return value }
+  try { return new Date(value).toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' }) } catch { return value }
 }
 
 onMounted(load)
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl">
+  <section aria-labelledby="transactions-heading">
     <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-2xl font-bold text-black">{{ t('transfers.title') }}</h1>
+        <h2 id="transactions-heading" class="text-xl font-semibold text-black">{{ t('transfers.title') }}</h2>
         <p class="mt-1 text-sm text-zinc-500">{{ t('transfers.subtitle') }}</p>
       </div>
       <Button :label="t('common.refresh')" size="small" severity="secondary" outlined @click="load" />
@@ -64,7 +64,7 @@ onMounted(load)
       </Column>
       <Column field="username" :header="t('common.user')" sortable />
       <Column :header="t('common.type')" sortable sort-field="kind">
-        <template #body="{ data }">{{ transferKindLabel(data.kind) }}</template>
+        <template #body="{ data }">{{ transferKindLabel(data.kind, t) }}</template>
       </Column>
       <Column :header="t('transfers.tournament')">
         <template #body="{ data }">{{ data.tournament_name || '-' }}</template>
@@ -82,5 +82,5 @@ onMounted(load)
         <template #body="{ data }">{{ data.note || '-' }}</template>
       </Column>
     </DataTable>
-  </div>
+  </section>
 </template>

@@ -30,13 +30,13 @@ interface Tournament {
 }
 
 defineProps<{ tournament: Tournament }>()
-const { t } = useI18n()
+const { locale, t } = useI18n()
 const router = useRouter()
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduled')
   try {
-    return new Date(s).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    return new Date(s).toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-GB', { dateStyle: 'medium', timeStyle: 'short' })
   } catch {
     return s
   }
@@ -114,7 +114,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
       <TournamentMetaItem :label="t('tournaments.finishedFrom')" :value="formatDate(tournament.starts_at)" />
       <TournamentMetaItem :label="t('nav.users')" :value="String(tournament.participant_count)" />
       <TournamentMetaItem :label="t('tournaments.match')" :value="t('tournaments.raceTo', { points: tournament.target_points })" />
-      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control)" />
+      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, t)" />
       <TournamentMetaItem :label="t('tournaments.doubling')" :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')" />
       <TournamentMetaItem :label="t('tournaments.entryFee')" :value="Number(tournament.entry_fee || 0).toFixed(2)" />
       <TournamentMetaItem :label="t('tournaments.prize')" :value="Number(tournament.prize_money || 0).toFixed(2)" />
@@ -122,7 +122,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
 
     <RouterLink :to="`/tournaments/${tournament.id}/progress`" class="flex items-center justify-between rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-black">
       <span>{{ t('tournaments.openResults') }}</span>
-      <i class="bi bi-arrow-right" aria-hidden="true"></i>
+      <i class="bi bi-arrow-right rtl:rotate-180" aria-hidden="true"></i>
     </RouterLink>
   </article>
 </template>

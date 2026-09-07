@@ -1,4 +1,9 @@
-export function tournamentStateLabel(state: string): string {
+type Translate = (key: string) => string
+
+export function tournamentStateLabel(state: string, translate?: Translate): string {
+  if (translate && ['draft', 'open', 'active', 'finished'].includes(state)) {
+    return translate(`dashboard.states.${state}`)
+  }
   if (state === 'draft') return 'Draft setup'
   if (state === 'open') return 'Open for registration'
   if (state === 'active') return 'In progress'
@@ -6,7 +11,13 @@ export function tournamentStateLabel(state: string): string {
   return state
 }
 
-export function tournamentStateFilterLabel(state: string): string {
+export function tournamentStateFilterLabel(state: string, translate?: Translate): string {
+  if (translate) {
+    if (state === 'current') return translate('tournaments.filters.current')
+    if (state === 'all') return translate('tournaments.filters.all')
+    if (state === 'finished') return translate('tournaments.filters.finished')
+    if (['draft', 'open', 'active'].includes(state)) return translate(`dashboard.states.${state}`)
+  }
   if (state === 'current') return 'Current tournaments'
   if (state === 'all') return 'All tournament states'
   if (state === 'draft') return 'Draft setup'
@@ -16,7 +27,11 @@ export function tournamentStateFilterLabel(state: string): string {
   return state
 }
 
-export function timeControlLabel(value: string): string {
+export function timeControlLabel(value: string, translate?: Translate): string {
+  if (translate) {
+    if (value === 'none') return translate('tournaments.noClock')
+    if (['fast', 'normal', 'slow'].includes(value)) return translate(`tournaments.${value}`)
+  }
   if (value === 'none') return 'No clock'
   if (value === 'fast') return 'Fast clock'
   if (value === 'normal') return 'Standard clock'
@@ -24,7 +39,10 @@ export function timeControlLabel(value: string): string {
   return value
 }
 
-export function transferKindLabel(kind: string): string {
+export function transferKindLabel(kind: string, translate?: Translate): string {
+  if (translate && ['deposit', 'withdrawal', 'tournament_entry', 'tournament_refund', 'tournament_prize'].includes(kind)) {
+    return translate(`transfers.kinds.${kind}`)
+  }
   if (kind === 'deposit') return 'Admin deposit'
   if (kind === 'withdrawal') return 'Admin withdrawal'
   if (kind === 'tournament_entry') return 'Tournament entry fee'

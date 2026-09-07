@@ -20,7 +20,6 @@ import TournamentStructureCard from '@/components/tournament/TournamentStructure
 import TournamentDangerDialog from '@/components/tournament/TournamentDangerDialog.vue'
 import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
-import { timeControlLabel } from '@/utils/adminLabels'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture, TournamentProgressData } from '@/types/tournamentProgress'
@@ -72,7 +71,6 @@ interface TournamentDetail {
   published: boolean
   registration_summary?: {
     registered: number
-    checked_in: number
     unpaid: number
     waitlisted: number
     attention: number
@@ -83,7 +81,6 @@ const t = ref<TournamentDetail | null>(null)
 const overviewProgress = ref<TournamentProgressData | null>(null)
 const overviewProgressFailed = ref(false)
 const editing = ref(false)
-const saving = ref(false)
 const editYaml = ref('')
 const editName = ref('')
 const editStartsDate = ref('')
@@ -95,6 +92,8 @@ const editTime = ref('normal')
 const editDoubling = ref(true)
 const editEntryFee = ref(0)
 const editPrizeMoney = ref(0)
+const savedRawDefinition = ref('')
+const savedDraftFingerprint = ref('')
 const pad = (value: number) => String(value).padStart(2, '0')
 const dateInputValue = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 const timeInputValue = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`
@@ -103,11 +102,11 @@ const minStartsDate = ref(dateInputValue(now))
 const minStartsTime = computed(() => editStartsDate.value === minStartsDate.value ? timeInputValue(new Date()) : undefined)
 
 interface Stage { id: string; name: string; mode: string }
-const stageModeOptions = [
-  { value: 'knockout', label: 'Knockout' },
-  { value: 'division', label: 'League' },
-  { value: 'groups', label: 'Groups' },
-]
+const stageModeOptions = computed(() => [
+  { value: 'knockout', label: translate('tournamentSettings.stageModes.knockout') },
+  { value: 'division', label: translate('tournamentSettings.stageModes.division') },
+  { value: 'groups', label: translate('tournamentSettings.stageModes.groups') },
+])
 const stages = ref<Stage[]>([])
 const podium = ref<string[]>([])
 const isSettingsRoute = computed(() => route.name === 'tournament-settings')
@@ -151,17 +150,6 @@ const overviewMetrics = computed<TournamentOverviewMetric[]>(() => {
       icon: 'bi-people',
       tone: enoughPlayers ? 'good' : 'warning',
     },
-    ...(t.value.registration_summary ? [{
-      id: 'participant-readiness',
-      label: translate('tournamentOverview.participantReadiness'),
-      value: `${t.value.registration_summary.ready}/${t.value.registration_summary.registered}`,
-      hint: translate('tournamentOverview.participantReadinessHint', {
-        checked: t.value.registration_summary.checked_in,
-        unpaid: t.value.registration_summary.unpaid,
-      }),
-      icon: 'bi-person-check',
-      tone: t.value.registration_summary.attention === 0 ? 'good' as const : 'warning' as const,
-    }] : []),
     {
       id: 'readiness',
       label: translate('tournamentOverview.readiness'),
@@ -232,21 +220,20 @@ const attentionItems = computed<TournamentAttentionItem[]>(() => {
       severity: 'critical',
     })
   }
-  if (t.value.state === 'open' && (t.value.registration_summary?.attention ?? 0) > 0) {
+  const unpaid = t.value.registration_summary?.unpaid ?? 0
+  const waitlisted = t.value.registration_summary?.waitlisted ?? 0
+  const participantAttention = unpaid + waitlisted
+  if (t.value.state === 'open' && participantAttention > 0) {
+    const detail = [
+      unpaid > 0 ? translate('dashboard.unpaidCount', { count: unpaid }) : '',
+      waitlisted > 0 ? translate('dashboard.waitlistedCount', { count: waitlisted }) : '',
+    ].filter(Boolean).join(' · ')
     items.push({
       id: 'participant-readiness',
       title: translate('tournamentOverview.participantsNeedAttention', {
-        count: t.value.registration_summary?.attention ?? 0,
+        count: participantAttention,
       }),
-      detail: translate('tournamentOverview.participantsNeedAttentionHint', {
-        unpaid: t.value.registration_summary?.unpaid ?? 0,
-        unchecked: Math.max(
-          (t.value.registration_summary?.registered ?? 0) -
-          (t.value.registration_summary?.checked_in ?? 0),
-          0,
-        ),
-        waitlisted: t.value.registration_summary?.waitlisted ?? 0,
-      }),
+      detail,
       action: translate('tournamentOverview.managePlayers'),
       to: `${root}/players`,
       severity: 'warning',
@@ -326,6 +313,8 @@ async function load() {
     t.value = await apiFetch<TournamentDetail>(`/api/admin/tournaments/${tid}`)
     if (t.value?.definition) parseDefinition(t.value.definition)
     parseTournamentMeta()
+    savedRawDefinition.value = editYaml.value
+    savedDraftFingerprint.value = draftFingerprint()
     editing.value =
       t.value?.state === 'draft' && (route.query.edit === '1' || isSettingsRoute.value)
     if (isOverviewRoute.value && ['active', 'finished'].includes(t.value.state)) {
@@ -381,40 +370,88 @@ async function deleteDraft() {
   }
 }
 
-function addStage() { stages.value.push({ id: `stage_${stages.value.length + 1}`, name: 'New Stage', mode: 'knockout' }) }
+function addStage() { stages.value.push({ id: `stage_${stages.value.length + 1}`, name: translate('tournamentSettings.newStage'), mode: 'knockout' }) }
 function removeStage(idx: number) { stages.value.splice(idx, 1) }
 function addPodium() { const ref = stages.value[0]?.id || 'main_round'; podium.value.push(`${ref}.placements[0]`) }
 
-async function save() {
-  if (t.value?.state !== 'draft') return
-  saving.value = true
-  error.value = ''
-  try {
-    const defObj = yaml.load(editYaml.value) as unknown as Record<string, unknown>
-    const payloadDef = stages.value.length ? { stages: stages.value.map(s => ({ id: s.id, name: s.name, mode: s.mode })), podium: podium.value } : defObj
-    const tid = props.id || String(route.params.id)
-    const starts_at = editStartsDate.value ? `${editStartsDate.value}T${editStartsTime.value || '00:00'}` : null
-    await apiFetch(`/api/admin/tournaments/${tid}`, {
-      method: 'PUT',
-      body: JSON.stringify({ name: editName.value, definition: payloadDef, starts_at, min_players: Number(editMin.value), max_players: editMax.value === '' ? null : Number(editMax.value), target_points: Number(editPoints.value), time_control: editTime.value, doubling_enabled: editDoubling.value, entry_fee: Number(editEntryFee.value), prize_money: Number(editPrizeMoney.value) }),
-    })
-    editing.value = false
-    await load()
-    await workspace?.refresh()
-  } catch (e: unknown) {
-    error.value = formatApiError(e)
-  } finally { saving.value = false }
+function draftPayload() {
+  const parsedDefinition = yaml.load(editYaml.value) as unknown
+  const rawDefinitionChanged = editYaml.value !== savedRawDefinition.value
+  const rawDefinition = parsedDefinition && typeof parsedDefinition === 'object' && !Array.isArray(parsedDefinition)
+    ? parsedDefinition as Record<string, unknown>
+    : null
+  const rawStages = Array.isArray(rawDefinition?.stages)
+    ? rawDefinition.stages.filter(stage => stage && typeof stage === 'object' && !Array.isArray(stage)) as Record<string, unknown>[]
+    : []
+  const definition = stages.value.length && rawDefinition && !rawDefinitionChanged
+    ? {
+        ...rawDefinition,
+        stages: stages.value.map((stage, index) => ({
+          ...(rawStages.find(rawStage => rawStage.id === stage.id) ?? rawStages[index] ?? {}),
+          id: stage.id,
+          name: stage.name,
+          mode: stage.mode,
+        })),
+        podium: [...podium.value],
+      }
+    : parsedDefinition
+  const startsAt = editStartsDate.value
+    ? `${editStartsDate.value}T${editStartsTime.value || '00:00'}`
+    : null
+  return {
+    name: editName.value,
+    definition,
+    starts_at: startsAt,
+    min_players: Number(editMin.value),
+    max_players: editMax.value === '' ? null : Number(editMax.value),
+    target_points: Number(editPoints.value),
+    time_control: editTime.value,
+    doubling_enabled: editDoubling.value,
+    entry_fee: Number(editEntryFee.value),
+    prize_money: Number(editPrizeMoney.value),
+  }
 }
 
-async function publish() {
+function draftFingerprint() {
+  return JSON.stringify(draftPayload())
+}
+
+const draftChanged = computed(() => {
+  if (t.value?.state !== 'draft') return false
+  try {
+    return draftFingerprint() !== savedDraftFingerprint.value
+  } catch {
+    return true
+  }
+})
+
+async function publishAndManagePlayers() {
   if (publishing.value || t.value?.state !== 'draft' || !hasFormat.value) return
   publishing.value = true
-  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/publish`, { method: 'POST' }); await load(); await workspace?.refresh() } catch (e: unknown) { error.value = formatApiError(e) }
-  finally { publishing.value = false }
-}
-async function publishAndManagePlayers() {
-  await publish()
-  if (t.value?.state === 'open') router.push(`/tournaments/${t.value.id}/players`)
+  error.value = ''
+  try {
+    const tid = props.id || String(route.params.id)
+    if (draftChanged.value) {
+      const payload = draftPayload()
+      await apiFetch(`/api/admin/tournaments/${tid}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      })
+      savedRawDefinition.value = editYaml.value
+      savedDraftFingerprint.value = JSON.stringify(payload)
+    }
+    await apiFetch(`/api/admin/tournaments/${tid}/publish`, { method: 'POST' })
+    await load()
+    await workspace?.refresh()
+    const publishedTournament = t.value as TournamentDetail | null
+    if (publishedTournament?.state === 'open') {
+      router.push(`/tournaments/${publishedTournament.id}/players`)
+    }
+  } catch (e: unknown) {
+    error.value = formatApiError(e)
+  } finally {
+    publishing.value = false
+  }
 }
 function requestRevertToDraft() {
   if (reverting.value || t.value?.state !== 'open') return
@@ -457,19 +494,20 @@ async function start() {
 }
 
 function formatDate(s: string | null) {
-  if (!s) return 'Not scheduled yet'
+  if (!s) return translate('tournaments.notScheduledYet')
   try {
-    return new Date(s).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    return new Date(s).toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-GB', { dateStyle: 'medium', timeStyle: 'short' })
   } catch { return s }
 }
 
 function playerRange(min: number, max: number | null) {
-  return max === null ? `${min}+ players` : `${min}–${max} players`
+  return max === null
+    ? translate('tournaments.playersPlus', { count: min })
+    : translate('tournaments.playersRange', { min, max })
 }
 
 function participantMessage(count: number) {
-  if (count === 1) return '1 player has already registered'
-  return `${count} players have already registered`
+  return translate(count === 1 ? 'tournaments.registeredOne' : 'tournaments.registeredMany', { count })
 }
 
 function relativeStart(value: string | null) {
@@ -486,9 +524,9 @@ function relativeStart(value: string | null) {
 }
 
 function stageModeLabel(mode: string) {
-  if (mode === 'knockout') return 'Knockout bracket'
-  if (mode === 'division') return 'League table'
-  if (mode === 'groups') return 'Group stage'
+  if (['knockout', 'division', 'groups'].includes(mode)) {
+    return translate(`tournamentSettings.stageModes.${mode}`)
+  }
   return mode
 }
 
@@ -507,20 +545,20 @@ function podiumLabel(reference: string, index: number) {
   const stageId = reference.split('.')[0] || ''
   const placement = Number(reference.match(/\d+/)?.[0] ?? index)
   const stageName = stageNameById(stageId)
-  if (placement === 0) return `Winner of ${stageName}`
-  if (placement === 1) return `Runner-up of ${stageName}`
-  if (placement === 2) return `Third place from ${stageName}`
-  return `Place ${placement + 1} from ${stageName}`
+  if (placement === 0) return translate('tournamentSettings.podium.winner', { stage: stageName })
+  if (placement === 1) return translate('tournamentSettings.podium.runnerUp', { stage: stageName })
+  if (placement === 2) return translate('tournamentSettings.podium.third', { stage: stageName })
+  return translate('tournamentSettings.podium.other', { place: placement + 1, stage: stageName })
 }
 </script>
 
 <template>
   <div :class="['mx-auto w-full', isOverviewRoute ? 'max-w-6xl' : 'max-w-3xl']">
-    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
+    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">{{ translate('common.loading') }}</div>
     <div v-else-if="loadFailed" class="mx-auto max-w-xl py-12 text-center">
-      <h1 class="text-2xl font-bold text-black">Tournament unavailable</h1>
-      <AppAlert class="mt-4 text-left" type="error" :message="error" />
-      <Button as="router-link" to="/tournaments" class="mt-4" label="Back to tournaments" severity="contrast" />
+      <h1 class="text-2xl font-bold text-black">{{ translate('tournamentSettings.unavailable') }}</h1>
+      <AppAlert class="mt-4 text-start" type="error" :message="error" />
+      <Button as="router-link" to="/tournaments" class="mt-4" :label="translate('common.backTournaments')" severity="contrast" />
     </div>
     <div v-else-if="t" class="space-y-4">
       <AppAlert v-if="error" type="error" :message="error" dismissible @close="error=''" />
@@ -530,8 +568,8 @@ function podiumLabel(reference: string, index: number) {
           <p>{{ translate(isSettingsRoute ? 'tournamentWorkspace.settingsHint' : 'tournamentWorkspace.overviewHint') }}</p>
         </div>
         <p class="workspace-page-heading__creator">
-          <span>Created by</span>
-          <UserQuickView :user-id="t.creator_id" :username="t.creator || 'Unknown user'" />
+          <span>{{ translate('tournamentSettings.createdBy') }}</span>
+          <UserQuickView :user-id="t.creator_id" :username="t.creator || translate('tournamentSettings.unknownUser')" />
         </p>
       </header>
 
@@ -555,16 +593,16 @@ function podiumLabel(reference: string, index: number) {
       <section class="rounded-xl border border-zinc-200 bg-white p-5">
         <p class="mb-4 text-sm font-medium text-zinc-700">{{ participantMessage(t.participant_count) }}</p>
         <dl class="grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg bg-zinc-50 p-3 text-sm sm:grid-cols-4">
-          <TournamentMetaItem label="Starts" :value="formatDate(t.starts_at)" />
-          <TournamentMetaItem label="Players" :value="playerRange(t.min_players, t.max_players)" />
-          <TournamentMetaItem label="Match" :value="`Race to ${t.target_points}`" />
-          <TournamentMetaItem label="Time control" :value="timeControlLabel(t.time_control)" />
-          <TournamentMetaItem label="Doubling" :value="t.doubling_enabled ? 'Enabled' : 'Disabled'" />
-          <TournamentMetaItem label="Entry fee" :value="Number(t.entry_fee || 0).toFixed(2)" />
-          <TournamentMetaItem label="Prize" :value="Number(t.prize_money || 0).toFixed(2)" />
+          <TournamentMetaItem :label="translate('tournamentSettings.starts')" :value="formatDate(t.starts_at)" />
+          <TournamentMetaItem :label="translate('tournamentSettings.players')" :value="playerRange(t.min_players, t.max_players)" />
+          <TournamentMetaItem :label="translate('tournaments.match')" :value="translate('tournaments.raceTo', { points: t.target_points })" />
+          <TournamentMetaItem :label="translate('tournaments.timeControl')" :value="translate(`tournaments.${t.time_control === 'none' ? 'noClock' : t.time_control}`)" />
+          <TournamentMetaItem :label="translate('tournaments.doubling')" :value="translate(t.doubling_enabled ? 'common.enabled' : 'common.disabled')" />
+          <TournamentMetaItem :label="translate('tournaments.entryFee')" :value="Number(t.entry_fee || 0).toFixed(2)" />
+          <TournamentMetaItem :label="translate('tournaments.prize')" :value="Number(t.prize_money || 0).toFixed(2)" />
         </dl>
         <div v-if="t.participants?.length" class="mt-4 border-t border-zinc-100 pt-4">
-          <div class="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Registered players</div>
+          <div class="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">{{ translate('tournamentSettings.registeredPlayers') }}</div>
           <div class="flex flex-wrap gap-2">
             <span v-for="participant in t.participants" :key="participant.id" class="rounded-full border border-zinc-200 bg-white px-2.5 py-1 text-xs text-zinc-700">
               <UserQuickView :user-id="participant.user_id" :username="participant.username || participant.name" />
@@ -576,14 +614,14 @@ function podiumLabel(reference: string, index: number) {
       <!-- Visual editor for stages/podium (draft only) -->
       <div v-if="isSettingsRoute && t.state==='draft'" class="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
         <div class="mb-3 flex items-center justify-between">
-          <div><h3 class="text-sm font-semibold text-black">Draft settings</h3><p class="text-xs text-zinc-500">Review the player-facing rules before publishing.</p></div>
-          <Button :label="editing ? 'Close editor' : 'Edit details'" size="small" :severity="editing ? 'contrast' : 'secondary'" :outlined="!editing" @click="editing = !editing" />
+          <div><h3 class="text-sm font-semibold text-black">{{ translate('tournamentSettings.draftTitle') }}</h3><p class="text-xs text-zinc-500">{{ translate('tournamentSettings.draftHint') }}</p></div>
+          <Button :label="translate(editing ? 'tournamentSettings.closeEditor' : 'tournamentSettings.editDetails')" size="small" :severity="editing ? 'contrast' : 'secondary'" :outlined="!editing" @click="editing = !editing" />
         </div>
         <div v-if="editing" class="mb-4 rounded bg-white border border-zinc-200 p-3 space-y-3">
-          <label class="block"><span class="mb-1 block text-xs font-medium text-black">Name</span><InputText v-model="editName" class="w-full" /></label>
+          <label class="block"><span class="mb-1 block text-xs font-medium text-black">{{ translate('tournamentSettings.name') }}</span><InputText v-model="editName" class="w-full" /></label>
           <TournamentMetaFields :starts-date="editStartsDate" :starts-time="editStartsTime" :time-control="editTime" :min-players="Number(editMin)" :max-players="editMax" :target-points="Number(editPoints)" :doubling-enabled="editDoubling" :entry-fee="editEntryFee" :prize-money="editPrizeMoney" :min-starts-date="minStartsDate" :min-starts-time="minStartsTime" @update:starts-date="editStartsDate=$event" @update:starts-time="editStartsTime=$event" @update:time-control="editTime=$event" @update:min-players="editMin=$event" @update:max-players="editMax=$event" @update:target-points="editPoints=$event" @update:doubling-enabled="editDoubling=$event" @update:entry-fee="editEntryFee=$event" @update:prize-money="editPrizeMoney=$event" />
         </div>
-        <h4 class="mb-2 text-xs font-semibold text-zinc-700">Tournament structure</h4>
+        <h4 class="mb-2 text-xs font-semibold text-zinc-700">{{ translate('tournamentSettings.structure') }}</h4>
 
         <div v-if="!editing" class="space-y-2">
           <div v-for="s in stages" :key="s.id" class="flex items-center gap-2 rounded bg-white border border-zinc-200 px-3 py-2 text-sm">
@@ -597,20 +635,19 @@ function podiumLabel(reference: string, index: number) {
 
         <div v-else class="space-y-3">
           <details class="rounded border border-zinc-200 bg-white p-3">
-            <summary class="cursor-pointer text-sm font-medium text-black">Advanced structure settings</summary>
-            <p class="mt-1 text-xs text-zinc-500">Stage IDs, podium mapping and YAML are intended for custom tournament formats.</p>
+            <summary class="cursor-pointer text-sm font-medium text-black">{{ translate('tournamentSettings.advancedTitle') }}</summary>
+            <p class="mt-1 text-xs text-zinc-500">{{ translate('tournamentSettings.advancedHint') }}</p>
             <div class="mt-3 space-y-3">
               <div v-for="(s, idx) in stages" :key="idx" class="grid grid-cols-12 gap-2 rounded border border-zinc-200 p-2">
-                <InputText v-model="s.id" placeholder="Internal ID" class="col-span-3 text-xs" /><InputText v-model="s.name" placeholder="Name" class="col-span-4 text-xs" /><Select v-model="s.mode" :options="stageModeOptions" option-label="label" option-value="value" class="col-span-3 text-xs" /><Button label="Remove" size="small" severity="danger" text class="col-span-2" @click="removeStage(idx)" />
+                <InputText v-model="s.id" :placeholder="translate('tournamentSettings.internalId')" class="col-span-3 text-xs" /><InputText v-model="s.name" :placeholder="translate('tournamentSettings.name')" class="col-span-4 text-xs" /><Select v-model="s.mode" :options="stageModeOptions" option-label="label" option-value="value" class="col-span-3 text-xs" /><Button :label="translate('common.remove')" size="small" severity="danger" text class="col-span-2" @click="removeStage(idx)" />
               </div>
-              <Button label="Add stage" size="small" severity="secondary" outlined @click="addStage" />
-              <div v-for="(p, i) in podium" :key="i" class="flex items-center gap-2"><span class="w-12 text-xs font-medium">Place {{ i + 1 }}</span><Select :model-value="p.split('.')[0]" :options="stages" option-label="name" option-value="id" class="min-w-40 text-xs" @update:model-value="podium[i] = `${String($event)}.placements[${p.match(/\d+/)?.[0] ?? '0'}]`" /><Button label="Remove" size="small" severity="danger" text @click="podium.splice(i,1)" /></div>
-              <Button label="Add podium place" size="small" severity="secondary" outlined @click="addPodium" />
-              <details><summary class="cursor-pointer text-xs text-zinc-600">Edit raw YAML</summary><Textarea v-model="editYaml" rows="8" class="mt-2 w-full font-mono text-xs text-black" /></details>
+              <Button :label="translate('tournamentSettings.addStage')" size="small" severity="secondary" outlined @click="addStage" />
+              <div v-for="(p, i) in podium" :key="i" class="flex items-center gap-2"><span class="w-16 text-xs font-medium">{{ translate('tournamentSettings.place', { place: i + 1 }) }}</span><Select :model-value="p.split('.')[0]" :options="stages" option-label="name" option-value="id" class="min-w-40 text-xs" @update:model-value="podium[i] = `${String($event)}.placements[${p.match(/\d+/)?.[0] ?? '0'}]`" /><Button :label="translate('common.remove')" size="small" severity="danger" text @click="podium.splice(i,1)" /></div>
+              <Button :label="translate('tournamentSettings.addPodiumPlace')" size="small" severity="secondary" outlined @click="addPodium" />
+              <details><summary class="cursor-pointer text-xs text-zinc-600">{{ translate('tournamentSettings.editYaml') }}</summary><Textarea v-model="editYaml" rows="8" class="mt-2 w-full font-mono text-xs text-black" /></details>
             </div>
           </details>
 
-          <Button :label="saving ? 'Saving...' : 'Save draft'" :loading="saving" size="small" severity="success" @click="save" />
         </div>
       </div>
 
@@ -618,7 +655,7 @@ function podiumLabel(reference: string, index: number) {
 
       <div class="flex flex-wrap gap-2">
         <template v-if="t.state==='draft'">
-          <Button v-if="isSettingsRoute" label="Publish and add players" severity="success" :loading="publishing" :disabled="!hasFormat" @click="publishAndManagePlayers" />
+          <Button v-if="isSettingsRoute" data-testid="publish-and-add" :label="translate('tournamentSettings.publishAndAdd')" severity="success" :loading="publishing" :disabled="!hasFormat" @click="publishAndManagePlayers" />
           <Button data-testid="delete-draft" :label="translate('tournamentDanger.deleteAction')" severity="danger" @click="requestDelete" />
         </template>
         <template v-if="t.state==='open'">

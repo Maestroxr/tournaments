@@ -9,6 +9,7 @@ import TournamentStandingsPanel from '@/components/tournament/TournamentStanding
 import TournamentMatchDialog from '@/components/tournament/TournamentMatchDialog.vue'
 import TournamentLiveAttention from '@/components/tournament/TournamentLiveAttention.vue'
 import TournamentLiveMatchGroup from '@/components/tournament/TournamentLiveMatchGroup.vue'
+import TournamentResultsConfirmDialog from '@/components/tournament/TournamentResultsConfirmDialog.vue'
 import { useI18n } from '@/i18n'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import Button from 'primevue/button'
@@ -24,6 +25,8 @@ const error = ref('')
 const data = ref<TournamentProgressData | null>(null)
 const refreshing = ref(false)
 const confirmingResults = ref(false)
+const resultsConfirmationOpen = ref(false)
+const resultsConfirmationError = ref('')
 const lastUpdatedAt = ref<Date | null>(null)
 const liveConnected = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -219,17 +222,27 @@ function formatUpdatedAt(value: Date | null) {
   return value.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+function requestResultsConfirmation() {
+  if (!data.value?.is_finished || data.value.tournament.lifecycle_state === 'results_confirmed' || confirmingResults.value) return
+  resultsConfirmationError.value = ''
+  resultsConfirmationOpen.value = true
+}
+
+function cancelResultsConfirmation() {
+  if (!confirmingResults.value) resultsConfirmationOpen.value = false
+}
+
 async function confirmResults() {
   if (!data.value?.is_finished || data.value.tournament.lifecycle_state === 'results_confirmed' || confirmingResults.value) return
-  if (!confirm(t('tournamentResults.confirmPrompt'))) return
   confirmingResults.value = true
-  error.value = ''
+  resultsConfirmationError.value = ''
   try {
     const result = await apiFetch<{ lifecycle_state: string }>(`/api/admin/tournaments/${id}/results/confirm`, { method: 'POST' })
     data.value.tournament.lifecycle_state = result.lifecycle_state
+    resultsConfirmationOpen.value = false
     await workspace?.refresh()
   } catch (caught: unknown) {
-    error.value = formatApiError(caught)
+    resultsConfirmationError.value = formatApiError(caught)
   } finally {
     confirmingResults.value = false
   }
@@ -323,7 +336,7 @@ onBeforeUnmount(() => {
               icon="bi bi-check2-circle"
               severity="success"
               :loading="confirmingResults"
-              @click="confirmResults"
+              @click="requestResultsConfirmation"
             />
             <span v-else class="results-approval__confirmed"><i class="bi bi-check-lg" aria-hidden="true"></i>{{ t('tournamentResults.confirmedBadge') }}</span>
           </section>
@@ -331,6 +344,14 @@ onBeforeUnmount(() => {
         </template>
         <TournamentMatchDialog v-if="selectedFixture" :key="selectedFixture.id" :fixture="selectedFixture"
           :tournament-id="id" :round="selectedRound" :sources="selectedSources" :live-connected="liveConnected" :updated-at="lastUpdatedAt" @saved="load()" @close="selectedFixtureId = null" />
+        <TournamentResultsConfirmDialog
+          v-if="resultsConfirmationOpen"
+          :tournament-name="data.tournament.name"
+          :busy="confirmingResults"
+          :error="resultsConfirmationError"
+          @cancel="cancelResultsConfirmation"
+          @confirm="confirmResults"
+        />
       </template>
   </div>
 </template>
