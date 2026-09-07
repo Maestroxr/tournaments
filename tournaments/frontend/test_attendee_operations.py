@@ -59,18 +59,17 @@ class AttendeeOperationsTests(TestCase):
     def participant_id(self, player):
         return Participant.objects.get(user=player).pk
 
-    def test_capacity_creates_waitlist_without_charging(self):
+    def test_admin_cannot_add_beyond_capacity(self):
         self.assertEqual(self.post_player(self.players[0]).status_code, 200)
         self.assertEqual(self.post_player(self.players[1]).status_code, 200)
         before = WalletTransaction.balance_for_user(self.players[2])
 
         response = self.post_player(self.players[2])
 
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['status'], 'waitlisted')
-        registration = TournamentRegistration.objects.get(
-            tournament=self.tournament, participant__user=self.players[2])
-        self.assertEqual(registration.status, TournamentRegistration.STATUS_WAITLISTED)
+        self.assertEqual(response.status_code, 412, response.content)
+        self.assertEqual(response.json()['code'], 'capacity_full')
+        self.assertFalse(TournamentRegistration.objects.filter(
+            tournament=self.tournament, participant__user=self.players[2]).exists())
         self.assertEqual(self.tournament.participations.count(), 2)
         self.assertEqual(WalletTransaction.balance_for_user(self.players[2]), before)
 
@@ -123,10 +122,46 @@ class AttendeeOperationsTests(TestCase):
         self.tournament.refresh_from_db()
         self.assertTrue(self.tournament.registration_open)
 
+    def test_withdrawal_can_remove_without_refunding(self):
+        self.post_player(self.players[0])
+        participant_id = self.participant_id(self.players[0])
+
+        response = self.patch([participant_id], 'withdraw', refund=False)
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['refunded_count'], 0)
+        registration = TournamentRegistration.objects.get(
+            tournament=self.tournament, participant_id=participant_id)
+        self.assertEqual(registration.status, TournamentRegistration.STATUS_WITHDRAWN)
+        self.assertEqual(registration.payment_status, TournamentRegistration.PAYMENT_PAID)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('25.00'))
+
+        restored = self.post_player(self.players[0])
+
+        self.assertEqual(restored.status_code, 200, restored.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('25.00'))
+        self.assertEqual(WalletTransaction.objects.filter(
+            user=self.players[0], kind=WalletTransaction.KIND_TOURNAMENT_ENTRY).count(), 1)
+
+        removed_again = self.patch([participant_id], 'withdraw', refund=False)
+        self.assertEqual(removed_again.status_code, 200, removed_again.content)
+        charged_again = self.post_player(self.players[0], charge_again=True)
+
+        self.assertEqual(charged_again.status_code, 200, charged_again.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[0]), Decimal('0.00'))
+        self.assertEqual(WalletTransaction.objects.filter(
+            user=self.players[0], kind=WalletTransaction.KIND_TOURNAMENT_ENTRY).count(), 2)
+
     def test_waitlisted_player_can_be_promoted_after_a_place_opens(self):
         self.post_player(self.players[0])
         self.post_player(self.players[1])
-        self.post_player(self.players[2])
+        waitlisted = Participant.get_or_create_for_user(self.players[2])
+        TournamentRegistration.objects.create(
+            tournament=self.tournament,
+            participant=waitlisted,
+            status=TournamentRegistration.STATUS_WAITLISTED,
+            payment_status=TournamentRegistration.PAYMENT_UNPAID,
+        )
         first_id = self.participant_id(self.players[0])
         waitlisted_id = self.participant_id(self.players[2])
         self.patch([first_id], 'withdraw')

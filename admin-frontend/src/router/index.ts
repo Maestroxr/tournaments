@@ -77,8 +77,7 @@ const router = createRouter({
         },
         {
           path: 'draw',
-          name: 'tournament-draw',
-          component: () => import('@/pages/TournamentDrawView.vue'),
+          redirect: (to) => ({ name: 'tournament-players', params: to.params }),
         },
         {
           path: 'live',

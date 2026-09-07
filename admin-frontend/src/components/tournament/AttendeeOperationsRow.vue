@@ -12,6 +12,7 @@ export interface OperationalAttendee {
   user_id: number | null
   status: 'registered' | 'waitlisted' | 'withdrawn' | 'disqualified'
   payment_status: 'paid' | 'unpaid' | 'waived' | 'refunded'
+  refundable?: string
   checked_in_at: string | null
   withdrawn_at?: string | null
   internal_note: string

@@ -42,12 +42,14 @@ describe('TournamentActions', () => {
     expect(wrapper.emitted('start')).toHaveLength(1)
   })
 
-  it('sends a full open registration to the draw workspace before it can start', () => {
+  it('starts directly when an open registration has enough players', () => {
     const wrapper = mountActions(6, 'open', false, true, 'registration_open')
     const primary = wrapper.findAllComponents(TournamentActionCard)[0]!
-    expect(primary.props('to')).toBe('/tournaments/20/draw')
-    expect(wrapper.text()).toContain('Freeze the player list')
-    expect(wrapper.emitted('start')).toBeUndefined()
+    expect(primary.props('to')).toBeUndefined()
+    expect(wrapper.text()).toContain('Start tournament')
+    primary.vm.$emit('activate')
+    expect(wrapper.emitted('start')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('draw workspace')
   })
 
   it('makes live control primary for an active tournament and keeps related shortcuts', () => {

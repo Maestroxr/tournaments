@@ -13,7 +13,6 @@ async function mountSidebar(state: string, path = '/tournaments/20/overview') {
       { path: '/tournaments/:id/overview', name: 'tournament-detail', component: page },
       { path: '/tournaments/:id/settings', name: 'tournament-settings', component: page },
       { path: '/tournaments/:id/players', name: 'tournament-players', component: page },
-      { path: '/tournaments/:id/draw', name: 'tournament-draw', component: page },
       { path: '/tournaments/:id/live', name: 'tournament-live', component: page },
       { path: '/tournaments/:id/bracket', name: 'tournament-bracket', component: page },
       { path: '/tournaments/:id/standings', name: 'tournament-standings', component: page },
@@ -43,7 +42,7 @@ describe('TournamentWorkspaceSidebar', () => {
     expect(wrapper.get('[aria-current="page"]').text()).toBe('Overview')
     expect(wrapper.get('a[href="/tournaments/20/settings"]').text()).toBe('Settings & rules')
     expect(wrapper.get('a[href="/tournaments/20/players"]').text()).toBe('Players')
-    expect(wrapper.get('a[href="/tournaments/20/draw"]').text()).toBe('Draw')
+    expect(wrapper.text()).not.toContain('Draw')
     expect(wrapper.findAll('[aria-disabled="true"]')).toHaveLength(4)
   })
 

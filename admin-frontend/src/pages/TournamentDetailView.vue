@@ -404,12 +404,12 @@ async function revertToDraft() {
   try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/draft`, { method: 'POST' }); await load(); await workspace?.refresh() } catch (e: unknown) { error.value = formatApiError(e) }
 }
 function requestStart() {
-  if (starting.value || t.value?.lifecycle_state !== 'ready_to_start' || t.value.participant_count < t.value.min_players) return
+  if (starting.value || t.value?.state !== 'open' || t.value.participant_count < t.value.min_players) return
   startError.value = ''
   showStartDialog.value = true
 }
 async function start() {
-  if (!showStartDialog.value || starting.value || t.value?.lifecycle_state !== 'ready_to_start' || t.value.participant_count < t.value.min_players) return
+  if (!showStartDialog.value || starting.value || t.value?.state !== 'open' || t.value.participant_count < t.value.min_players) return
   starting.value = true
   startError.value = ''
   try {

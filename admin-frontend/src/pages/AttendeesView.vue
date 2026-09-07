@@ -8,6 +8,8 @@ import AttendeeOperationsRow, {
   type OperationalAttendee,
 } from '@/components/tournament/AttendeeOperationsRow.vue'
 import AttendeeUserRow from '@/components/tournament/AttendeeUserRow.vue'
+import AddPlayerDialog from '@/components/tournament/AddPlayerDialog.vue'
+import RosterRemovalDialog from '@/components/tournament/RosterRemovalDialog.vue'
 import WalletTopUpDialog from '@/components/tournament/WalletTopUpDialog.vue'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import { useI18n } from '@/i18n'
@@ -72,19 +74,24 @@ const filter = ref<'all' | 'attention' | 'registered' | 'waitlisted' | 'checked_
 const selected = ref<number[]>([])
 const pendingAction = ref<string | null>(null)
 const topUpUser = ref<AvailableUser | null>(null)
+const pendingUser = ref<AvailableUser | null>(null)
+const pendingPreviouslyPaid = ref(false)
+const addDialogError = ref('')
+const removalRequest = ref<{
+  action: 'withdraw' | 'disqualify'
+  players: OperationalAttendee[]
+} | null>(null)
+const removalDialogError = ref('')
 
 const entryFee = computed(() => Number(tournament.value?.entry_fee ?? 0))
-const isOpen = computed(() => tournament.value?.registration_open ?? tournament.value?.state === 'open')
 const isFull = computed(() =>
   tournament.value?.max_players != null && summary.value.registered >= tournament.value.max_players,
 )
 const canAdd = computed(() =>
-  tournament.value?.state === 'open' && pendingAction.value === null && !loading.value,
+  tournament.value?.state === 'open' && !isFull.value && pendingAction.value === null && !loading.value,
 )
 const canChangeRoster = computed(() =>
-  tournament.value?.state === 'open' &&
-  !tournament.value?.draw_confirmed_at &&
-  (isOpen.value || tournament.value?.registration_closed_reason === 'capacity'),
+  tournament.value?.state === 'open',
 )
 const canPromote = computed(() => canChangeRoster.value && !isFull.value)
 const filteredParticipants = computed(() => participants.value.filter((participant) => {
@@ -115,6 +122,11 @@ const filters = computed(() => [
   { id: 'waitlisted' as const, label: t('attendees.filterWaitlisted'), count: summary.value.waitlisted },
   { id: 'checked_in' as const, label: t('attendees.filterCheckedIn'), count: summary.value.checked_in },
 ])
+const hasRetainedPayment = (userId: number) => participants.value.some(participant =>
+  participant.user_id === userId &&
+  participant.status === 'withdrawn' &&
+  participant.payment_status === 'paid',
+)
 
 async function load() {
   loading.value = true
@@ -165,8 +177,7 @@ function toggleVisible() {
 }
 
 async function runAction(action: string, participantIds = selected.value, extra = {}) {
-  if (!participantIds.length || pendingAction.value) return
-  if (['withdraw', 'disqualify'].includes(action) && !confirm(t('attendees.confirmRosterRemoval'))) return
+  if (!participantIds.length || pendingAction.value) return false
   pendingAction.value = `${action}-${participantIds.join('-')}`
   error.value = ''
   success.value = ''
@@ -179,45 +190,99 @@ async function runAction(action: string, participantIds = selected.value, extra 
     await workspace?.refresh()
     success.value = t('attendees.operationSaved', { count: participantIds.length })
     if (['withdraw', 'disqualify', 'promote', 'restore'].includes(action)) selected.value = []
+    return true
   } catch (caught: unknown) {
     error.value = formatApiError(caught)
+    return false
   } finally {
     pendingAction.value = null
   }
+}
+
+function requestAction(action: string, participantIds: number[]) {
+  if (action === 'withdraw' || action === 'disqualify') {
+    const players = participants.value.filter(participant => participantIds.includes(participant.id))
+    if (!players.length || pendingAction.value) return
+    removalDialogError.value = ''
+    removalRequest.value = { action, players }
+    return
+  }
+  if (action === 'restore' && participantIds.length === 1) {
+    const participant = participants.value.find(item => item.id === participantIds[0])
+    const user = available.value.find(item => item.id === participant?.user_id)
+    if (participant?.status === 'withdrawn' && user) {
+      requestAdd(user.id)
+      return
+    }
+  }
+  void runAction(action, participantIds)
+}
+
+async function confirmRemoval(refund: boolean) {
+  const request = removalRequest.value
+  if (!request || pendingAction.value) return
+  removalDialogError.value = ''
+  const succeeded = await runAction(
+    request.action,
+    request.players.map(player => player.id),
+    { refund },
+  )
+  if (succeeded) removalRequest.value = null
+  else removalDialogError.value = error.value
 }
 
 async function saveNote(participantId: number, note: string) {
   await runAction('update_note', [participantId], { note })
 }
 
-async function addUser(userId: number) {
+function requestAdd(userId: number) {
   const user = available.value.find(item => item.id === userId)
   if (!canAdd.value || !user) return
-  const waitlist = isFull.value || !isOpen.value
-  if (!waitlist && entryFee.value > 0 && (
+  const previouslyPaid = hasRetainedPayment(userId)
+  if (!previouslyPaid && entryFee.value > 0 && (
     user.balance == null ||
     !Number.isFinite(Number(user.balance)) ||
     Math.round(Number(user.balance) * 100) < Math.round(entryFee.value * 100)
   )) return
+  addDialogError.value = ''
+  pendingPreviouslyPaid.value = previouslyPaid
+  pendingUser.value = user
+}
+
+async function confirmAddUser(chargeAgain = false) {
+  const user = pendingUser.value
+  if (!canAdd.value || !user) return
+  const userId = user.id
   pendingAction.value = `user-${userId}`
   error.value = ''
   success.value = ''
   try {
     await apiFetch(`/api/admin/tournaments/${id}/attendees`, {
       method: 'POST',
-      body: JSON.stringify({ user_id: userId, waitlist }),
+      body: JSON.stringify({ user_id: userId, charge_again: chargeAgain }),
     })
+    pendingUser.value = null
     await load()
     await workspace?.refresh()
-    success.value = t(waitlist ? 'attendees.waitlistAdded' : 'attendees.playerAdded', { name: user.username })
+    success.value = t('attendees.playerAdded', { name: user.username })
   } catch (caught: unknown) {
     if (caught instanceof ApiError && /insufficient[_ ](?:funds|balance)/i.test(caught.body)) {
       await load()
+      pendingUser.value = null
+      topUpUser.value = available.value.find(item => item.id === user.id) ?? user
       error.value = t('attendees.fundingChanged', { name: user.username })
-    } else error.value = formatApiError(caught)
+    } else {
+      addDialogError.value = formatApiError(caught)
+    }
   } finally {
     pendingAction.value = null
   }
+}
+
+function topUpFromAdd() {
+  if (!pendingUser.value) return
+  topUpUser.value = pendingUser.value
+  pendingUser.value = null
 }
 
 async function topUpSaved(balance: string) {
@@ -267,7 +332,7 @@ async function topUpSaved(balance: string) {
         <div><strong>{{ t('attendees.entryFee', { amount: feeLabel }) }}</strong><p>{{ t(entryFee > 0 ? 'attendees.chargeHint' : 'attendees.freeEntry') }}</p></div>
       </div>
 
-      <AppAlert v-if="!isOpen" type="warning" :message="t(isFull ? 'attendees.capacityWaitlistHint' : 'attendees.registrationClosedOperations')" />
+      <AppAlert v-if="isFull" type="warning" :message="t('attendees.capacityReached')" />
 
       <section class="roster-panel" aria-labelledby="registered-heading">
         <header class="roster-panel__header">
@@ -285,28 +350,38 @@ async function topUpSaved(balance: string) {
             <Button size="small" icon="bi bi-check2-circle" :label="t('attendees.checkIn')" severity="success" :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('check_in', selectedRegistered.map(item => item.id))" />
             <Button size="small" icon="bi bi-cash-coin" :label="t('attendees.markPaid')" severity="warn" outlined :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('mark_paid', selectedRegistered.map(item => item.id))" />
             <Button size="small" :label="t('attendees.waivePayment')" severity="secondary" outlined :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('waive_payment', selectedRegistered.map(item => item.id))" />
-            <Button size="small" icon="bi bi-slash-circle" :label="t('attendees.disqualify')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="runAction('disqualify', selectedRegistered.map(item => item.id))" />
-            <Button size="small" icon="bi bi-person-x" :label="t('attendees.withdraw')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="runAction('withdraw', selectedRegistered.map(item => item.id))" />
+            <Button size="small" icon="bi bi-slash-circle" :label="t('attendees.disqualify')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="requestAction('disqualify', selectedRegistered.map(item => item.id))" />
+            <Button size="small" icon="bi bi-person-x" :label="t('attendees.withdraw')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="requestAction('withdraw', selectedRegistered.map(item => item.id))" />
           </div>
         </div>
         <label v-else-if="filteredParticipants.length" class="select-visible"><input type="checkbox" :checked="allVisibleSelected" @change="toggleVisible" />{{ t('attendees.selectVisible') }}</label>
 
         <div v-if="filteredParticipants.length" class="operations-list">
-          <AttendeeOperationsRow v-for="participant in filteredParticipants" :key="participant.id" :attendee="participant" :selected="selected.includes(participant.id)" :disabled="pendingAction !== null" :can-change-roster="canChangeRoster" :can-promote="canPromote" @select="setSelected" @action="runAction" @note="saveNote" />
+          <AttendeeOperationsRow v-for="participant in filteredParticipants" :key="participant.id" :attendee="participant" :selected="selected.includes(participant.id)" :disabled="pendingAction !== null" :can-change-roster="canChangeRoster" :can-promote="canPromote" @select="setSelected" @action="requestAction" @note="saveNote" />
         </div>
         <div v-else class="empty-state"><i class="bi bi-person-plus"></i><p>{{ t('attendees.noMatchingParticipants') }}</p></div>
       </section>
 
       <section v-if="tournament?.state === 'open'" class="add-panel" aria-labelledby="add-attendees-heading">
-        <header><div><p class="panel-eyebrow">{{ t(isFull || !isOpen ? 'attendees.waitlistEyebrow' : 'attendees.registrationEyebrow') }}</p><h3 id="add-attendees-heading">{{ t(isFull || !isOpen ? 'attendees.addToWaitlist' : 'attendees.add') }}</h3><p>{{ t(isFull || !isOpen ? 'attendees.addWaitlistSubtitle' : 'attendees.addSubtitle') }}</p></div></header>
+        <header><div><p class="panel-eyebrow">{{ t('attendees.registrationEyebrow') }}</p><h3 id="add-attendees-heading">{{ t('attendees.add') }}</h3><p>{{ t('attendees.addSubtitle') }}</p></div></header>
         <div class="available-list">
-          <AttendeeUserRow v-for="user in available" :key="user.id" :user="user" :entry-fee="isFull || !isOpen ? 0 : entryFee" :disabled="!canAdd" :loading="pendingAction === `user-${user.id}`" @add="addUser" @top-up="topUpUser = user" />
+          <AttendeeUserRow v-for="user in available" :key="user.id" :user="user" :entry-fee="hasRetainedPayment(user.id) ? 0 : entryFee" :disabled="!canAdd" :loading="pendingAction === `user-${user.id}`" @add="requestAdd" @top-up="topUpUser = user" />
           <div v-if="available.length === 0" class="empty-state"><i class="bi bi-search"></i><p>{{ t('attendees.noAvailable') }}</p></div>
         </div>
       </section>
     </div>
 
     <WalletTopUpDialog v-if="topUpUser" :key="topUpUser.id" :user="topUpUser" :entry-fee="entryFee" @close="topUpUser = null" @saved="topUpSaved" />
+    <AddPlayerDialog
+      v-if="pendingUser" :key="pendingUser.id" :user="pendingUser" :entry-fee="entryFee" :previously-paid="pendingPreviouslyPaid"
+      :busy="pendingAction === `user-${pendingUser.id}`" :error="addDialogError"
+      @cancel="pendingUser = null" @confirm="confirmAddUser" @top-up="topUpFromAdd"
+    />
+    <RosterRemovalDialog
+      v-if="removalRequest" :key="`${removalRequest.action}-${removalRequest.players.map(player => player.id).join('-')}`"
+      :players="removalRequest.players" :action="removalRequest.action" :busy="pendingAction !== null"
+      :error="removalDialogError" @cancel="removalRequest = null" @confirm="confirmRemoval"
+    />
   </div>
 </template>
 

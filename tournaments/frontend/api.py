@@ -902,6 +902,12 @@ def _attendee_rows(tournament):
             'username': participant.user.username if participant.user else None,
             'status': status,
             'payment_status': payment_status,
+            'refundable': str(
+                tournament.entry_fee
+                if participant.user_id is not None
+                and payment_status == models.TournamentRegistration.PAYMENT_PAID
+                else Decimal('0.00')
+            ),
             'checked_in_at': checked_in_at.isoformat() if checked_in_at else None,
             'withdrawn_at': (
                 registration.withdrawn_at.isoformat()
@@ -985,9 +991,13 @@ def api_admin_tournament_attendees(request, pk):
 
     if request.method == 'POST':
         is_full = t.max_players is not None and t.participations.count() >= t.max_players
-        add_to_waitlist = bool(data.get('waitlist')) or is_full
-        if t.state != 'open' or (not t.registration_open and not add_to_waitlist):
+        if t.state != 'open':
             return JsonResponse({'detail': 'Registration is closed'}, status=412)
+        if is_full:
+            return JsonResponse({
+                'code': 'capacity_full',
+                'detail': 'Tournament is full.',
+            }, status=412)
         try:
             if data.get('user_id'):
                 user = User.objects.get(pk=int(data['user_id']))
@@ -1003,26 +1013,34 @@ def api_admin_tournament_attendees(request, pk):
             existing = t.registrations.filter(participant=participant).first()
             if existing and existing.status in {'registered', 'waitlisted', 'disqualified'}:
                 return JsonResponse({'detail': 'Already registered'}, status=400)
-            registration = _ensure_registration(
-                t,
-                participant,
-                status=(
-                    models.TournamentRegistration.STATUS_WAITLISTED
-                    if add_to_waitlist else models.TournamentRegistration.STATUS_REGISTERED
-                ),
-                payment_status=(
-                    models.TournamentRegistration.PAYMENT_PAID
-                    if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
-                ),
-            )
+            if existing:
+                registration = existing
+                if bool(data.get('charge_again')) and (
+                    registration.status == models.TournamentRegistration.STATUS_WITHDRAWN
+                    and registration.payment_status == models.TournamentRegistration.PAYMENT_PAID
+                ):
+                    registration.payment_status = models.TournamentRegistration.PAYMENT_UNPAID
+            else:
+                registration = _ensure_registration(
+                    t,
+                    participant,
+                    status=models.TournamentRegistration.STATUS_REGISTERED,
+                    payment_status=(
+                        models.TournamentRegistration.PAYMENT_PAID
+                        if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
+                    ),
+                )
             registration.checked_in_at = None
             registration.withdrawn_at = None
-            if add_to_waitlist:
-                registration.save(update_fields=[
-                    'status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at',
-                ])
-                return JsonResponse({'detail': 'Added to waitlist', 'status': registration.status})
             _add_to_active_roster(t, registration, request.user)
+            if t.registration_closed_at is not None or t.draw_generated_at is not None:
+                t.registration_closed_at = None
+                t.registration_closed_reason = ''
+                t.clear_draw()
+                t.save(update_fields=[
+                    'registration_closed_at', 'registration_closed_reason', 'draw_order',
+                    'draw_generated_at', 'draw_confirmed_at',
+                ])
             t.close_registration_if_full()
             return JsonResponse({'detail': 'Added', 'status': registration.status})
         except (User.DoesNotExist, ValueError):
@@ -1091,47 +1109,53 @@ def api_admin_tournament_attendees(request, pk):
             registration.payment_status = status_by_action[action]
             registration.save(update_fields=['payment_status', 'updated_at'])
     elif action in {'withdraw', 'disqualify'}:
-        if t.state != 'open' or t.draw_confirmed_at is not None:
+        if t.state != 'open':
             return JsonResponse({'detail': 'The roster is locked'}, status=412)
+        refund_requested = bool(data.get('refund', action == 'withdraw'))
+        refunded_count = 0
         for registration in registrations.values():
             participation = t.participations.filter(participant=registration.participant).first()
-            if participation and not (
-                t.registration_open or t.registration_closed_reason == 'capacity'
-            ):
-                return JsonResponse({'detail': 'Reopen registration before changing the active roster'}, status=412)
             if action == 'withdraw':
-                _refund_registration(t, registration, request.user)
                 registration.status = models.TournamentRegistration.STATUS_WITHDRAWN
                 registration.withdrawn_at = timezone.now()
             else:
                 registration.status = models.TournamentRegistration.STATUS_DISQUALIFIED
                 registration.withdrawn_at = None
+            previous_payment_status = registration.payment_status
+            if refund_requested:
+                _refund_registration(t, registration, request.user)
+                if previous_payment_status != registration.payment_status:
+                    refunded_count += 1
             registration.checked_in_at = None
             if participation:
                 participation.delete()
             registration.save(update_fields=[
                 'status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at',
             ])
-        if t.draw_generated_at is not None:
-            t.clear_draw()
-            t.save(update_fields=['draw_order', 'draw_generated_at', 'draw_confirmed_at'])
-        if t.registration_closed_reason == 'capacity' and (
-            t.max_players is None or t.participations.count() < t.max_players
-        ):
+        if t.registration_closed_at is not None or t.draw_generated_at is not None:
             t.registration_closed_at = None
             t.registration_closed_reason = ''
-            t.save(update_fields=['registration_closed_at', 'registration_closed_reason'])
+            t.clear_draw()
+            t.save(update_fields=[
+                'registration_closed_at', 'registration_closed_reason', 'draw_order',
+                'draw_generated_at', 'draw_confirmed_at',
+            ])
     elif action in {'promote', 'restore'}:
-        if not t.registration_open or t.draw_confirmed_at is not None:
-            return JsonResponse({'detail': 'Open registration before adding players to the active roster'}, status=412)
+        if t.state != 'open':
+            return JsonResponse({'detail': 'The roster is locked'}, status=412)
         try:
             for registration in registrations.values():
                 _add_to_active_roster(t, registration, request.user)
         except ValidationError as error:
             return JsonResponse({'detail': '; '.join(error.messages)}, status=412)
-        if t.draw_generated_at is not None:
+        if t.registration_closed_at is not None or t.draw_generated_at is not None:
+            t.registration_closed_at = None
+            t.registration_closed_reason = ''
             t.clear_draw()
-            t.save(update_fields=['draw_order', 'draw_generated_at', 'draw_confirmed_at'])
+            t.save(update_fields=[
+                'registration_closed_at', 'registration_closed_reason', 'draw_order',
+                'draw_generated_at', 'draw_confirmed_at',
+            ])
         t.close_registration_if_full()
     else:
         return JsonResponse({'detail': 'Unsupported attendee action'}, status=400)
@@ -1140,6 +1164,7 @@ def api_admin_tournament_attendees(request, pk):
         'detail': 'Updated',
         'participants': _attendee_rows(t),
         'summary': _registration_summary(t),
+        **({'refunded_count': refunded_count} if action in {'withdraw', 'disqualify'} else {}),
     })
 
 
@@ -1560,17 +1585,35 @@ def api_admin_tournament_start(request, pk):
     if err:
         return err
     t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
-    if t.lifecycle_state != "ready_to_start":
-        return JsonResponse({"detail": f"Cannot start, lifecycle={t.lifecycle_state}"}, status=412)
+    if t.state != "open":
+        return JsonResponse({"detail": f"Cannot start, state={t.state}"}, status=412)
     # if t.creator and t.creator_id != request.user.id:
     #     return JsonResponse({"detail": "Only creator can start"}, status=403)
     required = t.min_players
-    if t.participations.count() < required:
-        return JsonResponse({"detail": f"Need at least {required} attendees (you have {t.participations.count()})"}, status=412)
+    participant_ids = list(t.participations.values_list("participant_id", flat=True))
+    if len(participant_ids) < required:
+        return JsonResponse({"detail": f"Need at least {required} attendees (you have {len(participant_ids)})"}, status=412)
     try:
         t.test()
     except ValidationError as e:
         return JsonResponse({"detail": "; ".join(e.messages) if hasattr(e, "messages") else str(e)}, status=400)
+    valid_confirmed_draw = (
+        t.draw_confirmed_at is not None
+        and len(t.draw_order) == len(participant_ids)
+        and set(t.draw_order) == set(participant_ids)
+    )
+    if not valid_confirmed_draw:
+        random.SystemRandom().shuffle(participant_ids)
+        t.draw_order = participant_ids
+    now = timezone.now()
+    t.registration_closed_at = t.registration_closed_at or now
+    t.registration_closed_reason = t.registration_closed_reason or 'start'
+    t.draw_generated_at = t.draw_generated_at or now
+    t.draw_confirmed_at = t.draw_confirmed_at or now
+    t.save(update_fields=[
+        "registration_closed_at", "registration_closed_reason", "draw_order",
+        "draw_generated_at", "draw_confirmed_at",
+    ])
     try:
         t.apply_draw_order()
     except ValidationError as error:

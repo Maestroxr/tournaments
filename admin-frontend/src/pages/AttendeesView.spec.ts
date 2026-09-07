@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
 import AttendeesView from './AttendeesView.vue'
 import AttendeeUserRow from '@/components/tournament/AttendeeUserRow.vue'
+import AttendeeOperationsRow from '@/components/tournament/AttendeeOperationsRow.vue'
+import AddPlayerDialog from '@/components/tournament/AddPlayerDialog.vue'
+import RosterRemovalDialog from '@/components/tournament/RosterRemovalDialog.vue'
 import WalletTopUpDialog from '@/components/tournament/WalletTopUpDialog.vue'
 import { apiFetch } from '@/services/api'
 import { useI18n } from '@/i18n'
@@ -18,7 +21,7 @@ const response = (balance: string | undefined = '20.00') => ({
 })
 function view() {
   return mount(AttendeesView, {
-    global: { plugins: [PrimeVue], stubs: { RouterLink: true, WalletTopUpDialog: true, UserQuickView: true } },
+    global: { plugins: [PrimeVue], stubs: { RouterLink: true, WalletTopUpDialog: true, AddPlayerDialog: true, RosterRemovalDialog: true, UserQuickView: true } },
   })
 }
 
@@ -50,6 +53,24 @@ describe('AttendeesView', () => {
     expect(wrapper.getComponent(AttendeeUserRow).props('user').balance).toBe('50.00')
     expect(wrapper.get('[aria-label="Add Dana"]').attributes('disabled')).toBeUndefined()
     expect(api.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
+  })
+
+  it('shows the charge confirmation before adding a funded player', async () => {
+    api.mockResolvedValue(response('70.00'))
+    const wrapper = view()
+    await flushPromises()
+
+    wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
+    await flushPromises()
+
+    expect(wrapper.getComponent(AddPlayerDialog).props('user').id).toBe(7)
+    expect(api).toHaveBeenCalledTimes(1)
+    wrapper.getComponent(AddPlayerDialog).vm.$emit('confirm')
+    await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 7, charge_again: false }),
+    })
   })
 
   it('loads balances from the staff user API for a legacy running server', async () => {
@@ -88,5 +109,33 @@ describe('AttendeesView', () => {
       body: JSON.stringify({ participant_ids: [11], action: 'check_in' }),
     }))
     expect(wrapper.text()).toContain('1/1')
+  })
+
+  it('offers a wallet credit before removing a paid player', async () => {
+    const operational = {
+      participants: [{
+        id: 11, name: 'Dana', username: 'Dana', user_id: 7, status: 'registered',
+        payment_status: 'paid', refundable: '50.00', checked_in_at: null, internal_note: '',
+        disqualified: false, requires_attention: false, attention_reasons: [], slot: 1,
+      }],
+      available: [],
+      summary: { registered: 1, checked_in: 0, unpaid: 0, waitlisted: 0, attention: 0, ready: 1 },
+      tournament: { state: 'open', registration_open: true, entry_fee: '50.00', max_players: 8 },
+    }
+    api.mockResolvedValue(operational)
+    const wrapper = view()
+    await flushPromises()
+
+    wrapper.getComponent(AttendeeOperationsRow).vm.$emit('action', 'withdraw', [11])
+    await flushPromises()
+    expect(wrapper.getComponent(RosterRemovalDialog).props('players')).toMatchObject([
+      { id: 11, refundable: '50.00' },
+    ])
+    wrapper.getComponent(RosterRemovalDialog).vm.$emit('confirm', false)
+    await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
+      method: 'PATCH',
+      body: JSON.stringify({ participant_ids: [11], action: 'withdraw', refund: false }),
+    })
   })
 })

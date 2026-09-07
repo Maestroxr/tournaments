@@ -56,12 +56,21 @@ class TournamentLifecycleTests(TestCase):
             content_type="application/json",
         )
 
-    def test_draw_must_be_confirmed_before_start_and_order_is_preserved(self):
+    def test_start_randomizes_players_and_creates_matches_without_manual_draw(self):
+        participants = [self.add_player(user) for user in self.players[:2]]
+
+        started = self.post("api-admin-tournament-start")
+
+        self.assertEqual(started.status_code, 200, started.content)
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "active")
+        self.assertCountEqual(self.tournament.draw_order, [participant.id for participant in participants])
+        self.assertIsNotNone(self.tournament.draw_confirmed_at)
+        self.assertTrue(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+    def test_existing_confirmed_draw_order_is_preserved_when_starting(self):
         participants = [self.add_player(user) for user in self.players[:2]]
         self.assertEqual(self.tournament.lifecycle_state, "registration_open")
-
-        premature = self.post("api-admin-tournament-start")
-        self.assertEqual(premature.status_code, 412)
 
         closed = self.post("api-admin-tournament-close-registration")
         self.assertEqual(closed.status_code, 200)

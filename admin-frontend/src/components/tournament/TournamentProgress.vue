@@ -13,20 +13,17 @@ const { t } = useI18n()
 const steps = [
   'draft',
   'registration',
-  'registrationClosed',
-  'draw',
   'ready',
   'live',
   'finished',
 ] as const
 const currentIndex = computed(() => {
   if (props.state === 'draft') return 0
-  if (props.lifecycleState === 'registration_closed') return 2
-  if (props.lifecycleState === 'draw_ready') return 3
-  if (props.lifecycleState === 'ready_to_start') return 4
-  if (props.state === 'open') return 1
-  if (props.state === 'active') return 5
-  if (props.state === 'finished') return 6
+  if (props.state === 'open') {
+    return props.minPlayers != null && props.participantCount >= props.minPlayers ? 2 : 1
+  }
+  if (props.state === 'active') return 3
+  if (props.state === 'finished') return 4
   return -1
 })
 const currentLabel = computed(() => {
@@ -66,9 +63,7 @@ const hint = computed(() => {
       required: props.minPlayers,
     })
   }
-  if (currentIndex.value === 2) return t('tournamentProgress.registrationClosedHint')
-  if (currentIndex.value === 3) return t('tournamentProgress.drawHint')
-  if (currentIndex.value === 4) return t('tournamentProgress.readyHint')
+  if (props.state === 'open' && currentIndex.value === 2) return t('tournamentProgress.readyHint')
   if (props.state === 'active') return t('tournamentProgress.liveHint')
   if (props.state === 'finished') return t('tournamentProgress.finishedHint')
   return ''

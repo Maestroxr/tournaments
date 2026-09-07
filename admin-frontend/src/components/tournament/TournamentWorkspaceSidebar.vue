@@ -14,7 +14,6 @@ const activeItem = computed(() => {
     'tournament-detail': 'overview',
     'tournament-settings': 'settings',
     'tournament-players': 'players',
-    'tournament-draw': 'draw',
     'tournament-live': 'live',
     'tournament-bracket': 'bracket',
     'tournament-standings': 'standings',
@@ -24,7 +23,6 @@ const activeItem = computed(() => {
 })
 const competitionLocked = computed(() => !['active', 'finished'].includes(props.state))
 const resultsLocked = computed(() => props.state !== 'finished')
-const drawLocked = computed(() => props.state === 'draft' || props.lifecycleState === 'draft')
 const groups = computed<{ id: string; items: WorkspaceItem[] }[]>(() => [
   { id: 'general', items: [{ id: 'overview', routeName: 'tournament-detail', icon: 'bi-grid' }] },
   {
@@ -32,7 +30,6 @@ const groups = computed<{ id: string; items: WorkspaceItem[] }[]>(() => [
     items: [
       { id: 'settings', routeName: 'tournament-settings', icon: 'bi-sliders' },
       { id: 'players', routeName: 'tournament-players', icon: 'bi-people' },
-      { id: 'draw', routeName: 'tournament-draw', icon: 'bi-shuffle', locked: drawLocked.value },
     ],
   },
   {

@@ -17,8 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{ start: []; publish: [] }>()
 const { t } = useI18n()
 const remaining = computed(() => Math.max(0, props.minPlayers - props.participantCount))
-const lifecycle = computed(() => props.lifecycleState || (props.state === 'open' ? 'registration_open' : props.state))
-const ready = computed(() => props.state === 'open' && lifecycle.value === 'ready_to_start' && remaining.value === 0)
+const ready = computed(() => props.state === 'open' && remaining.value === 0)
 const hasBracket = computed(() => ['active', 'finished'].includes(props.state))
 const progress = computed(() => props.minPlayers > 0 ? Math.min(100, props.participantCount / props.minPlayers * 100) : 0)
 interface PrimaryAction {
@@ -48,37 +47,13 @@ const primary = computed<PrimaryAction>(() => {
     icon: 'bi bi-megaphone',
     command: 'publish',
   }
-  if (lifecycle.value === 'registration_closed') return {
-    title: t('tournamentActions.prepareDraw'),
-    hint: t('tournamentActions.prepareDrawHint'),
-    label: t('tournamentActions.openDraw'),
-    description: t('tournamentActions.openDrawHint'),
-    icon: 'bi bi-shuffle',
-    to: `${root}/draw`,
-  }
-  if (lifecycle.value === 'draw_ready') return {
-    title: t('tournamentActions.reviewDraw'),
-    hint: t('tournamentActions.reviewDrawHint'),
-    label: t('tournamentActions.openDraw'),
-    description: t('tournamentActions.confirmDrawHint'),
-    icon: 'bi bi-diagram-3',
-    to: `${root}/draw`,
-  }
-  if (props.state === 'open' && lifecycle.value === 'registration_open' && remaining.value > 0) return {
+  if (props.state === 'open' && remaining.value > 0) return {
     title: t('tournamentActions.addPlayers'),
     hint: t('tournamentActions.playersHint'),
     label: t('tournamentActions.managePlayers'),
     description: t('tournamentActions.manageHint'),
     icon: 'bi bi-person-plus',
     to: `${root}/players`,
-  }
-  if (props.state === 'open' && lifecycle.value === 'registration_open') return {
-    title: t('tournamentActions.closeRegistration'),
-    hint: t('tournamentActions.closeRegistrationHint'),
-    label: t('tournamentActions.openDraw'),
-    description: t('tournamentActions.closeRegistrationActionHint'),
-    icon: 'bi bi-lock',
-    to: `${root}/draw`,
   }
   if (ready.value) return {
     title: t('tournamentActions.ready'),

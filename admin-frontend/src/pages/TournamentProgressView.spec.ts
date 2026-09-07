@@ -128,7 +128,7 @@ describe('Tournament workspace', () => {
     const { wrapper } = await view(`/tournaments/20/${tab}`)
     const progress = wrapper.getComponent(TournamentProgress)
     expect(progress.props('state')).toBe('active')
-    expect(progress.findAll('[data-pc-name="step"]')).toHaveLength(7)
+    expect(progress.findAll('[data-pc-name="step"]')).toHaveLength(5)
     expect(progress.get('.tournament-progress__current').text()).toBe('Live matches')
   })
 
