@@ -138,6 +138,47 @@ describe('DashboardView localization', () => {
     expect(document.documentElement.dir).toBe('ltr')
   })
 
+  it('does not crash when an older backend omits the recent activity feed', async () => {
+    const { recent_activity: _recentActivity, ...legacyResponse } = response
+    api.mockResolvedValue({
+      ...legacyResponse,
+      active_tournaments: legacyResponse.active_tournaments.map((tournament) => {
+        const {
+          round_completed_matches: _roundCompleted,
+          round_total_matches: _roundTotal,
+          round_progress_percent: _roundPercent,
+          next_match: _nextMatch,
+          ...legacyTournament
+        } = tournament
+        return legacyTournament
+      }),
+      recent_users: [{ id: 1, username: 'legacy-user' }],
+    } as never)
+
+    const wrapper = view()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Tournament operations at a glance')
+    expect(wrapper.text()).toContain('No operational activity has been recorded yet.')
+    expect(wrapper.get('.dashboard-focus-card').text()).toContain('0/2')
+  })
+
+  it('uses safe empty collections when a rolling deployment returns a partial payload', async () => {
+    api.mockResolvedValue({
+      updated_at: '2026-09-07T12:00:00Z',
+      range_days: 7,
+      kpis: response.kpis,
+      counts: response.counts,
+    } as never)
+
+    const wrapper = view()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Create a tournament')
+    expect(wrapper.text()).toContain('Everything is on track')
+    expect(wrapper.text()).toContain('No operational activity has been recorded yet.')
+  })
+
   it('renders the complete dashboard interface in Hebrew and RTL', async () => {
     useI18n().locale.value = 'he'
     const wrapper = view()

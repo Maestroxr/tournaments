@@ -93,6 +93,51 @@ interface DashboardData {
   recent_activity: ActivityItem[]
 }
 
+type DashboardPayload = Partial<Omit<DashboardData, 'kpis' | 'counts'>> & {
+  kpis?: Partial<DashboardData['kpis']>
+  counts?: Partial<DashboardData['counts']>
+}
+
+const emptyKpi = (): KpiValue => ({ value: 0, context: '' })
+
+function normalizeDashboardData(payload: DashboardPayload): DashboardData {
+  const activeTournaments = Array.isArray(payload.active_tournaments)
+    ? payload.active_tournaments.map(tournament => ({
+        ...tournament,
+        stage: tournament.stage ?? '',
+        round: tournament.round ?? '',
+        pending_matches: tournament.pending_matches ?? 0,
+        round_completed_matches: tournament.round_completed_matches ?? 0,
+        round_total_matches: tournament.round_total_matches ?? tournament.pending_matches ?? 0,
+        round_progress_percent: tournament.round_progress_percent ?? 0,
+        next_match: tournament.next_match ?? null,
+      }))
+    : []
+
+  return {
+    updated_at: payload.updated_at || new Date().toISOString(),
+    range_days: payload.range_days === 1 || payload.range_days === 30 ? payload.range_days : 7,
+    kpis: {
+      active: { ...emptyKpi(), ...payload.kpis?.active },
+      upcoming: { ...emptyKpi(), ...payload.kpis?.upcoming },
+      waiting: { ...emptyKpi(), ...payload.kpis?.waiting },
+      pending_matches: { ...emptyKpi(), ...payload.kpis?.pending_matches },
+    },
+    counts: {
+      draft: payload.counts?.draft ?? 0,
+      open: payload.counts?.open ?? 0,
+      active: payload.counts?.active ?? 0,
+      finished: payload.counts?.finished ?? 0,
+    },
+    attention: Array.isArray(payload.attention) ? payload.attention : [],
+    active_tournaments: activeTournaments,
+    upcoming_tournaments: Array.isArray(payload.upcoming_tournaments)
+      ? payload.upcoming_tournaments
+      : [],
+    recent_activity: Array.isArray(payload.recent_activity) ? payload.recent_activity : [],
+  }
+}
+
 const data = ref<DashboardData | null>(null)
 const { locale, t } = useI18n()
 const loading = ref(true)
@@ -108,7 +153,7 @@ const ranges = computed<{ value: RangeDays; label: string }[]>(() => [
 const localeTag = computed(() => (locale.value === 'he' ? 'he-IL' : 'en-US'))
 
 const focusCard = computed(() => {
-  const active = data.value?.active_tournaments[0]
+  const active = data.value?.active_tournaments?.[0]
   if (active) {
     return {
       kind: 'active',
@@ -138,7 +183,7 @@ const focusCard = computed(() => {
     }
   }
 
-  const upcoming = data.value?.upcoming_tournaments[0]
+  const upcoming = data.value?.upcoming_tournaments?.[0]
   if (upcoming) {
     const registration = upcoming.registration_summary
     return {
@@ -165,7 +210,7 @@ const focusCard = computed(() => {
     }
   }
 
-  const draft = data.value?.attention.find(item => item.kind === 'draft')
+  const draft = data.value?.attention?.find(item => item.kind === 'draft')
   if (draft) {
     return {
       kind: 'draft',
@@ -259,11 +304,11 @@ const additionalActiveTournaments = computed(() => {
 
 const visibleUpcomingTournaments = computed(() => {
   const upcoming = data.value?.upcoming_tournaments ?? []
-  return data.value?.active_tournaments.length ? upcoming : upcoming.slice(1)
+  return data.value?.active_tournaments?.length ? upcoming : upcoming.slice(1)
 })
 
 const focusedUpcomingShownAbove = computed(() =>
-  !data.value?.active_tournaments.length && Boolean(data.value?.upcoming_tournaments.length),
+  !data.value?.active_tournaments?.length && Boolean(data.value?.upcoming_tournaments?.length),
 )
 
 const sortedAttention = computed(() => {
@@ -295,7 +340,8 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    data.value = await apiFetch<DashboardData>(`/api/admin/dashboard?days=${rangeDays.value}`)
+    const payload = await apiFetch<DashboardPayload>(`/api/admin/dashboard?days=${rangeDays.value}`)
+    data.value = normalizeDashboardData(payload)
   } catch (caught: unknown) {
     error.value = formatApiError(caught)
   } finally {
