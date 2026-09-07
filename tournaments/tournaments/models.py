@@ -36,6 +36,12 @@ class Tournament(models.Model):
     doubling_enabled = models.BooleanField(default=True)
     entry_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     prize_money = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    registration_closed_at = models.DateTimeField(null=True, blank=True)
+    registration_closed_reason = models.CharField(max_length=20, blank=True, default='')
+    draw_order = models.JSONField(default=list, blank=True)
+    draw_generated_at = models.DateTimeField(null=True, blank=True)
+    draw_confirmed_at = models.DateTimeField(null=True, blank=True)
+    results_confirmed_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return self.name
@@ -126,28 +132,75 @@ class Tournament(models.Model):
                 participation.slot_id = new_slot_id
                 participation.save()
 
-    def start_if_full(self):
-        """Initialize an open tournament once its configured capacity is reached.
+    def close_registration_if_full(self):
+        """Close registration once capacity is reached without creating fixtures.
 
         The caller must hold a row lock for this tournament when registrations can
         happen concurrently.
         """
-        if self.state != 'open' or self.max_players is None:
+        if self.state != 'open' or self.registration_closed_at is not None or self.max_players is None:
             return False
         if self.participations.count() < self.max_players:
             return False
 
-        self.test()
-        self.shuffle_participants()
-        self.update_state()
+        from django.utils import timezone
+        self.registration_closed_at = timezone.now()
+        self.registration_closed_reason = 'capacity'
+        self.save(update_fields=['registration_closed_at', 'registration_closed_reason'])
         return True
+
+    @property
+    def lifecycle_state(self):
+        if self.state == 'draft':
+            return 'draft'
+        if self.state == 'active':
+            return 'active'
+        if self.state == 'finished':
+            return 'results_confirmed' if self.results_confirmed_at else 'finished'
+        if self.registration_closed_at is None:
+            return 'registration_open'
+        if self.draw_generated_at is None or not self.draw_order:
+            return 'registration_closed'
+        if self.draw_confirmed_at is None:
+            return 'draw_ready'
+        return 'ready_to_start'
+
+    @property
+    def registration_open(self):
+        return self.state == 'open' and self.registration_closed_at is None
+
+    def clear_draw(self):
+        self.draw_order = []
+        self.draw_generated_at = None
+        self.draw_confirmed_at = None
+
+    @transaction.atomic
+    def apply_draw_order(self):
+        participant_ids = list(self.draw_order or [])
+        participations = {
+            participation.participant_id: participation
+            for participation in self.participations.select_for_update()
+        }
+        if len(participant_ids) != len(participations) or set(participant_ids) != set(participations):
+            raise ValidationError('The confirmed draw no longer matches the registered players.')
+
+        offset = max((participation.slot_id for participation in participations.values()), default=-1) + len(participations) + 1
+        for index, participant_id in enumerate(participant_ids):
+            participation = participations[participant_id]
+            participation.slot_id = offset + index
+            participation.save(update_fields=['slot_id'])
+        for index, participant_id in enumerate(participant_ids):
+            participation = participations[participant_id]
+            participation.slot_id = index
+            participation.save(update_fields=['slot_id'])
 
     def update_state(self):
         if self.current_stage is None:
 
             # If the tournament is finished, update the podium positions.
             podium = self._get_podium()
-            for position, participant in enumerate(podium):
+            eligible_podium = [p for p in podium if not self.participations.filter(participant=p, disqualified_at__isnull=False).exists()]
+            for position, participant in enumerate(eligible_podium):
                 participation = self.participations.get(participant = participant)
                 participation.podium_position = position
                 participation.save()
@@ -313,6 +366,7 @@ class Participation(models.Model):
     tournament = models.ForeignKey('Tournament', on_delete = models.CASCADE, related_name = 'participations')
     slot_id = models.PositiveIntegerField()
     podium_position = models.PositiveIntegerField(null = True, blank = True)
+    disqualified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ('tournament', 'slot_id')
@@ -328,6 +382,83 @@ class Participation(models.Model):
     @staticmethod
     def next_slot_id(tournament):
         return Participation.objects.filter(tournament = tournament).aggregate(Max('slot_id', default = -1))['slot_id__max'] + 1
+
+
+class TournamentRegistration(models.Model):
+    """Operational registration data kept separate from bracket participation.
+
+    A waitlisted, withdrawn, or pre-event disqualified player must not be exposed
+    to the tournament engine as a seeded participant.  Keeping that workflow in
+    a separate model preserves the existing bracket behaviour while retaining an
+    organizer-facing history of every registration.
+    """
+
+    STATUS_REGISTERED = 'registered'
+    STATUS_WAITLISTED = 'waitlisted'
+    STATUS_WITHDRAWN = 'withdrawn'
+    STATUS_DISQUALIFIED = 'disqualified'
+    STATUS_CHOICES = [
+        (STATUS_REGISTERED, 'Registered'),
+        (STATUS_WAITLISTED, 'Waitlisted'),
+        (STATUS_WITHDRAWN, 'Withdrawn'),
+        (STATUS_DISQUALIFIED, 'Disqualified'),
+    ]
+
+    PAYMENT_PAID = 'paid'
+    PAYMENT_UNPAID = 'unpaid'
+    PAYMENT_WAIVED = 'waived'
+    PAYMENT_REFUNDED = 'refunded'
+    PAYMENT_CHOICES = [
+        (PAYMENT_PAID, 'Paid'),
+        (PAYMENT_UNPAID, 'Unpaid'),
+        (PAYMENT_WAIVED, 'Waived'),
+        (PAYMENT_REFUNDED, 'Refunded'),
+    ]
+
+    tournament = models.ForeignKey(
+        'Tournament', on_delete=models.CASCADE, related_name='registrations')
+    participant = models.ForeignKey(
+        'Participant', on_delete=models.CASCADE, related_name='tournament_registrations')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_REGISTERED)
+    payment_status = models.CharField(
+        max_length=20, choices=PAYMENT_CHOICES, default=PAYMENT_PAID)
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    internal_note = models.TextField(blank=True)
+    registered_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('tournament', 'registered_at', 'id')
+        constraints = [
+            models.UniqueConstraint(
+                fields=('tournament', 'participant'),
+                name='unique_tournament_registration',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.participant} registration for {self.tournament}'
+
+    @property
+    def requires_attention(self):
+        if self.status == self.STATUS_WAITLISTED:
+            return True
+        if self.status != self.STATUS_REGISTERED:
+            return False
+        return self.payment_status == self.PAYMENT_UNPAID or self.checked_in_at is None
+
+
+class UserContact(models.Model):
+    user = models.OneToOneField(
+        'auth.User',
+        on_delete=models.CASCADE,
+        related_name='contact',
+    )
+    phone_number = models.CharField(max_length=24, blank=True)
+
+    def __str__(self):
+        return f'{self.user}: {self.phone_number}'
 
 
 class WalletTransaction(models.Model):
@@ -371,6 +502,7 @@ class WalletTransaction(models.Model):
     @staticmethod
     @transaction.atomic
     def create_entry(*, user, amount, kind, tournament=None, actor=None, note=""):
+        User.objects.select_for_update().get(pk=user.pk)
         amount = Decimal(str(amount)).quantize(Decimal("0.01"))
         if amount == 0:
             raise ValidationError("Amount cannot be zero.")
@@ -995,6 +1127,10 @@ class Fixture(models.Model):
     score2  = models.PositiveSmallIntegerField(null = True)
     confirmations = models.ManyToManyField('auth.User', related_name = 'fixture_confirmations')
     auto_confirmed = models.BooleanField(default = False)  # result reported by a trusted game server
+    admin_result = models.CharField(max_length=20, blank=True)
+    admin_winner = models.ForeignKey('Participant', null=True, blank=True, on_delete=models.PROTECT, related_name='administrative_wins')
+    admin_resolved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
@@ -1051,17 +1187,21 @@ class Fixture(models.Model):
 
     @property
     def is_confirmed(self):
+        if self.admin_result in ('advance', 'disqualify') and self.admin_winner_id:
+            return True
         if self.score1 is None or self.score2 is None:
             return False
         # A result reported by a trusted game server is authoritative and collects no human
         # confirmations, so without this it would never reach `required_confirmations_count` and
         # would stall the tournament forever.
-        if self.auto_confirmed:
+        if self.auto_confirmed or self.admin_result == 'score':
             return True
         return self.confirmations.count() >= self.required_confirmations_count
 
     @property
     def winner(self):
+        if self.admin_winner_id:
+            return self.admin_winner
         if self.score1 is None or self.score2 is None:
             return None
         if self.score1 > self.score2:
@@ -1072,6 +1212,8 @@ class Fixture(models.Model):
 
     @property
     def loser(self):
+        if self.admin_winner_id:
+            return self.player2 if self.admin_winner_id == self.player1_id else self.player1
         if self.score1 is None or self.score2 is None:
             return None
         if self.score1 < self.score2:
@@ -1079,3 +1221,22 @@ class Fixture(models.Model):
         if self.score1 > self.score2:
             return self.player2
         return None
+
+
+class FixtureAdminState(models.Model):
+    fixture = models.OneToOneField(Fixture, on_delete=models.CASCADE, related_name='admin_state')
+    note = models.TextField(blank=True)
+    revision = models.PositiveIntegerField(default=0)
+
+
+class FixtureAudit(models.Model):
+    fixture = models.ForeignKey(Fixture, on_delete=models.CASCADE, related_name='audit_events')
+    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    action = models.CharField(max_length=32)
+    reason = models.TextField(blank=True)
+    before = models.JSONField(default=dict)
+    after = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at', '-id')

@@ -1,8 +1,9 @@
+import json
 import re
 from unittest import skip
 
 from django.contrib.auth.views import LoginView
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from tournaments import models
@@ -17,6 +18,41 @@ def strip_yaml_indent(yaml):
     lines = [line for line in yaml.split('\n') if len(line) > 0]
     indent = min((len(re.match(r'^([ ]*)', line).group(1)) for line in lines))
     return '\n'.join((line[indent:] for line in lines))
+
+
+class SignupApiTests(TestCase):
+
+    def test_signup_capitalizes_first_username_character(self):
+        response = self.client.post(
+            reverse('api-signup'),
+            data=json.dumps({
+                'username': 'uSer1',
+                'password1': password1,
+                'password2': password1,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['username'], 'USer1')
+        self.assertTrue(models.User.objects.filter(username='USer1').exists())
+        self.assertTrue(response.wsgi_request.user.is_authenticated)
+
+    def test_signup_checks_duplicates_after_capitalization(self):
+        models.User.objects.create_user(username='User1', password=password1)
+
+        response = self.client.post(
+            reverse('api-signup'),
+            data=json.dumps({
+                'username': 'user1',
+                'password1': password1,
+                'password2': password1,
+            }),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('username', response.json()['errors'])
 
 
 @skip('Legacy server-rendered admin UI was replaced by the Vue applications')
@@ -356,8 +392,8 @@ def start_tournament(tournament, **kwargs):
     return users
 
 
-class ApiJoinAutoStartTests(TestCase):
-    def test_joining_the_final_slot_starts_a_full_tournament(self):
+class ApiJoinAutoCloseRegistrationTests(TestCase):
+    def test_joining_the_final_slot_closes_registration_without_starting(self):
         tournament = models.Tournament.load(
             definition=test_tournament1_yml,
             name='Full tournament',
@@ -374,7 +410,36 @@ class ApiJoinAutoStartTests(TestCase):
         self.assertEqual(response.status_code, 200)
         tournament.refresh_from_db()
         self.assertEqual(tournament.participations.count(), 6)
-        self.assertEqual(tournament.state, 'active')
+        self.assertEqual(tournament.state, 'open')
+        self.assertEqual(tournament.lifecycle_state, 'registration_closed')
+        self.assertFalse(models.Fixture.objects.filter(mode__tournament=tournament).exists())
+
+
+class ApiTournamentPlayabilitySummaryTests(TestCase):
+    def setUp(self):
+        self.tournament = models.Tournament.load(
+            definition=test_tournament1_yml,
+            name='Playable tournament',
+            published=True,
+        )
+        self.users = start_tournament(self.tournament, num_users=10)
+        self.client.force_login(self.users[0])
+
+    def tournament_payload(self):
+        response = self.client.get(reverse('api-tournaments'))
+        self.assertEqual(response.status_code, 200)
+        return next(item for item in response.json() if item['id'] == self.tournament.pk)
+
+    @override_settings(GAMELINK_ENABLED=False)
+    def test_does_not_advertise_a_match_when_game_links_are_disabled(self):
+        self.assertFalse(self.tournament_payload()['can_play'])
+
+    @override_settings(
+        GAMELINK_ENABLED=True,
+        GAMELINK_BACKGAMMON_URL='https://backgammon.example',
+    )
+    def test_advertises_the_current_users_playable_fixture(self):
+        self.assertTrue(self.tournament_payload()['can_play'])
 
 
 class ApiTournamentProgressPermissionTests(TestCase):

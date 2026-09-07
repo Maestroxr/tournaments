@@ -9,7 +9,7 @@ import SearchBar from '@/components/SearchBar.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import { useI18n } from '@/i18n'
 
-interface User { id: number; username: string; email: string; is_staff: boolean; is_active: boolean; balance: string }
+interface User { id: number; username: string; phone_number: string; is_staff: boolean; is_active: boolean; balance: string }
 const users = ref<User[]>([])
 const q = ref('')
 const loading = ref(false)
@@ -44,8 +44,8 @@ async function remove(id: number) {
       <template #empty>{{ t('users.empty') }}</template>
       <Column field="id" :header="t('common.id')" sortable />
       <Column field="username" :header="t('users.username')" sortable />
-      <Column :header="t('users.email')">
-        <template #body="{ data }">{{ data.email || '-' }}</template>
+      <Column :header="t('users.phone')">
+        <template #body="{ data }">{{ data.phone_number || '-' }}</template>
       </Column>
       <Column :header="t('users.balance')" sortable sort-field="balance">
         <template #body="{ data }"><span class="font-medium text-emerald-700">{{ Number(data.balance || 0).toFixed(2) }}</span></template>

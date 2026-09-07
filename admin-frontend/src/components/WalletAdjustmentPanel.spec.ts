@@ -105,8 +105,9 @@ const ButtonStub = defineComponent({
   },
 })
 
-function mountPanel() {
+function mountPanel(props: Record<string, unknown> = {}) {
   return mount(WalletAdjustmentPanel, {
+    props,
     global: {
       stubs: {
         AutoComplete: AutoCompleteStub,
@@ -133,7 +134,7 @@ describe('WalletAdjustmentPanel', () => {
 
   it('searches for a user and requires a returned selection', async () => {
     apiFetchMock.mockResolvedValueOnce([
-      { id: 7, username: 'alice', email: 'alice@example.com', balance: '12.50' },
+      { id: 7, username: 'alice', phone_number: '050-123-4567', balance: '12.50' },
     ])
     const wrapper = mountPanel()
 
@@ -152,12 +153,12 @@ describe('WalletAdjustmentPanel', () => {
   it('deposits into the selected wallet and emits an adjustment', async () => {
     apiFetchMock
       .mockResolvedValueOnce([
-        { id: 7, username: 'alice', email: 'alice@example.com', balance: '12.50' },
+        { id: 7, username: 'alice', phone_number: '050-123-4567', balance: '12.50' },
       ])
       .mockResolvedValueOnce({
         id: 7,
         username: 'alice',
-        email: 'alice@example.com',
+        phone_number: '050-123-4567',
         balance: '37.50',
       })
     const wrapper = mountPanel()
@@ -182,8 +183,8 @@ describe('WalletAdjustmentPanel', () => {
 
   it('sends withdrawals as a wallet action', async () => {
     apiFetchMock
-      .mockResolvedValueOnce([{ id: 9, username: 'bob', email: '', balance: '40.00' }])
-      .mockResolvedValueOnce({ id: 9, username: 'bob', email: '', balance: '30.00' })
+      .mockResolvedValueOnce([{ id: 9, username: 'bob', phone_number: '', balance: '40.00' }])
+      .mockResolvedValueOnce({ id: 9, username: 'bob', phone_number: '', balance: '30.00' })
     const wrapper = mountPanel()
 
     await wrapper.get('[data-test="user-search"]').setValue('bob')
@@ -200,6 +201,36 @@ describe('WalletAdjustmentPanel', () => {
       expect(apiFetchMock).toHaveBeenLastCalledWith('/api/admin/users/9/wallet', {
         method: 'POST',
         body: JSON.stringify({ action: 'withdraw', amount: 10, note: '' }),
+      })
+    })
+  })
+
+  it('uses a preset user and only offers deposits when requested', async () => {
+    apiFetchMock.mockResolvedValueOnce({
+      id: 12,
+      username: 'dana',
+      phone_number: '',
+      balance: '25.00',
+    })
+    const wrapper = mountPanel({
+      user: { id: 12, username: 'dana', phone_number: '', balance: '0.00' },
+      depositOnly: true,
+    })
+
+    expect(wrapper.find('[data-test="user-search"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Add funds to dana')
+    expect(wrapper.text()).not.toContain('Withdraw')
+
+    await wrapper.get('[data-test="amount"]').setValue('25')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Deposit')!
+      .trigger('click')
+
+    await vi.waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users/12/wallet', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'deposit', amount: 25, note: '' }),
       })
     })
   })

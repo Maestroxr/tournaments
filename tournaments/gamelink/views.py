@@ -29,7 +29,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 from channels.layers import get_channel_layer
-from tournaments.models import Fixture
+from tournaments.models import Fixture, FixtureAudit, Tournament
 
 from .models import GameLink, IssuedTicket, SeenNonce
 from .signing import SEATS, issue_ticket, redact, verify_result_signature
@@ -133,6 +133,7 @@ class StartGameView(LoginRequiredMixin, View):
 
     http_method_names = ['post']
 
+    @transaction.atomic
     def post(self, request, pk):
         if not settings.GAMELINK_ENABLED:
             logger.warning('gamelink start refused: disabled [fixture=%s user=%s]', pk, request.user.pk)
@@ -140,6 +141,8 @@ class StartGameView(LoginRequiredMixin, View):
 
         try:
             fixture = Fixture.objects.get(pk = pk)
+            Tournament.objects.select_for_update().get(pk=fixture.mode.tournament_id)
+            fixture = Fixture.objects.select_for_update().get(pk=pk)
         except Fixture.DoesNotExist:
             logger.warning('gamelink start refused: fixture does not exist [fixture=%s user=%s]', pk, request.user.pk)
             return _start_refusal(412, 'fixture_does_not_exist')
@@ -354,9 +357,16 @@ class ResultCallbackView(View):
 
         with transaction.atomic():
             try:
+                tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
+                Tournament.objects.select_for_update().get(pk=tournament_id)
+                locked_fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
                 game_link = GameLink.objects.select_for_update().get(fixture_id = fixture_id)
-            except GameLink.DoesNotExist:
+                game_link.fixture = locked_fixture
+            except (GameLink.DoesNotExist, Fixture.DoesNotExist):
                 return _reject(request, 404, 'no game link for this fixture', fixture_id = fixture_id)
+
+            if locked_fixture.admin_result:
+                return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id)
 
             # Terminal idempotency (plan §2, threat 2). A delivery whose response was lost is
             # re-sent under a *fresh* nonce, so it gets this far and must be answered with the
@@ -417,6 +427,7 @@ class ResultCallbackView(View):
         """
         # Seats, not colours: the sender has already mapped the score onto `p1`/`p2`, which are
         # this side's `player1` and `player2` because that is how the ticket assigned them.
+        previous_score = [fixture.score1, fixture.score2]
         fixture.score1 = body['score']['p1']
         fixture.score2 = body['score']['p2']
 
@@ -445,6 +456,8 @@ class ResultCallbackView(View):
         game_link.external_room_id = body['room_id']
         game_link.raw_result       = body
         game_link.save(update_fields = ['status', 'completed_at', 'external_room_id', 'raw_result'])
+        FixtureAudit.objects.create(fixture=fixture, action='game_result',
+            before={'score': previous_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': True})
 
         # This is where the tournament actually advances: the level closes, a knockout propagates
         # its winner, and a finished tournament gets its podium.
@@ -500,9 +513,16 @@ class LiveSnapshotCallbackView(View):
         try:
             with transaction.atomic():
                 SeenNonce.objects.create(nonce=nonce)
+                # Use the same tournament -> fixture -> link lock order as final results
+                # and organizer rulings, so an in-flight snapshot cannot follow a ruling.
+                actual_tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
+                Tournament.objects.select_for_update().get(pk=actual_tournament_id)
+                Fixture.objects.select_for_update().get(pk=fixture_id)
                 link = GameLink.objects.select_for_update().select_related('fixture__mode').get(fixture_id=fixture_id)
                 if link.fixture.mode.tournament_id != tournament_id or link.external_room_id not in ('', room_id):
                     return _reject(request, 409, 'live snapshot does not match fixture', fixture_id=fixture_id)
+                if link.fixture.admin_result:
+                    return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id)
                 previous = (link.live_snapshot or {}).get('sequence', -1)
                 if sequence >= previous:
                     link.live_snapshot = body
@@ -510,10 +530,12 @@ class LiveSnapshotCallbackView(View):
                     link.external_room_id = room_id
                     link.status = 'playing' if link.status == 'pending' else link.status
                     link.save(update_fields=['live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
+                    if body.get('status') == 'playing' and not FixtureAudit.objects.filter(fixture_id=fixture_id, action='live_started').exists():
+                        FixtureAudit.objects.create(fixture_id=fixture_id, action='live_started')
                     transaction.on_commit(lambda: _broadcast_live_snapshot(tournament_id, fixture_id, body))
         except IntegrityError:
             return _reject(request, 401, 'nonce has been seen before')
-        except GameLink.DoesNotExist:
+        except (GameLink.DoesNotExist, Fixture.DoesNotExist):
             return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
         return JsonResponse({'status': 'recorded'})
 

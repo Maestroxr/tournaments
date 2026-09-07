@@ -8,7 +8,7 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const apiTarget = env.VITE_API_URL || env.VITE_BACKEND_URL || 'http://127.0.0.1:8001'
+  const apiTarget = env.VITE_API_URL || env.VITE_BACKEND_URL || 'http://127.0.0.1:8002'
   return {
     base: '/tournaments-admin/',
     plugins: [

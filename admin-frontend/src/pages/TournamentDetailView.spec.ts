@@ -1,0 +1,155 @@
+import { shallowMount, flushPromises } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import TournamentDetailView from './TournamentDetailView.vue'
+import TournamentActions from '@/components/tournament/TournamentActions.vue'
+import TournamentAttentionPanel from '@/components/tournament/TournamentAttentionPanel.vue'
+import TournamentOverviewMetrics from '@/components/tournament/TournamentOverviewMetrics.vue'
+import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
+import { apiFetch } from '@/services/api'
+
+const { replace } = vi.hoisted(() => ({ replace: vi.fn() }))
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: { id: 20 }, query: {}, name: 'tournament-detail' }),
+  useRouter: () => ({ push: vi.fn(), replace }),
+}))
+vi.mock('@/services/api', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/api')>(), apiFetch: vi.fn(),
+}))
+const api = vi.mocked(apiFetch)
+const tournament = {
+  id: 20, name: 'Club cup', state: 'open', lifecycle_state: 'ready_to_start', participant_count: 6, min_players: 6,
+  max_players: 8, target_points: 5, time_control: 'normal', doubling_enabled: true,
+  entry_fee: '10.00', prize_money: '100.00', starts_at: '2099-09-07T18:00:00Z',
+  creator: 'organizer', creator_id: 1, participants: [],
+  definition: 'stages:\n  - id: main\n    name: Main round\n    mode: knockout\npodium:\n  - main.placements[0]',
+  published: true,
+}
+function view() {
+  return shallowMount(TournamentDetailView, { props: { id: '20' }, global: { stubs: { RouterLink: true } } })
+}
+async function open(wrapper: ReturnType<typeof view>) {
+  await flushPromises()
+  wrapper.getComponent(TournamentActions).vm.$emit('start')
+  await flushPromises()
+}
+
+describe('Tournament start confirmation', () => {
+  beforeEach(() => { vi.clearAllMocks(); api.mockResolvedValue(tournament) })
+
+  it('opens the custom confirmation without starting, and cancellation makes no request', async () => {
+    const wrapper = view()
+    await open(wrapper)
+    expect(wrapper.getComponent(StartTournamentDialog).props('name')).toBe('Club cup')
+    expect(api).toHaveBeenCalledTimes(1)
+    wrapper.getComponent(StartTournamentDialog).vm.$emit('cancel')
+    await flushPromises()
+    expect(wrapper.findComponent(StartTournamentDialog).exists()).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('starts only after confirmation and prevents duplicate submission', async () => {
+    let resolve!: (value: unknown) => void
+    api.mockResolvedValueOnce(tournament).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+      .mockResolvedValueOnce({ ...tournament, state: 'active', lifecycle_state: 'active' })
+    const wrapper = view()
+    await open(wrapper)
+    const dialog = wrapper.getComponent(StartTournamentDialog)
+    dialog.vm.$emit('confirm')
+    await flushPromises()
+    expect(dialog.props('busy')).toBe(true)
+    dialog.vm.$emit('confirm')
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api).toHaveBeenLastCalledWith('/api/admin/tournaments/20/start', { method: 'POST' })
+    resolve({})
+    await flushPromises()
+    expect(wrapper.findComponent(StartTournamentDialog).exists()).toBe(false)
+    expect(wrapper.getComponent(TournamentActions).props('state')).toBe('active')
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('keeps the dialog open with an error when starting fails', async () => {
+    api.mockResolvedValueOnce(tournament).mockRejectedValueOnce(new Error('Unable to start'))
+    const wrapper = view()
+    await open(wrapper)
+    wrapper.getComponent(StartTournamentDialog).vm.$emit('confirm')
+    await flushPromises()
+    expect(wrapper.getComponent(StartTournamentDialog).props('error')).toBe('Unable to start')
+    expect(wrapper.getComponent(StartTournamentDialog).props('busy')).toBe(false)
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('does not offer confirmation when there are not enough players', async () => {
+    api.mockResolvedValueOnce({ ...tournament, lifecycle_state: 'registration_open', participant_count: 5 })
+    const wrapper = view()
+    await open(wrapper)
+    expect(wrapper.findComponent(StartTournamentDialog).exists()).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('builds the organizer snapshot and actionable player blocker from tournament data', async () => {
+    api.mockResolvedValueOnce({ ...tournament, lifecycle_state: 'registration_open', participant_count: 4 })
+    const wrapper = view()
+    await flushPromises()
+
+    const metrics = wrapper.getComponent(TournamentOverviewMetrics).props('metrics')
+    expect(metrics.find((metric: { id: string }) => metric.id === 'registration')!.value).toBe('4/8')
+    expect(metrics.find((metric: { id: string }) => metric.id === 'readiness')!.value).toBe('4/5')
+    const attention = wrapper.getComponent(TournamentAttentionPanel).props('items')
+    expect(attention.map((item: { id: string }) => item.id)).toEqual(['players'])
+    expect(attention[0]!.to).toBe('/tournaments/20/players')
+  })
+
+  it('surfaces participant readiness and links its blocker to roster operations', async () => {
+    api.mockResolvedValueOnce({
+      ...tournament,
+      lifecycle_state: 'registration_open',
+      registration_summary: {
+        registered: 6, checked_in: 4, unpaid: 1, waitlisted: 2, attention: 4, ready: 3,
+      },
+    })
+    const wrapper = view()
+    await flushPromises()
+
+    const metrics = wrapper.getComponent(TournamentOverviewMetrics).props('metrics')
+    expect(metrics.find((metric: { id: string }) => metric.id === 'participant-readiness')!.value).toBe('3/6')
+    const attention = wrapper.getComponent(TournamentAttentionPanel).props('items')
+    expect(attention.map((item: { id: string }) => item.id)).toContain('participant-readiness')
+    expect(attention.find((item: { id: string }) => item.id === 'participant-readiness')!.to).toBe('/tournaments/20/players')
+  })
+
+  it('loads match health for an active tournament and separates pending confirmations', async () => {
+    api.mockResolvedValueOnce({ ...tournament, state: 'active', lifecycle_state: 'active' }).mockResolvedValueOnce({
+      tournament: { id: 20, name: 'Club cup', state: 'active', participant_count: 6 },
+      stages: {
+        main: {
+          levels: [{ fixtures: [
+            { id: 1, player1: { id: 1 }, player2: { id: 2 }, is_confirmed: true, confirmations: 2 },
+            { id: 2, player1: { id: 3 }, player2: { id: 4 }, is_confirmed: false, confirmations: 1 },
+            { id: 3, player1: { id: 5 }, player2: { id: 6 }, is_confirmed: false, confirmations: 0 },
+          ] }],
+        },
+      },
+      is_finished: false,
+      podium: [],
+    })
+    const wrapper = view()
+    await flushPromises()
+
+    expect(api).toHaveBeenNthCalledWith(2, '/api/admin/tournaments/20/progress')
+    const metrics = wrapper.getComponent(TournamentOverviewMetrics).props('metrics')
+    expect(metrics.find((metric: { id: string }) => metric.id === 'matches')!.value).toBe('1/3')
+    const attention = wrapper.getComponent(TournamentAttentionPanel).props('items')
+    expect(attention.map((item: { id: string }) => item.id)).toEqual([
+      'confirmation',
+      'pending-matches',
+    ])
+  })
+
+  it.each(['active', 'finished'])('keeps an existing %s tournament overview available', async state => {
+    api.mockResolvedValueOnce({ ...tournament, state, lifecycle_state: state })
+    const wrapper = view()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Overview')
+    expect(replace).not.toHaveBeenCalled()
+  })
+})

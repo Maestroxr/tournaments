@@ -8,11 +8,12 @@ export interface BreadcrumbItem {
 
 defineProps<{
   items: BreadcrumbItem[]
+  ariaLabel?: string
 }>()
 </script>
 
 <template>
-  <nav class="admin-breadcrumb-nav" aria-label="Breadcrumb">
+  <nav class="admin-breadcrumb-nav" :aria-label="ariaLabel || 'Breadcrumb'">
     <ol class="admin-breadcrumb-list">
       <li
         v-for="(item, idx) in items"

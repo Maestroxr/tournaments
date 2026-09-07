@@ -11,18 +11,26 @@ import { apiFetch, formatApiError } from '@/services/api'
 interface WalletUser {
   id: number
   username: string
-  email: string
+  phone_number: string
   balance: string
 }
 
 type WalletResponse = WalletUser
+
+const props = withDefaults(defineProps<{
+  user?: WalletUser | null
+  depositOnly?: boolean
+}>(), {
+  user: null,
+  depositOnly: false,
+})
 
 const emit = defineEmits<{
   adjusted: [payload: { userId: number; action: 'deposit' | 'withdraw' }]
 }>()
 
 const { t } = useI18n()
-const selectedUser = ref<WalletUser | string | null>(null)
+const selectedUser = ref<WalletUser | string | null>(props.user)
 const suggestions = ref<WalletUser[]>([])
 const amount = ref<number | null>(null)
 const note = ref('')
@@ -95,8 +103,12 @@ async function adjust(action: 'deposit' | 'withdraw') {
 <template>
   <section class="wallet-adjustment-panel mb-6 overflow-hidden rounded-lg border shadow-sm">
     <div class="wallet-adjustment-header border-b px-5 py-4">
-      <h2 class="wallet-adjustment-title text-lg font-bold">{{ t('transfers.walletTitle') }}</h2>
-      <p class="wallet-adjustment-subtitle mt-1 text-sm">{{ t('transfers.walletSubtitle') }}</p>
+      <h2 class="wallet-adjustment-title text-lg font-bold">
+        {{ depositOnly && chosenUser ? t('transfers.walletDepositTitle', { user: chosenUser.username }) : t('transfers.walletTitle') }}
+      </h2>
+      <p class="wallet-adjustment-subtitle mt-1 text-sm">
+        {{ depositOnly && chosenUser ? t('transfers.walletDepositSubtitle') : t('transfers.walletSubtitle') }}
+      </p>
     </div>
 
     <div class="space-y-4 p-5">
@@ -110,9 +122,14 @@ async function adjust(action: 'deposit' | 'withdraw') {
       />
 
       <div
-        class="grid gap-4 lg:grid-cols-[minmax(240px,1.4fr)_minmax(130px,0.5fr)_minmax(220px,1fr)]"
+        :class="[
+          'grid gap-4',
+          user
+            ? 'sm:grid-cols-[minmax(130px,0.5fr)_minmax(220px,1fr)]'
+            : 'lg:grid-cols-[minmax(240px,1.4fr)_minmax(130px,0.5fr)_minmax(220px,1fr)]',
+        ]"
       >
-        <label class="block min-w-0">
+        <label v-if="!user" class="block min-w-0">
           <span class="mb-1.5 block text-sm font-semibold text-zinc-800">{{
             t('transfers.selectUser')
           }}</span>
@@ -132,7 +149,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
                 <div class="min-w-0">
                   <div class="truncate font-semibold text-white">{{ option.username }}</div>
                   <div class="truncate text-xs text-zinc-500">
-                    {{ option.email || t('common.noEmail') }}
+                    {{ option.phone_number || t('common.noPhone') }}
                   </div>
                 </div>
                 <span class="shrink-0 text-sm font-semibold text-emerald-700">{{
@@ -191,6 +208,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
             @click="adjust('deposit')"
           />
           <Button
+            v-if="!depositOnly"
             type="button"
             :label="t('users.withdraw')"
             icon="bi bi-dash-lg"

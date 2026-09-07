@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
@@ -9,14 +9,32 @@ import Textarea from 'primevue/textarea'
 import TournamentMetaFields from '@/components/TournamentMetaFields.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentMetaItem from '@/components/TournamentMetaItem.vue'
-import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
+import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
+import TournamentActions from '@/components/tournament/TournamentActions.vue'
+import TournamentAttentionPanel, {
+  type TournamentAttentionItem,
+} from '@/components/tournament/TournamentAttentionPanel.vue'
+import TournamentOverviewMetrics, {
+  type TournamentOverviewMetric,
+} from '@/components/tournament/TournamentOverviewMetrics.vue'
+import TournamentStructureCard from '@/components/tournament/TournamentStructureCard.vue'
+import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
 import { timeControlLabel } from '@/utils/adminLabels'
+import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
+import { useI18n } from '@/i18n'
+import type { TournamentFixture, TournamentProgressData } from '@/types/tournamentProgress'
 import * as yaml from 'js-yaml'
 
 const props = defineProps<{ id: string }>()
 const route = useRoute()
 const router = useRouter()
+const workspace = useTournamentWorkspace()
+const { t: translate, locale } = useI18n()
+const starting = ref(false)
+const publishing = ref(false)
+const showStartDialog = ref(false)
+const startError = ref('')
 const loading = ref(true)
 const error = ref('')
 const loadFailed = ref(false)
@@ -31,6 +49,7 @@ interface TournamentDetail {
   id: number
   name: string
   state: string
+  lifecycle_state: string
   creator: string | null
   creator_id: number | null
   participant_count: number
@@ -45,8 +64,18 @@ interface TournamentDetail {
   definition: string
   participants: TournamentParticipant[]
   published: boolean
+  registration_summary?: {
+    registered: number
+    checked_in: number
+    unpaid: number
+    waitlisted: number
+    attention: number
+    ready: number
+  }
 }
 const t = ref<TournamentDetail | null>(null)
+const overviewProgress = ref<TournamentProgressData | null>(null)
+const overviewProgressFailed = ref(false)
 const editing = ref(false)
 const saving = ref(false)
 const editYaml = ref('')
@@ -75,18 +104,182 @@ const stageModeOptions = [
 ]
 const stages = ref<Stage[]>([])
 const podium = ref<string[]>([])
+const isSettingsRoute = computed(() => route.name === 'tournament-settings')
+const isOverviewRoute = computed(() => route.name === 'tournament-detail')
 
 const readinessItems = computed(() => {
   if (!t.value) return []
   const hasFormat = stages.value.length > 0 && podium.value.length > 0
   const enoughPlayers = t.value.participant_count >= t.value.min_players
   return [
-    { label: 'Tournament details completed', done: Boolean(t.value.name && t.value.target_points >= 1) },
-    { label: 'Tournament format validated', done: hasFormat },
-    { label: `${t.value.participant_count} of ${t.value.min_players} required players registered`, done: enoughPlayers },
-    { label: 'Tournament published', done: t.value.published },
-    { label: 'Ready to start', done: t.value.state === 'open' && enoughPlayers },
+    { id: 'details', done: Boolean(t.value.name && t.value.target_points >= 1) },
+    { id: 'format', done: hasFormat },
+    { id: 'schedule', done: Boolean(t.value.starts_at) },
+    { id: 'published', done: t.value.state !== 'draft' || t.value.published },
+    { id: 'players', done: ['active', 'finished'].includes(t.value.state) || enoughPlayers },
   ]
+})
+const hasFormat = computed(() => stages.value.length > 0 && podium.value.length > 0)
+const readinessComplete = computed(() => readinessItems.value.filter(item => item.done).length)
+const allFixtures = computed<TournamentFixture[]>(() => Object.values(overviewProgress.value?.stages ?? {})
+  .flatMap(stage => stage.levels.flatMap(level => level.fixtures)))
+const pendingFixtures = computed(() => allFixtures.value.filter(fixture =>
+  !fixture.is_confirmed && fixture.player1 && fixture.player2))
+const awaitingConfirmation = computed(() => pendingFixtures.value.filter(fixture => fixture.confirmations > 0))
+const confirmedFixtures = computed(() => allFixtures.value.filter(fixture => fixture.is_confirmed))
+
+const overviewMetrics = computed<TournamentOverviewMetric[]>(() => {
+  if (!t.value) return []
+  const capacity = t.value.max_players
+  const enoughPlayers = t.value.participant_count >= t.value.min_players
+  const scheduleSet = Boolean(t.value.starts_at)
+  const metrics: TournamentOverviewMetric[] = [
+    {
+      id: 'registration',
+      label: translate('tournamentOverview.registration'),
+      value: capacity === null ? `${t.value.participant_count}` : `${t.value.participant_count}/${capacity}`,
+      hint: translate(enoughPlayers ? 'tournamentOverview.minimumMet' : 'tournamentOverview.minimumNeeded', {
+        count: Math.max(0, t.value.min_players - t.value.participant_count),
+        minimum: t.value.min_players,
+      }),
+      icon: 'bi-people',
+      tone: enoughPlayers ? 'good' : 'warning',
+    },
+    ...(t.value.registration_summary ? [{
+      id: 'participant-readiness',
+      label: translate('tournamentOverview.participantReadiness'),
+      value: `${t.value.registration_summary.ready}/${t.value.registration_summary.registered}`,
+      hint: translate('tournamentOverview.participantReadinessHint', {
+        checked: t.value.registration_summary.checked_in,
+        unpaid: t.value.registration_summary.unpaid,
+      }),
+      icon: 'bi-person-check',
+      tone: t.value.registration_summary.attention === 0 ? 'good' as const : 'warning' as const,
+    }] : []),
+    {
+      id: 'readiness',
+      label: translate('tournamentOverview.readiness'),
+      value: `${readinessComplete.value}/${readinessItems.value.length}`,
+      hint: translate('tournamentOverview.checksComplete'),
+      icon: 'bi-check2-square',
+      tone: readinessComplete.value === readinessItems.value.length ? 'good' : 'warning',
+    },
+    {
+      id: 'schedule',
+      label: translate('tournamentOverview.schedule'),
+      value: relativeStart(t.value.starts_at),
+      hint: scheduleSet ? formatDate(t.value.starts_at) : translate('tournamentOverview.addScheduleHint'),
+      icon: 'bi-calendar-event',
+      tone: scheduleSet ? 'neutral' : 'warning',
+    },
+    {
+      id: 'finance',
+      label: translate('tournamentOverview.entryAndPrize'),
+      value: Number(t.value.entry_fee || 0) > 0
+        ? Number(t.value.entry_fee).toFixed(2)
+        : translate('tournamentOverview.freeEntry'),
+      hint: translate('tournamentOverview.prizeValue', { amount: Number(t.value.prize_money || 0).toFixed(2) }),
+      icon: 'bi-wallet2',
+    },
+  ]
+  if (['active', 'finished'].includes(t.value.state)) metrics.push({
+    id: 'matches',
+    label: translate('tournamentOverview.matchResults'),
+    value: overviewProgressFailed.value ? '—' : `${confirmedFixtures.value.length}/${allFixtures.value.length}`,
+    hint: overviewProgressFailed.value
+      ? translate('tournamentOverview.matchDataUnavailable')
+      : translate('tournamentOverview.confirmedMatches'),
+    icon: 'bi-controller',
+    tone: pendingFixtures.value.length === 0 && allFixtures.value.length > 0 ? 'good' : 'neutral',
+  })
+  return metrics
+})
+
+const attentionItems = computed<TournamentAttentionItem[]>(() => {
+  if (!t.value) return []
+  const root = `/tournaments/${t.value.id}`
+  const items: TournamentAttentionItem[] = []
+  if (!hasFormat.value) items.push({
+    id: 'format',
+    title: translate('tournamentOverview.formatMissing'),
+    detail: translate('tournamentOverview.formatMissingHint'),
+    action: translate('tournamentOverview.reviewSettings'),
+    to: `${root}/settings`,
+    severity: 'critical',
+  })
+  if (!t.value.starts_at && !['active', 'finished'].includes(t.value.state)) items.push({
+    id: 'schedule',
+    title: translate('tournamentOverview.scheduleMissing'),
+    detail: translate('tournamentOverview.scheduleMissingHint'),
+    action: translate('tournamentOverview.reviewSettings'),
+    to: `${root}/settings`,
+    severity: 'warning',
+  })
+  if (t.value.state === 'open' && t.value.participant_count < t.value.min_players) {
+    const count = t.value.min_players - t.value.participant_count
+    items.push({
+      id: 'players',
+      title: translate('tournamentOverview.playersMissing', { count }),
+      detail: translate('tournamentOverview.playersMissingHint', { minimum: t.value.min_players }),
+      action: translate('tournamentOverview.managePlayers'),
+      to: `${root}/players`,
+      severity: 'critical',
+    })
+  }
+  if (t.value.state === 'open' && (t.value.registration_summary?.attention ?? 0) > 0) {
+    items.push({
+      id: 'participant-readiness',
+      title: translate('tournamentOverview.participantsNeedAttention', {
+        count: t.value.registration_summary?.attention ?? 0,
+      }),
+      detail: translate('tournamentOverview.participantsNeedAttentionHint', {
+        unpaid: t.value.registration_summary?.unpaid ?? 0,
+        unchecked: Math.max(
+          (t.value.registration_summary?.registered ?? 0) -
+          (t.value.registration_summary?.checked_in ?? 0),
+          0,
+        ),
+        waitlisted: t.value.registration_summary?.waitlisted ?? 0,
+      }),
+      action: translate('tournamentOverview.managePlayers'),
+      to: `${root}/players`,
+      severity: 'warning',
+    })
+  }
+  if (t.value.state === 'open' && t.value.starts_at && new Date(t.value.starts_at).getTime() < Date.now()) items.push({
+    id: 'overdue',
+    title: translate('tournamentOverview.startOverdue'),
+    detail: translate('tournamentOverview.startOverdueHint'),
+    action: translate('tournamentOverview.reviewSettings'),
+    to: `${root}/settings`,
+    severity: 'critical',
+  })
+  if (t.value.state === 'active' && awaitingConfirmation.value.length > 0) items.push({
+    id: 'confirmation',
+    title: translate('tournamentOverview.awaitingConfirmation', { count: awaitingConfirmation.value.length }),
+    detail: translate('tournamentOverview.awaitingConfirmationHint'),
+    action: translate('tournamentOverview.openMatches'),
+    to: `${root}/bracket`,
+    severity: 'critical',
+  })
+  const waitingForResults = pendingFixtures.value.length - awaitingConfirmation.value.length
+  if (t.value.state === 'active' && waitingForResults > 0) items.push({
+    id: 'pending-matches',
+    title: translate('tournamentOverview.matchesPending', { count: waitingForResults }),
+    detail: translate('tournamentOverview.matchesPendingHint'),
+    action: translate('tournamentOverview.openLive'),
+    to: `${root}/live`,
+    severity: 'info',
+  })
+  if (['active', 'finished'].includes(t.value.state) && overviewProgressFailed.value) items.push({
+    id: 'progress-unavailable',
+    title: translate('tournamentOverview.progressUnavailable'),
+    detail: translate('tournamentOverview.progressUnavailableHint'),
+    action: translate('tournamentOverview.tryMatches'),
+    to: `${root}/bracket`,
+    severity: 'warning',
+  })
+  return items
 })
 
 function parseDefinition(def: string) {
@@ -120,14 +313,17 @@ async function load() {
   loading.value = true
   error.value = ''
   loadFailed.value = false
+  overviewProgress.value = null
+  overviewProgressFailed.value = false
   try {
     const tid = props.id || String(route.params.id)
     t.value = await apiFetch<TournamentDetail>(`/api/admin/tournaments/${tid}`)
     if (t.value?.definition) parseDefinition(t.value.definition)
     parseTournamentMeta()
-    editing.value = t.value?.state === 'draft' && route.query.edit === '1'
-    if (t.value?.state === 'finished') {
-      router.replace(`/tournaments/${t.value.id}/progress`)
+    editing.value =
+      t.value?.state === 'draft' && (route.query.edit === '1' || isSettingsRoute.value)
+    if (isOverviewRoute.value && ['active', 'finished'].includes(t.value.state)) {
+      await loadOverviewProgress(tid)
     }
   } catch (e: unknown) {
     error.value = formatApiError(e)
@@ -137,6 +333,25 @@ async function load() {
   }
 }
 onMounted(load)
+watch(
+  () => route.name,
+  () => {
+    editing.value = t.value?.state === 'draft' && isSettingsRoute.value
+    if (isOverviewRoute.value && t.value && ['active', 'finished'].includes(t.value.state) && !overviewProgress.value) {
+      void loadOverviewProgress(String(t.value.id))
+    }
+  },
+)
+
+async function loadOverviewProgress(tid: string) {
+  overviewProgressFailed.value = false
+  try {
+    overviewProgress.value = await apiFetch<TournamentProgressData>(`/api/admin/tournaments/${tid}/progress`)
+  } catch {
+    overviewProgress.value = null
+    overviewProgressFailed.value = true
+  }
+}
 
 async function remove() {
   if (!confirm('Delete this draft?')) return
@@ -168,25 +383,43 @@ async function save() {
     })
     editing.value = false
     await load()
+    await workspace?.refresh()
   } catch (e: unknown) {
     error.value = formatApiError(e)
   } finally { saving.value = false }
 }
 
 async function publish() {
-  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/publish`, { method: 'POST' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
+  if (publishing.value || t.value?.state !== 'draft' || !hasFormat.value) return
+  publishing.value = true
+  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/publish`, { method: 'POST' }); await load(); await workspace?.refresh() } catch (e: unknown) { error.value = formatApiError(e) }
+  finally { publishing.value = false }
 }
 async function publishAndManagePlayers() {
   await publish()
-  if (t.value?.state === 'open') router.push(`/tournaments/${t.value.id}/attendees`)
+  if (t.value?.state === 'open') router.push(`/tournaments/${t.value.id}/players`)
 }
 async function revertToDraft() {
   if (!confirm('All current attendees will be removed. Revert to draft?')) return
-  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/draft`, { method: 'POST' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
+  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/draft`, { method: 'POST' }); await load(); await workspace?.refresh() } catch (e: unknown) { error.value = formatApiError(e) }
+}
+function requestStart() {
+  if (starting.value || t.value?.lifecycle_state !== 'ready_to_start' || t.value.participant_count < t.value.min_players) return
+  startError.value = ''
+  showStartDialog.value = true
 }
 async function start() {
-  if (!confirm('People will not be able to join after start. Start tournament?')) return
-  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/start`, { method: 'POST' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
+  if (!showStartDialog.value || starting.value || t.value?.lifecycle_state !== 'ready_to_start' || t.value.participant_count < t.value.min_players) return
+  starting.value = true
+  startError.value = ''
+  try {
+    const tid = props.id || String(route.params.id)
+    await apiFetch(`/api/admin/tournaments/${tid}/start`, { method: 'POST' })
+    showStartDialog.value = false
+    await load()
+    await workspace?.refresh()
+  } catch (e: unknown) { startError.value = formatApiError(e) }
+  finally { starting.value = false }
 }
 
 function formatDate(s: string | null) {
@@ -203,6 +436,19 @@ function playerRange(min: number, max: number | null) {
 function participantMessage(count: number) {
   if (count === 1) return '1 player has already registered'
   return `${count} players have already registered`
+}
+
+function relativeStart(value: string | null) {
+  if (!value) return translate('tournamentOverview.notScheduled')
+  const milliseconds = new Date(value).getTime() - Date.now()
+  if (!Number.isFinite(milliseconds)) return translate('tournamentOverview.notScheduled')
+  const absolute = Math.abs(milliseconds)
+  const [amount, unit] = absolute >= 86_400_000
+    ? [Math.round(milliseconds / 86_400_000), 'day']
+    : absolute >= 3_600_000
+      ? [Math.round(milliseconds / 3_600_000), 'hour']
+      : [Math.round(milliseconds / 60_000), 'minute']
+  return new Intl.RelativeTimeFormat(locale.value, { numeric: 'auto' }).format(amount, unit as Intl.RelativeTimeFormatUnit)
 }
 
 function stageModeLabel(mode: string) {
@@ -235,7 +481,7 @@ function podiumLabel(reference: string, index: number) {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl">
+  <div :class="['mx-auto w-full', isOverviewRoute ? 'max-w-6xl' : 'max-w-3xl']">
     <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
     <div v-else-if="loadFailed" class="mx-auto max-w-xl py-12 text-center">
       <h1 class="text-2xl font-bold text-black">Tournament unavailable</h1>
@@ -244,20 +490,35 @@ function podiumLabel(reference: string, index: number) {
     </div>
     <div v-else-if="t" class="space-y-4">
       <AppAlert v-if="error" type="error" :message="error" dismissible @close="error=''" />
-      <header class="flex flex-wrap items-start justify-between gap-3">
+      <header class="workspace-page-heading">
         <div>
-          <RouterLink to="/tournaments" class="mb-2 inline-block text-sm text-zinc-600 hover:text-black hover:underline">← All tournaments</RouterLink>
-          <div class="flex flex-wrap items-center gap-2">
-            <h1 class="text-2xl font-bold text-black">{{ t.name }}</h1>
-            <TournamentStatusBadge :state="t.state" />
-          </div>
-          <p class="mt-1 flex flex-wrap items-center gap-1 text-sm text-zinc-500">
-            <span>Created by</span>
-            <UserQuickView :user-id="t.creator_id" :username="t.creator || 'Unknown user'" />
-            <span>· Tournament #{{ t.id }}</span>
-          </p>
+          <h2>{{ translate(isSettingsRoute ? 'tournamentWorkspace.settings' : 'tournamentWorkspace.overview') }}</h2>
+          <p>{{ translate(isSettingsRoute ? 'tournamentWorkspace.settingsHint' : 'tournamentWorkspace.overviewHint') }}</p>
         </div>
+        <p class="workspace-page-heading__creator">
+          <span>Created by</span>
+          <UserQuickView :user-id="t.creator_id" :username="t.creator || 'Unknown user'" />
+        </p>
       </header>
+
+      <TournamentProgress :state="t.state" :lifecycle-state="t.lifecycle_state" :participant-count="t.participant_count" :min-players="t.min_players" />
+
+      <TournamentActions
+        v-if="isOverviewRoute"
+        :tournament-id="t.id"
+        :state="t.state"
+        :lifecycle-state="t.lifecycle_state"
+        :participant-count="t.participant_count"
+        :min-players="t.min_players"
+        :has-format="hasFormat"
+        :starting="starting"
+        :publishing="publishing"
+        @start="requestStart"
+        @publish="publishAndManagePlayers"
+      />
+
+      <TournamentOverviewMetrics v-if="isOverviewRoute" :metrics="overviewMetrics" />
+      <TournamentAttentionPanel v-if="isOverviewRoute" :items="attentionItems" />
 
       <section class="rounded-xl border border-zinc-200 bg-white p-5">
         <p class="mb-4 text-sm font-medium text-zinc-700">{{ participantMessage(t.participant_count) }}</p>
@@ -280,21 +541,8 @@ function podiumLabel(reference: string, index: number) {
         </div>
       </section>
 
-      <section class="rounded-xl border border-zinc-200 bg-white p-5">
-        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-          <div><h2 class="font-semibold text-black">Tournament readiness</h2><p class="mt-1 text-sm text-zinc-500">Complete these steps before the first round starts.</p></div>
-          <span :class="['rounded-full px-2.5 py-1 text-xs font-semibold', readinessItems.every(item => item.done) ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800']">{{ readinessItems.filter(item => item.done).length }}/{{ readinessItems.length }} complete</span>
-        </div>
-        <ul class="grid gap-2 sm:grid-cols-2">
-          <li v-for="item in readinessItems" :key="item.label" class="flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-2 text-sm">
-            <span :class="['flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-xs font-bold', item.done ? 'bg-emerald-600 text-white' : 'border border-zinc-300 bg-white text-zinc-400']">{{ item.done ? '✓' : '·' }}</span>
-            <span :class="item.done ? 'text-zinc-800' : 'text-zinc-500'">{{ item.label }}</span>
-          </li>
-        </ul>
-      </section>
-
       <!-- Visual editor for stages/podium (draft only) -->
-      <div v-if="t.state==='draft'" class="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+      <div v-if="isSettingsRoute && t.state==='draft'" class="rounded-lg border border-zinc-200 bg-zinc-50 p-4">
         <div class="mb-3 flex items-center justify-between">
           <div><h3 class="text-sm font-semibold text-black">Draft settings</h3><p class="text-xs text-zinc-500">Review the player-facing rules before publishing.</p></div>
           <Button :label="editing ? 'Close editor' : 'Edit details'" size="small" :severity="editing ? 'contrast' : 'secondary'" :outlined="!editing" @click="editing = !editing" />
@@ -334,24 +582,36 @@ function podiumLabel(reference: string, index: number) {
         </div>
       </div>
 
-      <div v-else class="rounded bg-zinc-50 border border-zinc-200 p-3 font-mono text-xs whitespace-pre-wrap text-black">{{ t.definition }}</div>
+      <TournamentStructureCard v-else :stages="stages" />
 
       <div class="flex flex-wrap gap-2">
-        <Button as="router-link" to="/tournaments" label="Back" severity="secondary" outlined />
         <template v-if="t.state==='draft'">
-          <Button label="Publish and add players" severity="success" @click="publishAndManagePlayers" />
+          <Button v-if="isSettingsRoute" label="Publish and add players" severity="success" :loading="publishing" :disabled="!hasFormat" @click="publishAndManagePlayers" />
           <Button label="Delete draft" severity="danger" @click="remove" />
         </template>
         <template v-if="t.state==='open'">
-          <Button label="Revert to draft" severity="secondary" outlined @click="revertToDraft" />
-          <Button as="router-link" :to="`/tournaments/${t.id}/attendees`" label="Manage players" severity="secondary" outlined />
-          <Button :label="t.participant_count < t.min_players ? `Need ${t.min_players - t.participant_count} more players` : 'Start tournament'" :disabled="t.participant_count < t.min_players" severity="warn" @click="start" />
-        </template>
-        <template v-if="['active','finished'].includes(t.state)">
-          <Button as="router-link" :to="`/tournaments/${t.id}/attendees`" label="Attendees" severity="secondary" outlined />
-          <Button as="router-link" :to="`/tournaments/${t.id}/progress`" :label="t.state === 'finished' ? 'Results' : 'Progress'" severity="contrast" />
+          <Button class="ms-auto" label="Revert to draft" severity="secondary" outlined @click="revertToDraft" />
         </template>
       </div>
     </div>
+    <StartTournamentDialog
+      v-if="showStartDialog && t" :name="t.name" :participant-count="t.participant_count"
+      :busy="starting" :error="startError" @confirm="start" @cancel="showStartDialog = false"
+    />
   </div>
 </template>
+
+<style scoped>
+.workspace-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #263653;
+}
+.workspace-page-heading h2 { color: #eef3ff; font-size: 21px; font-weight: 700; }
+.workspace-page-heading p { margin-top: 4px; color: #aab8d4; font-size: 12px; }
+.workspace-page-heading__creator { display: flex; align-items: center; gap: 5px; }
+</style>

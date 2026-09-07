@@ -1,42 +1,129 @@
 <script setup lang="ts">
-import { ref, onBeforeUnmount, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { apiFetch, formatApiError } from '@/services/api'
+import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { apiFetch, ApiError, formatApiError } from '@/services/api'
 import AppAlert from '@/components/AppAlert.vue'
-import TournamentFixtureCard from '@/components/TournamentFixtureCard.vue'
-import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
+import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
+import TournamentMatchSummary from '@/components/tournament/TournamentMatchSummary.vue'
+import TournamentMatchesPanel from '@/components/tournament/TournamentMatchesPanel.vue'
+import TournamentStandingsPanel from '@/components/tournament/TournamentStandingsPanel.vue'
+import TournamentMatchDialog from '@/components/tournament/TournamentMatchDialog.vue'
+import TournamentLiveAttention from '@/components/tournament/TournamentLiveAttention.vue'
+import TournamentLiveMatchGroup from '@/components/tournament/TournamentLiveMatchGroup.vue'
+import { useI18n } from '@/i18n'
+import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import Button from 'primevue/button'
 import type { TournamentFixture, TournamentProgressData } from '@/types/tournamentProgress'
 
 const route = useRoute()
+const router = useRouter()
+const { t } = useI18n()
+const workspace = useTournamentWorkspace()
 const id = String(route.params.id)
 const loading = ref(true)
 const error = ref('')
 const data = ref<TournamentProgressData | null>(null)
 const refreshing = ref(false)
+const confirmingResults = ref(false)
 const lastUpdatedAt = ref<Date | null>(null)
 const liveConnected = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let socket: WebSocket | null = null
+let disposed = false
+let refreshQueued = false
+const selectedView = computed(() => {
+  if (route.name === 'tournament-bracket') return 'matches'
+  if (route.name === 'tournament-standings' || route.name === 'tournament-results') return 'standings'
+  return 'live'
+})
+const fixtures = computed(() => Object.values(data.value?.stages ?? {}).flatMap(stage => stage.levels.flatMap(level => level.fixtures)))
+const selectedFixtureId = ref<number | null>(null)
+const selectedFixture = computed(() => fixtures.value.find(f => f.id === selectedFixtureId.value))
+const selectedRound = computed(() => {
+  for (const stage of Object.values(data.value?.stages ?? {})) {
+    const index = stage.levels.findIndex(level => level.fixtures.some(f => f.id === selectedFixtureId.value))
+    if (index >= 0) return stage.levels[index]?.name || t('tournamentWorkspace.round', { count: index + 1 })
+  }
+  return ''
+})
+const selectedSources = computed(() => {
+  const sources: Partial<Record<1 | 2, TournamentFixture>> = {}
+  for (const fixture of fixtures.value) {
+    const target = fixture.bracket?.winner_to
+    if (target?.fixture_id === selectedFixtureId.value && (target.player_slot === 1 || target.player_slot === 2)) sources[target.player_slot] = fixture
+  }
+  return sources
+})
+type OperationalStatus = NonNullable<TournamentFixture['operational_status']>
+
+function operationalStatus(fixture: TournamentFixture): OperationalStatus {
+  if (fixture.operational_status) return fixture.operational_status
+  if (fixture.is_confirmed) return 'completed'
+  if (fixture.score1 != null || fixture.score2 != null || fixture.confirmations > 0) return 'review'
+  if (fixture.live?.status === 'playing') return 'playing'
+  if (fixture.player1 && fixture.player2) return 'waiting'
+  if (fixture.player1 || fixture.player2) return 'waiting_opponent'
+  return 'upcoming'
+}
+
+const byStatus = (status: OperationalStatus) => computed(() =>
+  fixtures.value.filter(fixture => operationalStatus(fixture) === status),
+)
+const playingMatches = byStatus('playing')
+const stalledMatches = byStatus('stalled')
+const reviewMatches = byStatus('review')
+const waitingMatches = byStatus('waiting')
+const upcomingMatches = computed(() => fixtures.value
+  .filter(fixture => operationalStatus(fixture) === 'upcoming' && (fixture.player1 || fixture.player2))
+  .slice(0, 4))
+const completedRoundMatches = computed(() => fixtures.value.filter(fixture =>
+  operationalStatus(fixture) === 'completed' && (fixture.is_current_round ?? true),
+))
+const waitingPlayers = computed(() => data.value?.control_room?.waiting_players ?? fixtures.value
+  .filter(fixture => operationalStatus(fixture) === 'waiting_opponent')
+  .flatMap((fixture) => {
+    const player = fixture.player1 || fixture.player2
+    return player?.id == null ? [] : [{
+      id: player.id,
+      name: player.name || player.username || '',
+      user_id: player.user_id,
+      fixture_id: fixture.id,
+      round_name: fixture.round_name || '',
+    }]
+  }))
+
+watch(selectedView, () => { selectedFixtureId.value = null })
 
 async function load(initial = false) {
+  if (disposed) return
+  if (refreshing.value) { refreshQueued = true; return }
+  refreshing.value = true
   if (initial) loading.value = true
   else refreshing.value = true
   try {
-    data.value = await apiFetch<TournamentProgressData>(`/api/admin/tournaments/${id}/progress`)
+    const result = await apiFetch<TournamentProgressData>(`/api/admin/tournaments/${id}/progress`)
+    if (disposed) return
+    data.value = result
+    if (result.is_finished) closeSocket()
     error.value = ''
     lastUpdatedAt.value = new Date()
   } catch (e: unknown) {
+    if (disposed) return
+    if (e instanceof ApiError && e.status === 412) {
+      await router.replace({ name: 'tournament-detail', params: { id } })
+      return
+    }
     error.value = formatApiError(e)
   } finally {
     loading.value = false
     refreshing.value = false
+    if (refreshQueued && !disposed) { refreshQueued = false; void load() }
   }
 }
 
 function scheduleRefresh() {
-  if (data.value?.is_finished) return
+  if (disposed || data.value?.is_finished) return
   refreshTimer = setTimeout(async () => {
     await load()
     scheduleRefresh()
@@ -68,11 +155,26 @@ function applyLiveSnapshot(payload: unknown) {
     void load()
     return
   }
+  const previousStatus = operationalStatus(fixture)
   fixture.live = event.live ?? null
+  if (!fixture.is_confirmed && fixture.score1 == null && fixture.score2 == null && event.live?.status === 'playing') {
+    fixture.operational_status = 'playing'
+    fixture.stalled = false
+    fixture.last_activity_at = new Date().toISOString()
+    fixture.started_at ||= fixture.last_activity_at
+    fixture.duration_seconds ||= 0
+    if (data.value?.control_room && previousStatus !== 'playing') {
+      data.value.control_room.counts[previousStatus] = Math.max(0, data.value.control_room.counts[previousStatus] - 1)
+      data.value.control_room.counts.playing += 1
+    }
+  } else if (event.live?.status === 'completed') {
+    void load()
+  }
   lastUpdatedAt.value = new Date()
 }
 
 function closeSocket() {
+  liveConnected.value = false
   if (reconnectTimer !== null) clearTimeout(reconnectTimer)
   reconnectTimer = null
   if (socket) {
@@ -83,7 +185,7 @@ function closeSocket() {
 }
 
 function connectLiveSocket() {
-  if (data.value?.is_finished) return
+  if (disposed || !data.value || data.value.is_finished) return
   closeSocket()
   socket = new WebSocket(progressSocketUrl())
   socket.onopen = () => {
@@ -99,7 +201,7 @@ function connectLiveSocket() {
   socket.onclose = () => {
     liveConnected.value = false
     socket = null
-    if (!data.value?.is_finished) {
+    if (!disposed && !data.value?.is_finished) {
       reconnectTimer = setTimeout(connectLiveSocket, 2500)
     }
   }
@@ -109,8 +211,24 @@ function connectLiveSocket() {
 }
 
 function formatUpdatedAt(value: Date | null) {
-  if (!value) return 'Not synced yet'
+  if (!value) return t('tournamentWorkspace.notSynced')
   return value.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+async function confirmResults() {
+  if (!data.value?.is_finished || data.value.tournament.lifecycle_state === 'results_confirmed' || confirmingResults.value) return
+  if (!confirm(t('tournamentResults.confirmPrompt'))) return
+  confirmingResults.value = true
+  error.value = ''
+  try {
+    const result = await apiFetch<{ lifecycle_state: string }>(`/api/admin/tournaments/${id}/results/confirm`, { method: 'POST' })
+    data.value.tournament.lifecycle_state = result.lifecycle_state
+    await workspace?.refresh()
+  } catch (caught: unknown) {
+    error.value = formatApiError(caught)
+  } finally {
+    confirmingResults.value = false
+  }
 }
 
 onMounted(async () => {
@@ -120,78 +238,114 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   if (refreshTimer !== null) clearTimeout(refreshTimer)
   closeSocket()
 })
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl">
-    <header v-if="data?.tournament" class="mb-5 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <RouterLink :to="`/tournaments/${id}`" class="mb-2 inline-flex items-center text-sm text-zinc-600 hover:text-black hover:underline"><i class="bi bi-arrow-left mr-1" aria-hidden="true"></i>Tournament details</RouterLink>
-        <div class="flex flex-wrap items-center gap-2">
-          <h1 class="text-2xl font-bold text-black">{{ data.tournament.name }}</h1>
-          <TournamentStatusBadge :state="data.tournament.state" />
-        </div>
-        <p class="mt-1 text-sm text-zinc-500">
-          {{ data.is_finished ? 'Final results are saved from confirmed tournament matches.' : 'Match results sync automatically while the tournament is active.' }}
-        </p>
-      </div>
-      <div class="flex items-center gap-3 text-xs text-zinc-500">
-        <span class="inline-flex items-center gap-1.5">
-          <span :class="['h-2 w-2 rounded-full', liveConnected ? 'bg-emerald-500' : 'bg-zinc-300']"></span>
-          {{ liveConnected ? 'Live connected' : 'Live reconnecting' }}
-        </span>
-        <span class="inline-flex items-center gap-1.5"><i :class="['bi bi-arrow-repeat', refreshing && 'animate-spin']" aria-hidden="true"></i>{{ data.is_finished ? 'Finalized' : 'Synced' }} {{ formatUpdatedAt(lastUpdatedAt) }}</span>
-        <Button icon="bi bi-arrow-clockwise" text rounded severity="secondary" aria-label="Refresh results" :loading="refreshing" @click="load()" />
-      </div>
-    </header>
-    <h1 v-else class="mb-5 text-2xl font-bold text-black">Tournament Results</h1>
+  <div class="tournament-progress-page min-w-0">
+      <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">{{ t('common.loading') }}</div>
+      <AppAlert v-if="error" type="error" :message="error" class="mb-3" />
+      <Button v-if="!loading && !data" :label="t('common.refresh')" severity="secondary" outlined :loading="refreshing" @click="load()" />
 
-    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">Loading…</div>
-    <AppAlert v-if="error" type="error" :message="error" dismissible @close="error=''" class="mb-3" />
-    <div v-else-if="data" class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-      <div class="lg:col-span-1">
-        <aside class="rounded-lg border border-zinc-200 bg-white p-5 text-sm lg:sticky lg:top-4">
-          <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Tournament overview</p>
-          <p class="mt-1 font-semibold text-black">{{ data.tournament.name }}</p>
-          <p class="mt-1 text-xs text-zinc-500">Tournament #{{ data.tournament.id }}</p>
-          <div class="mt-4 grid grid-cols-2 border-y border-zinc-100 py-3">
+      <template v-if="data">
+        <TournamentProgress
+          class="mt-6"
+          :state="data.tournament.state"
+          :lifecycle-state="data.tournament.lifecycle_state"
+          :participant-count="data.tournament.participant_count"
+          :min-players="data.tournament.min_players"
+        />
+        <div class="workspace-toolbar">
+          <h2>{{ t(`tournamentWorkspace.${selectedView}`) }}</h2>
+          <div class="flex flex-wrap items-center gap-3 text-xs text-zinc-500" role="status">
+            <span v-if="!data.is_finished" class="inline-flex items-center gap-1.5">
+              <span :class="['h-2 w-2 rounded-full', liveConnected ? 'bg-emerald-500' : 'bg-zinc-300']"></span>
+              {{ t(liveConnected ? 'tournamentWorkspace.connected' : 'tournamentWorkspace.reconnecting') }}
+            </span>
+            <span>{{ t(data.is_finished ? 'tournamentWorkspace.finalized' : 'tournamentWorkspace.synced') }} {{ formatUpdatedAt(lastUpdatedAt) }}</span>
+            <Button icon="bi bi-arrow-clockwise" text rounded severity="secondary" :aria-label="t('common.refresh')" :loading="refreshing" :disabled="refreshing" @click="load()" />
+          </div>
+        </div>
+
+        <template v-if="selectedView === 'live'">
+          <TournamentMatchSummary
+            :fixtures="fixtures"
+            :players="data.tournament.participant_count"
+            :control-room="data.control_room"
+          />
+          <TournamentLiveAttention
+            :stalled="stalledMatches"
+            :review="reviewMatches"
+            :waiting-players="waitingPlayers"
+            @select="selectedFixtureId = $event"
+          />
+          <section class="mt-6">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h3 class="text-base font-semibold text-slate-100">{{ t(data.is_finished ? 'tournamentWorkspace.tournamentFinished' : 'controlRoom.matchFlow') }}</h3>
+              <Button as="router-link" :to="{ name: data.is_finished ? 'tournament-results' : 'tournament-bracket', params: { id } }" :label="t(data.is_finished ? 'tournamentWorkspace.standings' : 'tournamentWorkspace.allMatches')" severity="secondary" outlined size="small" />
+            </div>
+            <p class="mb-4 text-sm text-zinc-500">{{ t(data.is_finished ? 'tournamentWorkspace.finishedHint' : 'controlRoom.matchFlowHint') }}</p>
+            <div v-if="!data.is_finished" class="live-groups">
+              <TournamentLiveMatchGroup
+                :title="t('controlRoom.playingTitle')" :hint="t('controlRoom.playingHint')"
+                :fixtures="playingMatches" :empty="t('controlRoom.playingEmpty')" tone="playing"
+                @select="selectedFixtureId = $event"
+              />
+              <TournamentLiveMatchGroup
+                :title="t('controlRoom.waitingTitle')" :hint="t('controlRoom.waitingHint')"
+                :fixtures="waitingMatches" :empty="t('controlRoom.waitingEmpty')"
+                @select="selectedFixtureId = $event"
+              />
+              <TournamentLiveMatchGroup
+                :title="t('controlRoom.upcomingTitle')" :hint="t('controlRoom.upcomingHint')"
+                :fixtures="upcomingMatches" :empty="t('controlRoom.upcomingEmpty')"
+                @select="selectedFixtureId = $event"
+              />
+              <TournamentLiveMatchGroup
+                :title="t('controlRoom.completedTitle')" :hint="t('controlRoom.completedHint')"
+                :fixtures="completedRoundMatches" :empty="t('controlRoom.completedEmpty')" tone="complete"
+                @select="selectedFixtureId = $event"
+              />
+            </div>
+          </section>
+        </template>
+        <TournamentMatchesPanel v-else-if="selectedView === 'matches'" :stages="data.stages" @select="selectedFixtureId = $event" />
+        <template v-else>
+          <section v-if="data.is_finished" class="results-approval">
             <div>
-              <p class="text-xs text-zinc-500">Players</p>
-              <p class="mt-1 text-lg font-bold text-black">{{ data.tournament.participant_count }}</p>
+              <p>{{ t('tournamentResults.eyebrow') }}</p>
+              <h3>{{ t(data.tournament.lifecycle_state === 'results_confirmed' ? 'tournamentResults.confirmed' : 'tournamentResults.ready') }}</h3>
+              <span>{{ t(data.tournament.lifecycle_state === 'results_confirmed' ? 'tournamentResults.confirmedHint' : 'tournamentResults.readyHint') }}</span>
             </div>
-            <div class="border-l border-zinc-100 pl-3">
-              <p class="text-xs text-zinc-500">Status</p>
-              <p class="mt-1 font-semibold text-zinc-800">{{ data.is_finished ? 'Complete' : 'Live' }}</p>
-            </div>
-          </div>
-          <div v-if="data.is_finished && data.podium?.length" class="mt-4">
-            <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Final standings</p>
-            <ol class="mt-2 divide-y divide-zinc-100 border-y border-zinc-100">
-              <li v-for="(p, idx) in data.podium" :key="p.id" class="flex items-center gap-2 py-2 text-sm">
-                <span :class="['inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold', idx === 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-600']">{{ idx + 1 }}</span>
-                <span :class="idx === 0 ? 'font-semibold text-black' : 'text-zinc-700'">{{ p.name }}</span>
-              </li>
-            </ol>
-          </div>
-        </aside>
-      </div>
-      <div class="lg:col-span-2 space-y-4">
-        <section v-for="(stageInfo, stageId) in data.stages" :key="String(stageId)" class="rounded-lg border border-zinc-200 bg-white p-5">
-          <div class="mb-4 flex items-center gap-3">
-            <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white">{{ Object.keys(data.stages).indexOf(String(stageId)) + 1 }}</span>
-            <h2 class="text-base font-semibold text-black">{{ String(stageId) }}</h2>
-          </div>
-          <div v-for="(level, lidx) in stageInfo.levels" :key="lidx" class="mb-4 last:mb-0">
-            <h3 class="mb-2 text-xs font-semibold tracking-wide text-zinc-500 uppercase">Round {{ Number(lidx) + 1 }}<span v-if="level.name"> / {{ level.name }}</span></h3>
-            <div class="space-y-2">
-              <TournamentFixtureCard v-for="fixture in level.fixtures" :key="fixture.id" :fixture="fixture" />
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
+            <Button
+              v-if="data.tournament.lifecycle_state !== 'results_confirmed'"
+              :label="t('tournamentResults.confirmAction')"
+              icon="bi bi-check2-circle"
+              severity="success"
+              :loading="confirmingResults"
+              @click="confirmResults"
+            />
+            <span v-else class="results-approval__confirmed"><i class="bi bi-check-lg" aria-hidden="true"></i>{{ t('tournamentResults.confirmedBadge') }}</span>
+          </section>
+          <TournamentStandingsPanel :finished="data.is_finished" :podium="data.podium || []" />
+        </template>
+        <TournamentMatchDialog v-if="selectedFixture" :key="selectedFixture.id" :fixture="selectedFixture"
+          :tournament-id="id" :round="selectedRound" :sources="selectedSources" :live-connected="liveConnected" :updated-at="lastUpdatedAt" @saved="load()" @close="selectedFixtureId = null" />
+      </template>
   </div>
 </template>
+
+<style scoped>
+.workspace-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 22px 0; }
+.workspace-toolbar h2 { color: #eaf2ff; font-size: 21px; font-weight: 650; }
+.results-approval { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; padding: 18px; border: 1px solid #315476; border-radius: 12px; background: #132740; }
+.results-approval p { margin: 0 0 4px; color: #7fcfff; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.results-approval h3 { margin: 0; color: #eef5ff; font-size: 15px; font-weight: 680; }
+.results-approval div > span { display: block; margin-top: 5px; color: #afc1d7; font-size: 11px; }
+.results-approval__confirmed { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 8px 11px; background: #17614e; color: #caffed; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.live-groups { display: grid; gap: 14px; }
+@media (max-width: 620px) { .results-approval { align-items: flex-start; flex-direction: column; } }
+</style>

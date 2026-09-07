@@ -10,35 +10,75 @@ from django.contrib.auth.models import User
 from tournaments import models
 
 
+def validate_admin_username(value):
+    if not re.fullmatch(r'[A-Za-z0-9]+', value or ''):
+        raise ValidationError('Use English letters and numbers only.')
+    return value
+
+
+def validate_phone_number(value):
+    phone_number = (value or '').strip()
+    if not phone_number:
+        return ''
+    digit_count = len(re.sub(r'\D', '', phone_number))
+    if not re.fullmatch(r'\+?[0-9 ()-]+', phone_number) or not 7 <= digit_count <= 15:
+        raise ValidationError('Enter a valid phone number.')
+    return phone_number
+
+
 class AdminUserCreateForm(UserCreationForm):
     is_staff = forms.BooleanField(required=False, label='Staff (admin access)')
-    email = forms.EmailField(required=False)
+    phone_number = forms.CharField(required=False, max_length=24)
 
     class Meta(UserCreationForm.Meta):
         model = User
-        fields = ('username', 'email', 'password1', 'password2', 'is_staff')
+        fields = ('username', 'phone_number', 'password1', 'password2', 'is_staff')
 
     def clean_username(self):
         ret = super().clean_username()
+        validate_admin_username(ret)
         if re.match(r'^testuser-[0-9]+$', self.cleaned_data.get('username')):
             raise ValidationError('This username is reserved.')
         return ret
 
+    def clean_phone_number(self):
+        return validate_phone_number(self.cleaned_data.get('phone_number'))
+
+    def save(self, commit=True):
+        user = super().save(commit=commit)
+        if commit:
+            models.UserContact.objects.update_or_create(
+                user=user,
+                defaults={'phone_number': self.cleaned_data.get('phone_number', '')},
+            )
+        return user
+
 
 class AdminUserUpdateForm(forms.ModelForm):
     is_staff = forms.BooleanField(required=False)
+    phone_number = forms.CharField(required=False, max_length=24)
     new_password = forms.CharField(
         required=False, widget=forms.PasswordInput, label='New password (leave blank to keep)')
 
     class Meta:
         model = User
-        fields = ('username', 'email', 'is_staff', 'is_active')
+        fields = ('username', 'phone_number', 'is_staff', 'is_active')
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            contact = models.UserContact.objects.filter(user=self.instance).first()
+            self.fields['phone_number'].initial = contact.phone_number if contact else ''
 
     def clean_username(self):
         username = self.cleaned_data.get('username')
+        validate_admin_username(username)
         if re.match(r'^testuser-[0-9]+$', username):
             raise ValidationError('This username is reserved.')
         return username
+
+    def clean_phone_number(self):
+        return validate_phone_number(self.cleaned_data.get('phone_number'))
 
     def save(self, commit=True):
         user = super().save(commit=False)
@@ -47,14 +87,20 @@ class AdminUserUpdateForm(forms.ModelForm):
             user.set_password(pwd)
         if commit:
             user.save()
+            models.UserContact.objects.update_or_create(
+                user=user,
+                defaults={'phone_number': self.cleaned_data.get('phone_number', '')},
+            )
         return user
 
 
 class SignupForm(UserCreationForm):
 
     def clean_username(self):
+        username = self.cleaned_data.get('username', '')
+        self.cleaned_data['username'] = username[:1].upper() + username[1:]
         ret = super(SignupForm, self).clean_username()
-        if re.match(r'^testuser-[0-9]+$', self.cleaned_data.get('username')):
+        if ret and re.match(r'^testuser-[0-9]+$', ret, re.IGNORECASE):
             raise ValidationError('This username is reserved.')
         return ret
 

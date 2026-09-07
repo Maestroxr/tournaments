@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
 import UserQuickView from './UserQuickView.vue'
@@ -30,6 +31,7 @@ interface Tournament {
 
 defineProps<{ tournament: Tournament }>()
 const { t } = useI18n()
+const router = useRouter()
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduled')
@@ -46,10 +48,29 @@ function medalLabel(position: number) {
   if (position === 2) return t('tournaments.thirdPlace')
   return t('tournaments.place', { place: position + 1 })
 }
+
+function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournament) {
+  const target = event.target
+  const interactiveTarget =
+    target instanceof Element
+      ? target.closest('a, button, input, select, textarea, [role="button"], [role="link"]')
+      : null
+  if (interactiveTarget && interactiveTarget !== event.currentTarget) {
+    return
+  }
+  void router.push(`/tournaments/${tournament.id}/progress`)
+}
 </script>
 
 <template>
-  <article class="rounded-lg border border-emerald-200 bg-white p-5 shadow-sm transition hover:shadow-md">
+  <article
+    role="link"
+    tabindex="0"
+    :aria-label="`${t('tournaments.openResults')}: ${tournament.name}`"
+    class="cursor-pointer rounded-lg border border-emerald-200 bg-white p-5 shadow-sm transition hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+    @click="openTournament($event, tournament)"
+    @keydown.enter="openTournament($event, tournament)"
+  >
     <div class="mb-5 flex items-start justify-between gap-3">
       <div>
         <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">{{ t('tournaments.tournamentNumber', { id: tournament.id }) }}</p>

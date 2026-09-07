@@ -2,14 +2,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
-import Column from 'primevue/column'
-import DataTable from 'primevue/datatable'
-import InputNumber from 'primevue/inputnumber'
-import InputText from 'primevue/inputtext'
-import ToggleSwitch from 'primevue/toggleswitch'
-import AppInput from '@/components/AppInput.vue'
 import AppAlert from '@/components/AppAlert.vue'
-import { apiFetch, formatApiError } from '@/services/api'
+import WalletAdjustmentPanel from '@/components/WalletAdjustmentPanel.vue'
+import UserAccessSettingsCard from '@/components/user/UserAccessSettingsCard.vue'
+import UserAccountDetailsCard from '@/components/user/UserAccountDetailsCard.vue'
+import UserPasswordCard from '@/components/user/UserPasswordCard.vue'
+import UserSummaryCard from '@/components/user/UserSummaryCard.vue'
+import UserWalletActivity from '@/components/user/UserWalletActivity.vue'
+import { apiFetch, apiFieldErrors, formatApiError } from '@/services/api'
 import { useI18n } from '@/i18n'
 
 const route = useRoute()
@@ -17,24 +17,24 @@ const router = useRouter()
 const id = route.params.id as string
 
 const username = ref('')
-const email = ref('')
+const phoneNumber = ref('')
 const is_staff = ref(false)
 const is_active = ref(true)
 const new_password = ref('')
 const balance = ref('0.00')
-const walletAmount = ref<number | null>(null)
-const walletNote = ref('')
 const transactions = ref<WalletTransaction[]>([])
 const error = ref('')
 const loading = ref(false)
 const fetching = ref(true)
 const loadFailed = ref(false)
-const { t } = useI18n()
+const submitted = ref(false)
+const serverFieldErrors = ref<Record<string, string>>({})
+const { direction, t } = useI18n()
 
 interface UserDetail {
   id: number
   username: string
-  email?: string
+  phone_number?: string
   is_staff?: boolean
   is_active?: boolean
   balance?: string
@@ -52,37 +52,56 @@ interface WalletTransaction {
   created_at: string
 }
 
-const fieldErrors = computed(() => {
+const clientFieldErrors = computed(() => {
   const errs: Record<string, string> = {}
   if (!username.value.trim()) errs.username = t('users.usernameRequiredShort')
-  else if (/^testuser-[0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameReservedShort')
-  if (email.value && !/^\S+@\S+\.\S+$/.test(email.value)) errs.email = t('users.invalidEmail')
+  else if (!/^[A-Za-z0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameCharactersShort')
+  if (phoneNumber.value && !/^\+?[0-9 ()-]+$/.test(phoneNumber.value)) errs.phone_number = t('users.invalidPhone')
+  else if (phoneNumber.value) {
+    const digitCount = phoneNumber.value.replace(/\D/g, '').length
+    if (digitCount < 7 || digitCount > 15) errs.phone_number = t('users.invalidPhone')
+  }
+  if (new_password.value && new_password.value.length < 8) errs.new_password = t('users.newPasswordTooShort')
   return errs
 })
+const visibleClientErrors = computed(() => submitted.value ? clientFieldErrors.value : {})
+const fieldErrors = computed(() => ({ ...serverFieldErrors.value, ...visibleClientErrors.value }))
+const walletUser = computed(() => ({ id: Number(id), username: username.value, phone_number: phoneNumber.value, balance: balance.value }))
 
-onMounted(async () => {
+function clearServerError(field: string) {
+  if (!serverFieldErrors.value[field]) return
+  const next = { ...serverFieldErrors.value }
+  delete next[field]
+  serverFieldErrors.value = next
+}
+
+async function loadUser(showLoadFailure = true) {
   try {
     const data = await apiFetch<UserDetail>(`/api/admin/users/${id}`)
     username.value = data.username
-    email.value = data.email ?? ''
+    phoneNumber.value = data.phone_number ?? ''
     is_staff.value = !!data.is_staff
     is_active.value = data.is_active ?? true
     balance.value = data.balance ?? '0.00'
     transactions.value = data.transactions ?? []
   } catch (e: unknown) {
     error.value = formatApiError(e)
-    loadFailed.value = true
+    if (showLoadFailure) loadFailed.value = true
   } finally {
-    fetching.value = false
+    if (showLoadFailure) fetching.value = false
   }
-})
+}
+
+onMounted(() => loadUser())
 
 async function save() {
+  submitted.value = true
   error.value = ''
-  if (Object.keys(fieldErrors.value).length) { error.value = Object.values(fieldErrors.value).join(' • '); return }
+  serverFieldErrors.value = {}
+  if (Object.keys(clientFieldErrors.value).length) { error.value = t('users.reviewEditFields'); return }
   loading.value = true
   try {
-    const payload: Record<string, unknown> = { username: username.value.trim(), email: email.value.trim(), is_staff: is_staff.value, is_active: is_active.value }
+    const payload: Record<string, unknown> = { username: username.value.trim(), phone_number: phoneNumber.value.trim(), is_staff: is_staff.value, is_active: is_active.value }
     if (new_password.value) payload.new_password = new_password.value
     await apiFetch(`/api/admin/users/${id}`, {
       method: 'PUT',
@@ -90,91 +109,66 @@ async function save() {
     })
     router.push('/users')
   } catch (e: unknown) {
-    error.value = formatApiError(e)
+    serverFieldErrors.value = apiFieldErrors(e)
+    if (Object.keys(serverFieldErrors.value).length) {
+      const details = [...new Set(Object.values(serverFieldErrors.value))].join(' ')
+      error.value = `${t('users.reviewEditFields')} ${details}`
+    } else {
+      error.value = formatApiError(e)
+    }
   } finally {
     loading.value = false
   }
 }
 
-async function wallet(action: 'deposit' | 'withdraw') {
-  error.value = ''
-  const amount = Number(walletAmount.value)
-  if (!Number.isFinite(amount) || amount <= 0) { error.value = t('users.positiveAmount'); return }
-  loading.value = true
-  try {
-    const data = await apiFetch<UserDetail>(`/api/admin/users/${id}/wallet`, {
-      method: 'POST',
-      body: JSON.stringify({ action, amount, note: walletNote.value.trim() }),
-    })
-    balance.value = data.balance ?? '0.00'
-    transactions.value = data.transactions ?? []
-    walletAmount.value = null
-    walletNote.value = ''
-  } catch (e: unknown) {
-    error.value = formatApiError(e)
-  } finally {
-    loading.value = false
-  }
-}
-
-function formatDate(value: string) {
-  try { return new Date(value).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) } catch { return value }
+async function refreshWallet() {
+  await loadUser(false)
 }
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-lg">
-    <h1 class="mb-4 text-2xl font-bold text-black">{{ t('users.editTitle') }}</h1>
-    <AppAlert v-if="error" class="mb-4" type="error" :message="error" dismissible @close="error = ''" />
-    <p v-if="fetching" class="text-sm text-zinc-500">{{ t('common.loading') }}</p>
-    <div v-else-if="loadFailed" class="text-center">
-      <Button as="router-link" to="/users" :label="t('nav.users')" severity="contrast" />
-    </div>
-    <form v-else-if="!loadFailed" @submit.prevent="save" class="space-y-4">
-      <AppInput v-model="username" :label="t('users.username')" :placeholder="t('users.username')" :error="fieldErrors.username" autocomplete="username" />
-      <AppInput v-model="email" :label="t('users.email')" placeholder="email@example.com" type="email" :error="fieldErrors.email" autocomplete="email" />
-      <AppInput v-model="new_password" :label="t('users.newPassword')" type="password" placeholder="••••••••" autocomplete="new-password" />
-      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_staff" /> {{ t('users.staffAdmin') }}</label>
-      <label class="flex items-center gap-3 text-sm text-black"><ToggleSwitch v-model="is_active" /> {{ t('common.active') }}</label>
-      <div class="rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-600">{{ t('users.preview') }}: {{ username || '—' }} • {{ email || t('common.noEmail') }} • {{ is_staff ? t('common.staff') : t('common.user') }} • {{ is_active ? t('common.active') : t('common.inactive') }} • {{ t('users.balance') }} {{ Number(balance || 0).toFixed(2) }}</div>
-      <div class="flex gap-2">
-        <Button type="submit" :label="loading ? t('common.saving') : t('common.save')" :loading="loading" severity="info" />
-        <Button :label="t('common.cancel')" severity="secondary" outlined @click="router.push('/users')" />
-      </div>
-    </form>
-
-    <section v-if="!fetching && !loadFailed" class="mt-6 rounded-lg border border-zinc-200 bg-white p-4">
-      <div class="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h2 class="font-semibold text-black">{{ t('users.wallet') }}</h2>
-          <p class="text-sm text-zinc-500">{{ t('users.currentBalance') }}: <span class="font-semibold text-emerald-700">{{ Number(balance || 0).toFixed(2) }}</span></p>
+  <div class="mx-auto w-full max-w-6xl">
+    <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <div class="mb-2 inline-flex items-center gap-2 rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-200">
+          <i class="bi bi-person-gear" /> {{ t('users.editBadge') }}
         </div>
+        <h1 class="text-3xl font-bold text-black">{{ t('users.editTitle') }}</h1>
+        <p class="mt-1 text-sm text-zinc-600">{{ t('users.editIntro') }}</p>
       </div>
-      <div class="grid gap-3 sm:grid-cols-[120px_1fr]">
-        <InputNumber v-model="walletAmount" :min="0.01" :min-fraction-digits="2" :max-fraction-digits="2" :placeholder="t('common.amount')" fluid />
-        <InputText v-model="walletNote" :placeholder="t('common.note')" class="w-full" />
-      </div>
-      <div class="mt-3 flex gap-2">
-        <Button :label="t('users.deposit')" size="small" severity="success" :loading="loading" @click="wallet('deposit')" />
-        <Button :label="t('users.withdraw')" size="small" severity="danger" outlined :loading="loading" @click="wallet('withdraw')" />
-      </div>
+      <Button type="button" :label="t('common.cancel')" severity="secondary" text @click="router.push('/users')" />
+    </header>
 
-      <DataTable class="mt-4" :value="transactions" data-key="id" size="small" striped-rows show-gridlines>
-        <template #empty>{{ t('users.noWallet') }}</template>
-        <Column :header="t('transfers.date')" sortable sort-field="created_at">
-          <template #body="{ data }">{{ formatDate(data.created_at) }}</template>
-        </Column>
-        <Column field="kind" :header="t('common.type')" sortable />
-        <Column :header="t('common.amount')" sortable sort-field="amount" body-class="text-right">
-          <template #body="{ data }"><span :class="['font-medium', Number(data.amount) >= 0 ? 'text-emerald-700' : 'text-red-700']">{{ Number(data.amount).toFixed(2) }}</span></template>
-        </Column>
-        <Column :header="t('users.balance')" sortable sort-field="balance_after" body-class="text-right">
-          <template #body="{ data }">{{ Number(data.balance_after).toFixed(2) }}</template>
-        </Column>
-        <Column :header="t('common.note')">
-          <template #body="{ data }">{{ data.tournament_name || data.note || '-' }}</template>
-        </Column>
-      </DataTable>
+    <AppAlert v-if="error" class="mb-5" type="error" :message="error" dismissible @close="error = ''" />
+
+    <section v-if="fetching" class="rounded-xl border border-zinc-200 bg-white p-8 text-center">
+      <i class="bi bi-arrow-repeat mr-2 animate-spin text-sky-300" />
+      <span class="text-sm text-zinc-500">{{ t('users.loadingUser') }}</span>
     </section>
+    <div v-else-if="loadFailed" class="rounded-xl border border-zinc-200 bg-white p-8 text-center">
+      <Button as="router-link" to="/users" :label="t('users.backToUsers')" severity="contrast" />
+    </div>
+
+    <template v-else>
+      <form class="grid items-start gap-5 lg:grid-cols-[minmax(0,1.3fr)_minmax(280px,.7fr)]" @submit.prevent="save">
+        <div class="space-y-5">
+          <UserAccountDetailsCard v-model:username="username" v-model:phone-number="phoneNumber" :errors="fieldErrors" @changed="clearServerError" />
+          <UserPasswordCard v-model="new_password" optional :error="fieldErrors.new_password" @changed="clearServerError('new_password')" />
+          <UserAccessSettingsCard v-model:is-staff="is_staff" v-model:is-active="is_active" show-active />
+        </div>
+
+        <aside class="lg:sticky lg:top-5">
+          <UserSummaryCard :username="username" :phone-number="phoneNumber" :is-staff="is_staff" :is-active="is_active" :balance="balance" show-status>
+            <template #actions>
+              <Button type="submit" class="w-full" :label="loading ? t('common.saving') : t('users.saveChanges')" :loading="loading" severity="success" icon="bi bi-check2-circle" :icon-pos="direction === 'rtl' ? 'right' : 'left'" />
+              <Button type="button" class="w-full" :label="t('common.cancel')" severity="secondary" outlined @click="router.push('/users')" />
+            </template>
+          </UserSummaryCard>
+        </aside>
+      </form>
+
+      <div class="mt-6"><WalletAdjustmentPanel :user="walletUser" @adjusted="refreshWallet" /></div>
+      <UserWalletActivity :transactions="transactions" />
+    </template>
   </div>
 </template>

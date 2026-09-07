@@ -624,9 +624,12 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
 
         return context
 
+    @transaction.atomic
     def post(self, request, *args, **kwargs):
-        self.object = self.get_object()
-        fixture = models.Fixture.objects.get(id=request.POST.get('fixture_id'))
+        self.object = models.Tournament.objects.select_for_update().get(pk=self.get_object().pk)
+        fixture = models.Fixture.objects.select_for_update().get(id=request.POST.get('fixture_id'))
+        if fixture.admin_result:
+            return HttpResponse(status=409)
         if not fixture.players.filter(id=request.user.id).exists():
             return HttpResponseForbidden()
 
@@ -655,6 +658,7 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
                 status='danger', text='You have not entered a valid score.')
             return redirect('tournament-progress', pk=self.object.id)
 
+        old_score = fixture.score
         # Update the fixture.
         if fixture.score != new_score:
 
@@ -682,6 +686,9 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
         if fixture.is_confirmed:
             self.object.update_state()
 
+        if old_score != fixture.score:
+            models.FixtureAudit.objects.create(fixture=fixture, actor=request.user, action='player_result',
+                before={'score': list(old_score)}, after={'score': list(fixture.score), 'confirmed': fixture.is_confirmed})
         request.session['alert'] = dict(
             status='success', text='Your confirmation has been saved.')
         return redirect('tournament-progress', pk=self.object.id)

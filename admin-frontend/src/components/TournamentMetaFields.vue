@@ -33,6 +33,9 @@ const emit = defineEmits<{
   (e: 'update:prizeMoney', v: number): void
 }>()
 const { t } = useI18n()
+function selectNumber(event: MouseEvent) {
+  if (event.target instanceof HTMLInputElement) event.target.select()
+}
 const timeOptions = computed(() => [
   { value: 'none', label: t('tournaments.noClock'), detail: t('tournaments.untimedMatch') },
   { value: 'fast', label: t('tournaments.fast'), detail: t('tournaments.fastDetail') },
@@ -111,18 +114,18 @@ const startsTimeObject = computed<Date | null>({
       </label>
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.entryFee') }}</span>
-        <InputNumber :model-value="entryFee" :min="0" :min-fraction-digits="2" :max-fraction-digits="2" fluid :invalid="Boolean(errors?.entry_fee)" @update:model-value="emit('update:entryFee', Number($event ?? 0))" />
+        <InputNumber :model-value="entryFee" :min="0" :min-fraction-digits="0" :max-fraction-digits="0" highlight-on-focus fluid :invalid="Boolean(errors?.entry_fee)" @click="selectNumber" @update:model-value="emit('update:entryFee', Number($event ?? 0))" />
         <span v-if="errors?.entry_fee" class="text-xs text-red-600">{{ errors.entry_fee }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.entryFeeHelp') }}</span>
       </label>
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.prize') }}</span>
-        <InputNumber :model-value="prizeMoney" :min="0" :min-fraction-digits="2" :max-fraction-digits="2" fluid :invalid="Boolean(errors?.prize_money)" @update:model-value="emit('update:prizeMoney', Number($event ?? 0))" />
+        <InputNumber :model-value="prizeMoney" :min="0" :min-fraction-digits="0" :max-fraction-digits="0" highlight-on-focus fluid :invalid="Boolean(errors?.prize_money)" @click="selectNumber" @update:model-value="emit('update:prizeMoney', Number($event ?? 0))" />
         <span v-if="errors?.prize_money" class="text-xs text-red-600">{{ errors.prize_money }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.prizeHelp') }}</span>
       </label>
       <label class="flex items-start gap-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2">
-        <ToggleSwitch :model-value="doublingEnabled" class="mt-0.5" @update:model-value="emit('update:doublingEnabled', Boolean($event))" />
+        <ToggleSwitch :model-value="doublingEnabled" class="doubling-toggle mt-0.5" :aria-label="t('tournaments.doublingCube')" @update:model-value="emit('update:doublingEnabled', Boolean($event))" />
         <span>
           <span class="block text-sm font-medium text-black">{{ t('tournaments.doublingCube') }}</span>
           <span class="text-xs text-zinc-500">{{ t('tournaments.doublingHelp') }}</span>
@@ -131,3 +134,23 @@ const startsTimeObject = computed<Date | null>({
     </div>
   </div>
 </template>
+
+<style scoped>
+.doubling-toggle {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 26px;
+  --p-toggleswitch-width: 44px;
+  --p-toggleswitch-height: 26px;
+  --p-toggleswitch-gap: 3px;
+  --p-toggleswitch-handle-size: 20px;
+  --p-toggleswitch-background: #53627b;
+  --p-toggleswitch-hover-background: #64748b;
+  --p-toggleswitch-checked-background: #10b981;
+  --p-toggleswitch-checked-hover-background: #059669;
+  --p-toggleswitch-handle-background: #fff;
+  --p-toggleswitch-handle-hover-background: #fff;
+  --p-toggleswitch-handle-checked-background: #fff;
+  --p-toggleswitch-handle-checked-hover-background: #fff;
+}
+</style>

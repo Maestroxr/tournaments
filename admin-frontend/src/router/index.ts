@@ -44,8 +44,7 @@ const router = createRouter({
     },
     {
       path: '/tournaments/:id',
-      name: 'tournament-detail',
-      component: () => import('@/pages/TournamentDetailView.vue'),
+      component: () => import('@/layouts/TournamentWorkspaceLayout.vue'),
       props: true,
       meta: {
         breadcrumb: ((route: RouteLocationNormalized) => [
@@ -54,33 +53,69 @@ const router = createRouter({
           { label: route.params.id === 'test-1' ? 'test 1' : String(route.params.id) },
         ]) satisfies BreadcrumbFactory,
       },
-    },
-    {
-      path: '/tournaments/:id/attendees',
-      name: 'tournament-attendees',
-      component: () => import('@/pages/AttendeesView.vue'),
-      meta: {
-        breadcrumb: ((route: RouteLocationNormalized) => [
-          { label: 'Dashboard', to: '/dashboard' },
-          { label: 'Tournaments', to: '/tournaments' },
-          { label: String(route.params.id) },
-          { label: 'Attendees' },
-        ]) satisfies BreadcrumbFactory,
-      },
-    },
-    {
-      path: '/tournaments/:id/progress',
-      name: 'tournament-progress',
-      component: () => import('@/pages/TournamentProgressView.vue'),
-      props: true,
-      meta: {
-        breadcrumb: ((route: RouteLocationNormalized) => [
-          { label: 'Dashboard', to: '/dashboard' },
-          { label: 'Tournaments', to: '/tournaments' },
-          { label: String(route.params.id) },
-          { label: 'Progress' },
-        ]) satisfies BreadcrumbFactory,
-      },
+      children: [
+        {
+          path: '',
+          redirect: (to) => ({ name: 'tournament-detail', params: to.params }),
+        },
+        {
+          path: 'overview',
+          name: 'tournament-detail',
+          component: () => import('@/pages/TournamentDetailView.vue'),
+          props: true,
+        },
+        {
+          path: 'settings',
+          name: 'tournament-settings',
+          component: () => import('@/pages/TournamentDetailView.vue'),
+          props: true,
+        },
+        {
+          path: 'players',
+          name: 'tournament-players',
+          component: () => import('@/pages/AttendeesView.vue'),
+        },
+        {
+          path: 'draw',
+          name: 'tournament-draw',
+          component: () => import('@/pages/TournamentDrawView.vue'),
+        },
+        {
+          path: 'live',
+          name: 'tournament-live',
+          component: () => import('@/pages/TournamentProgressView.vue'),
+          beforeEnter: (to) => {
+            if (to.query.view === 'matches')
+              return { name: 'tournament-bracket', params: to.params }
+            if (to.query.view === 'standings')
+              return { name: 'tournament-standings', params: to.params }
+          },
+        },
+        {
+          path: 'bracket',
+          name: 'tournament-bracket',
+          component: () => import('@/pages/TournamentProgressView.vue'),
+        },
+        {
+          path: 'standings',
+          name: 'tournament-standings',
+          component: () => import('@/pages/TournamentProgressView.vue'),
+        },
+        {
+          path: 'results',
+          name: 'tournament-results',
+          component: () => import('@/pages/TournamentProgressView.vue'),
+        },
+        {
+          path: 'attendees',
+          redirect: (to) => ({ name: 'tournament-players', params: to.params }),
+        },
+        {
+          path: 'progress',
+          name: 'tournament-progress',
+          redirect: (to) => ({ name: 'tournament-bracket', params: to.params }),
+        },
+      ],
     },
     {
       path: '/users',

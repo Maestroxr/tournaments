@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
 import UserQuickView from './UserQuickView.vue'
@@ -23,6 +24,7 @@ interface Tournament {
 }
 defineProps<{ tournament: Tournament }>()
 const { t } = useI18n()
+const router = useRouter()
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduledYet')
@@ -57,11 +59,28 @@ function primaryActionLabel(state: string) {
 function primaryActionTo(tournament: Tournament) {
   return `/tournaments/${tournament.id}${tournament.state === 'draft' ? '?edit=1' : ''}`
 }
+
+function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournament) {
+  const target = event.target
+  const interactiveTarget =
+    target instanceof Element
+      ? target.closest('a, button, input, select, textarea, [role="button"], [role="link"]')
+      : null
+  if (interactiveTarget && interactiveTarget !== event.currentTarget) {
+    return
+  }
+  void router.push(primaryActionTo(tournament))
+}
 </script>
 
 <template>
   <article
-    class="group flex h-full flex-col rounded-lg border border-zinc-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
+    role="link"
+    tabindex="0"
+    :aria-label="`${primaryActionLabel(tournament.state)}: ${tournament.name}`"
+    class="group flex h-full cursor-pointer flex-col rounded-lg border border-zinc-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+    @click="openTournament($event, tournament)"
+    @keydown.enter="openTournament($event, tournament)"
   >
     <div class="flex items-start justify-between gap-3">
       <div class="min-w-0">

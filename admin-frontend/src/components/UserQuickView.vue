@@ -78,7 +78,7 @@ function scheduleClose() {
           <Button icon="bi bi-x" text rounded severity="secondary" :aria-label="t('users.closeDetails')" @click="open = false" />
         </span>
         <span class="block space-y-1 text-xs text-zinc-600">
-          <span class="block"><span class="font-medium text-zinc-800">{{ t('users.emailLabel') }}</span> {{ user.email || t('common.noEmail') }}</span>
+          <span class="block"><span class="font-medium text-zinc-800">{{ t('users.phoneLabel') }}</span> {{ user.phone_number || t('common.noPhone') }}</span>
           <span class="block"><span class="font-medium text-zinc-800">{{ t('users.roleLabel') }}</span> {{ user.is_staff ? t('common.staff') : t('common.user') }}</span>
           <span class="block"><span class="font-medium text-zinc-800">{{ t('users.statusLabel') }}</span> {{ user.is_active ? t('common.active') : t('common.inactive') }}</span>
         </span>

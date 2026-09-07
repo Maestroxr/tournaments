@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { tournamentStateLabel } from '@/utils/adminLabels'
 
-defineProps<{ state: string }>()
+defineProps<{ state: string; label?: string }>()
 
 function badgeClass(state: string) {
   if (state === 'draft') return 'border-zinc-200 bg-zinc-100 text-zinc-700'
@@ -20,6 +20,6 @@ function badgeClass(state: string) {
       badgeClass(state),
     ]"
   >
-    {{ tournamentStateLabel(state) }}
+    {{ label || tournamentStateLabel(state) }}
   </span>
 </template>

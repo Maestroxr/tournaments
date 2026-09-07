@@ -1,129 +1,361 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
-import Tag from 'primevue/tag'
 import AppAlert from '@/components/AppAlert.vue'
+import AttendeeOperationsRow, {
+  type OperationalAttendee,
+} from '@/components/tournament/AttendeeOperationsRow.vue'
+import AttendeeUserRow from '@/components/tournament/AttendeeUserRow.vue'
+import WalletTopUpDialog from '@/components/tournament/WalletTopUpDialog.vue'
+import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import { useI18n } from '@/i18n'
-
-interface Participant {
-  id: number
-  name: string
-  user_id: number | null
-}
+import { apiFetch, ApiError, formatApiError } from '@/services/api'
 
 interface AvailableUser {
   id: number
   username: string
-  email?: string
+  phone_number?: string
+  balance?: string | null
+}
+
+interface RegistrationSummary {
+  registered: number
+  checked_in: number
+  unpaid: number
+  waitlisted: number
+  attention: number
+  ready: number
+}
+
+interface TournamentData {
+  state: string
+  lifecycle_state?: string
+  registration_open?: boolean
+  registration_closed_reason?: string
+  draw_confirmed_at?: string | null
+  registration_summary?: RegistrationSummary
+  entry_fee: string
+  max_players: number | null
 }
 
 interface AttendeesResponse {
-  participants: Participant[]
+  participants: OperationalAttendee[]
   available: AvailableUser[]
+  summary?: RegistrationSummary
+  tournament: TournamentData
 }
 
+const emptySummary = (): RegistrationSummary => ({
+  registered: 0,
+  checked_in: 0,
+  unpaid: 0,
+  waitlisted: 0,
+  attention: 0,
+  ready: 0,
+})
 const route = useRoute()
+const workspace = useTournamentWorkspace()
+const { t, locale } = useI18n()
 const id = String(route.params.id)
 const loading = ref(true)
 const error = ref('')
-const participants = ref<Participant[]>([])
+const success = ref('')
+const balanceError = ref('')
+const participants = ref<OperationalAttendee[]>([])
 const available = ref<AvailableUser[]>([])
+const summary = ref<RegistrationSummary>(emptySummary())
+const tournament = ref<TournamentData | null>(null)
 const q = ref('')
-const newName = ref('')
-const { t } = useI18n()
+const filter = ref<'all' | 'attention' | 'registered' | 'waitlisted' | 'checked_in'>('all')
+const selected = ref<number[]>([])
+const pendingAction = ref<string | null>(null)
+const topUpUser = ref<AvailableUser | null>(null)
+
+const entryFee = computed(() => Number(tournament.value?.entry_fee ?? 0))
+const isOpen = computed(() => tournament.value?.registration_open ?? tournament.value?.state === 'open')
+const isFull = computed(() =>
+  tournament.value?.max_players != null && summary.value.registered >= tournament.value.max_players,
+)
+const canAdd = computed(() =>
+  tournament.value?.state === 'open' && pendingAction.value === null && !loading.value,
+)
+const canChangeRoster = computed(() =>
+  tournament.value?.state === 'open' &&
+  !tournament.value?.draw_confirmed_at &&
+  (isOpen.value || tournament.value?.registration_closed_reason === 'capacity'),
+)
+const canPromote = computed(() => canChangeRoster.value && !isFull.value)
+const filteredParticipants = computed(() => participants.value.filter((participant) => {
+  if (filter.value === 'attention') return participant.requires_attention
+  if (filter.value === 'registered') return participant.status === 'registered'
+  if (filter.value === 'waitlisted') return participant.status === 'waitlisted'
+  if (filter.value === 'checked_in') return Boolean(participant.checked_in_at)
+  return true
+}))
+const allVisibleSelected = computed(() =>
+  filteredParticipants.value.length > 0 &&
+  filteredParticipants.value.every(participant => selected.value.includes(participant.id)),
+)
+const selectedRegistered = computed(() => participants.value.filter(
+  participant => selected.value.includes(participant.id) && participant.status === 'registered',
+))
+const feeLabel = computed(() => entryFee.value.toLocaleString(
+  locale.value === 'he' ? 'he-IL' : 'en-US', { maximumFractionDigits: 2 },
+))
+const csvUrl = computed(() => {
+  const query = q.value.trim() ? `&q=${encodeURIComponent(q.value.trim())}` : ''
+  return `/tournaments-api/admin/tournaments/${id}/attendees?format=csv${query}`
+})
+const filters = computed(() => [
+  { id: 'all' as const, label: t('attendees.filterAll'), count: participants.value.length },
+  { id: 'attention' as const, label: t('attendees.filterAttention'), count: summary.value.attention },
+  { id: 'registered' as const, label: t('attendees.filterRegistered'), count: summary.value.registered },
+  { id: 'waitlisted' as const, label: t('attendees.filterWaitlisted'), count: summary.value.waitlisted },
+  { id: 'checked_in' as const, label: t('attendees.filterCheckedIn'), count: summary.value.checked_in },
+])
 
 async function load() {
   loading.value = true
   error.value = ''
+  balanceError.value = ''
   try {
     const qs = q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''
     const data = await apiFetch<AttendeesResponse>(`/api/admin/tournaments/${id}/attendees${qs}`)
     participants.value = data.participants
     available.value = data.available
-  } catch (e: unknown) { error.value = formatApiError(e) }
-  finally { loading.value = false }
+    tournament.value = data.tournament
+    summary.value = data.summary ?? data.tournament.registration_summary ?? {
+      ...emptySummary(), registered: data.participants.filter(item => item.status === 'registered').length,
+    }
+    selected.value = selected.value.filter(participantId =>
+      participants.value.some(participant => participant.id === participantId),
+    )
+    if (available.value.some(user => user.balance == null)) {
+      try {
+        const users = await apiFetch<{ id: number; balance: string }[]>(`/api/admin/users${qs}`)
+        const balances = new Map(users.map(user => [user.id, user.balance]))
+        available.value = available.value.map(user => ({
+          ...user,
+          balance: user.balance ?? balances.get(user.id) ?? null,
+        }))
+      } catch {
+        balanceError.value = t('attendees.balanceLoadFailed')
+      }
+    }
+  } catch (caught: unknown) {
+    error.value = formatApiError(caught)
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(load)
 
-async function addUser(uid: number) {
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ user_id: uid }) }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
+function setSelected(participantId: number, value: boolean) {
+  selected.value = value
+    ? [...new Set([...selected.value, participantId])]
+    : selected.value.filter(idValue => idValue !== participantId)
 }
-async function addVirtual() {
-  if (!newName.value.trim()) return
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees`, { method: 'POST', body: JSON.stringify({ name: newName.value.trim() }) }); newName.value=''; await load() } catch (e: unknown) { error.value = formatApiError(e) }
+function toggleVisible() {
+  const visibleIds = filteredParticipants.value.map(participant => participant.id)
+  selected.value = allVisibleSelected.value
+    ? selected.value.filter(idValue => !visibleIds.includes(idValue))
+    : [...new Set([...selected.value, ...visibleIds])]
 }
-async function remove(pid: number) {
-  try { await apiFetch(`/api/admin/tournaments/${id}/attendees?participant_id=${pid}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
+
+async function runAction(action: string, participantIds = selected.value, extra = {}) {
+  if (!participantIds.length || pendingAction.value) return
+  if (['withdraw', 'disqualify'].includes(action) && !confirm(t('attendees.confirmRosterRemoval'))) return
+  pendingAction.value = `${action}-${participantIds.join('-')}`
+  error.value = ''
+  success.value = ''
+  try {
+    await apiFetch(`/api/admin/tournaments/${id}/attendees`, {
+      method: 'PATCH',
+      body: JSON.stringify({ participant_ids: participantIds, action, ...extra }),
+    })
+    await load()
+    await workspace?.refresh()
+    success.value = t('attendees.operationSaved', { count: participantIds.length })
+    if (['withdraw', 'disqualify', 'promote', 'restore'].includes(action)) selected.value = []
+  } catch (caught: unknown) {
+    error.value = formatApiError(caught)
+  } finally {
+    pendingAction.value = null
+  }
+}
+
+async function saveNote(participantId: number, note: string) {
+  await runAction('update_note', [participantId], { note })
+}
+
+async function addUser(userId: number) {
+  const user = available.value.find(item => item.id === userId)
+  if (!canAdd.value || !user) return
+  const waitlist = isFull.value || !isOpen.value
+  if (!waitlist && entryFee.value > 0 && (
+    user.balance == null ||
+    !Number.isFinite(Number(user.balance)) ||
+    Math.round(Number(user.balance) * 100) < Math.round(entryFee.value * 100)
+  )) return
+  pendingAction.value = `user-${userId}`
+  error.value = ''
+  success.value = ''
+  try {
+    await apiFetch(`/api/admin/tournaments/${id}/attendees`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, waitlist }),
+    })
+    await load()
+    await workspace?.refresh()
+    success.value = t(waitlist ? 'attendees.waitlistAdded' : 'attendees.playerAdded', { name: user.username })
+  } catch (caught: unknown) {
+    if (caught instanceof ApiError && /insufficient[_ ](?:funds|balance)/i.test(caught.body)) {
+      await load()
+      error.value = t('attendees.fundingChanged', { name: user.username })
+    } else error.value = formatApiError(caught)
+  } finally {
+    pendingAction.value = null
+  }
+}
+
+async function topUpSaved(balance: string) {
+  const user = topUpUser.value
+  if (!user) return
+  user.balance = balance
+  topUpUser.value = null
+  await load()
+  success.value = t('attendees.topUpSaved', { name: user.username })
 }
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-4xl">
-    <header class="mb-5 flex flex-wrap items-end justify-between gap-3">
+  <div class="attendees-page mx-auto w-full max-w-6xl">
+    <header class="attendees-heading">
       <div>
-        <p class="text-xs font-semibold tracking-wide text-zinc-500 uppercase">{{ t('tournaments.tournamentNumber', { id }) }}</p>
-        <h1 class="text-2xl font-bold text-black">{{ t('attendees.manage') }}</h1>
-        <p class="mt-1 text-sm text-zinc-600">{{ t('attendees.subtitle') }}</p>
+        <p class="attendees-heading__eyebrow">{{ t('attendees.operationsEyebrow') }}</p>
+        <h2>{{ t('attendees.manage') }}</h2>
+        <p>{{ t('attendees.subtitle') }}</p>
       </div>
-      <RouterLink :to="`/tournaments/${id}`" class="text-sm font-medium text-zinc-600 hover:text-black hover:underline"><i class="bi bi-arrow-left mr-1" aria-hidden="true"></i>{{ t('attendees.backToTournament') }}</RouterLink>
+      <div class="attendees-heading__actions">
+        <a :href="csvUrl" class="export-link" download>
+          <i class="bi bi-download" aria-hidden="true"></i>{{ t('attendees.exportCsv') }}
+        </a>
+        <Button :label="t('common.refresh')" icon="bi bi-arrow-clockwise" size="small" severity="secondary" outlined :disabled="pendingAction !== null" @click="load" />
+      </div>
     </header>
 
-    <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">{{ t('common.loading') }}</div>
-    <div v-else>
-      <AppAlert v-if="error" class="mb-3" type="error" :message="error" dismissible @close="error = ''" />
+    <div v-if="loading" class="attendees-loading">
+      <i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span>{{ t('common.loading') }}</span>
+    </div>
+    <div v-else class="attendees-content">
+      <AppAlert v-if="error" type="error" :message="error" dismissible @close="error = ''" />
+      <AppAlert v-if="success" type="success" :message="success" dismissible @close="success = ''" />
+      <AppAlert v-if="balanceError" type="error" :message="balanceError" />
 
-      <section class="mb-6" aria-labelledby="registered-heading">
-        <div class="mb-3 flex items-center justify-between">
-          <div>
-            <h2 id="registered-heading" class="text-lg font-semibold text-black">{{ t('attendees.registered') }}</h2>
-            <p class="text-sm text-zinc-500">{{ t('attendees.currentCount', { count: participants.length }) }}</p>
-          </div>
-          <Tag :value="t('attendees.registeredCount', { count: participants.length })" severity="secondary" />
-        </div>
-        <div class="overflow-hidden rounded-lg border border-zinc-200 bg-white">
-          <div v-if="participants.length===0" class="px-4 py-10 text-center text-sm text-zinc-500">{{ t('attendees.empty') }}</div>
-          <div v-for="p in participants" v-else :key="p.id" class="flex items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3 last:border-0">
-            <div class="flex min-w-0 items-center gap-3">
-              <span :class="['inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full', p.user_id ? 'bg-zinc-900 text-white' : 'bg-zinc-100 text-zinc-600']"><i :class="p.user_id ? 'bi bi-person-fill' : 'bi bi-person'" aria-hidden="true"></i></span>
-              <div class="min-w-0">
-                <p class="truncate text-sm font-semibold text-black">{{ p.name }}</p>
-                <p class="text-xs text-zinc-500">{{ p.user_id ? t('attendees.registeredUser') : t('attendees.virtualAttendee') }}</p>
-              </div>
-            </div>
-            <Button icon="bi bi-x-lg" text rounded severity="danger" :aria-label="t('attendees.remove')" @click="remove(p.id)" />
-          </div>
-        </div>
+      <section class="readiness-grid" :aria-label="t('attendees.readinessSummary')">
+        <article><span><i class="bi bi-people"></i></span><strong>{{ summary.registered }}</strong><p>{{ t('attendees.summaryRegistered') }}</p></article>
+        <article><span><i class="bi bi-person-check"></i></span><strong>{{ summary.checked_in }}/{{ summary.registered }}</strong><p>{{ t('attendees.summaryCheckedIn') }}</p></article>
+        <article :class="{ 'metric--attention': summary.unpaid > 0 }"><span><i class="bi bi-wallet2"></i></span><strong>{{ summary.unpaid }}</strong><p>{{ t('attendees.summaryUnpaid') }}</p></article>
+        <article :class="{ 'metric--attention': summary.waitlisted > 0 }"><span><i class="bi bi-hourglass-split"></i></span><strong>{{ summary.waitlisted }}</strong><p>{{ t('attendees.summaryWaitlisted') }}</p></article>
+        <article :class="summary.attention ? 'metric--attention' : 'metric--ready'"><span><i class="bi bi-flag"></i></span><strong>{{ summary.attention }}</strong><p>{{ t('attendees.summaryAttention') }}</p></article>
       </section>
 
-      <section aria-labelledby="add-attendees-heading">
-        <div class="mb-3">
-          <h2 id="add-attendees-heading" class="text-lg font-semibold text-black">{{ t('attendees.add') }}</h2>
-          <p class="text-sm text-zinc-500">{{ t('attendees.addSubtitle') }}</p>
-        </div>
-        <div class="rounded-lg border border-zinc-200 bg-white p-4">
-        <div class="mb-3 flex gap-2">
-          <InputText v-model="q" :placeholder="t('attendees.searchUsers')" class="min-w-0 flex-1" @keydown.enter="load" />
-          <Button :label="t('common.search')" severity="contrast" @click="load" />
-        </div>
-        <div class="mb-4 border-y border-zinc-100">
-          <div v-for="u in available" :key="u.id" class="flex items-center justify-between gap-3 py-2.5">
-            <div class="min-w-0">
-              <p class="truncate text-sm font-medium text-black">{{ u.username }}</p>
-              <p class="truncate text-xs text-zinc-500">{{ u.email || t('attendees.noEmailAddress') }}</p>
-            </div>
-            <Button icon="bi bi-person-plus" :label="t('attendees.addUser')" size="small" severity="secondary" outlined @click="addUser(u.id)" />
+      <div class="fee-strip">
+        <span><i class="bi bi-cash-coin"></i></span>
+        <div><strong>{{ t('attendees.entryFee', { amount: feeLabel }) }}</strong><p>{{ t(entryFee > 0 ? 'attendees.chargeHint' : 'attendees.freeEntry') }}</p></div>
+      </div>
+
+      <AppAlert v-if="!isOpen" type="warning" :message="t(isFull ? 'attendees.capacityWaitlistHint' : 'attendees.registrationClosedOperations')" />
+
+      <section class="roster-panel" aria-labelledby="registered-heading">
+        <header class="roster-panel__header">
+          <div><p class="panel-eyebrow">{{ t('attendees.rosterEyebrow') }}</p><h3 id="registered-heading">{{ t('attendees.registered') }}</h3></div>
+          <div class="roster-search"><InputText v-model="q" :placeholder="t('attendees.searchRoster')" @keydown.enter="load" /><Button icon="bi bi-search" severity="secondary" outlined :aria-label="t('common.search')" @click="load" /></div>
+        </header>
+
+        <nav class="roster-filters" :aria-label="t('attendees.filters')">
+          <button v-for="item in filters" :key="item.id" type="button" :class="{ active: filter === item.id }" @click="filter = item.id">{{ item.label }} <span>{{ item.count }}</span></button>
+        </nav>
+
+        <div v-if="selected.length" class="bulk-bar">
+          <label><input type="checkbox" :checked="allVisibleSelected" @change="toggleVisible" />{{ t('attendees.selectedCount', { count: selected.length }) }}</label>
+          <div>
+            <Button size="small" icon="bi bi-check2-circle" :label="t('attendees.checkIn')" severity="success" :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('check_in', selectedRegistered.map(item => item.id))" />
+            <Button size="small" icon="bi bi-cash-coin" :label="t('attendees.markPaid')" severity="warn" outlined :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('mark_paid', selectedRegistered.map(item => item.id))" />
+            <Button size="small" :label="t('attendees.waivePayment')" severity="secondary" outlined :disabled="!selectedRegistered.length || pendingAction !== null" @click="runAction('waive_payment', selectedRegistered.map(item => item.id))" />
+            <Button size="small" icon="bi bi-slash-circle" :label="t('attendees.disqualify')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="runAction('disqualify', selectedRegistered.map(item => item.id))" />
+            <Button size="small" icon="bi bi-person-x" :label="t('attendees.withdraw')" severity="danger" text :disabled="!selectedRegistered.length || !canChangeRoster || pendingAction !== null" @click="runAction('withdraw', selectedRegistered.map(item => item.id))" />
           </div>
-          <p v-if="available.length===0" class="py-4 text-sm text-zinc-500">{{ t('attendees.noAvailable') }}</p>
         </div>
-        <div class="flex flex-col gap-2 border-t border-zinc-100 pt-4 sm:flex-row">
-          <InputText v-model="newName" :placeholder="t('attendees.virtualName')" class="min-w-0 flex-1" @keydown.enter="addVirtual" />
-          <Button icon="bi bi-person-add" :label="t('attendees.addGuest')" severity="contrast" @click="addVirtual" />
+        <label v-else-if="filteredParticipants.length" class="select-visible"><input type="checkbox" :checked="allVisibleSelected" @change="toggleVisible" />{{ t('attendees.selectVisible') }}</label>
+
+        <div v-if="filteredParticipants.length" class="operations-list">
+          <AttendeeOperationsRow v-for="participant in filteredParticipants" :key="participant.id" :attendee="participant" :selected="selected.includes(participant.id)" :disabled="pendingAction !== null" :can-change-roster="canChangeRoster" :can-promote="canPromote" @select="setSelected" @action="runAction" @note="saveNote" />
         </div>
+        <div v-else class="empty-state"><i class="bi bi-person-plus"></i><p>{{ t('attendees.noMatchingParticipants') }}</p></div>
+      </section>
+
+      <section v-if="tournament?.state === 'open'" class="add-panel" aria-labelledby="add-attendees-heading">
+        <header><div><p class="panel-eyebrow">{{ t(isFull || !isOpen ? 'attendees.waitlistEyebrow' : 'attendees.registrationEyebrow') }}</p><h3 id="add-attendees-heading">{{ t(isFull || !isOpen ? 'attendees.addToWaitlist' : 'attendees.add') }}</h3><p>{{ t(isFull || !isOpen ? 'attendees.addWaitlistSubtitle' : 'attendees.addSubtitle') }}</p></div></header>
+        <div class="available-list">
+          <AttendeeUserRow v-for="user in available" :key="user.id" :user="user" :entry-fee="isFull || !isOpen ? 0 : entryFee" :disabled="!canAdd" :loading="pendingAction === `user-${user.id}`" @add="addUser" @top-up="topUpUser = user" />
+          <div v-if="available.length === 0" class="empty-state"><i class="bi bi-search"></i><p>{{ t('attendees.noAvailable') }}</p></div>
         </div>
       </section>
     </div>
+
+    <WalletTopUpDialog v-if="topUpUser" :key="topUpUser.id" :user="topUpUser" :entry-fee="entryFee" @close="topUpUser = null" @saved="topUpSaved" />
   </div>
 </template>
+
+<style scoped>
+.attendees-page { padding-block: 8px 32px; }
+.attendees-content { display: grid; gap: 16px; }
+.attendees-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid #263653; }
+.attendees-heading h2 { margin: 2px 0 0; color: #eef3ff; font-size: 22px; font-weight: 750; }
+.attendees-heading p:not(.attendees-heading__eyebrow) { margin: 5px 0 0; color: #92a5c0; font-size: 13px; }
+.attendees-heading__eyebrow, .panel-eyebrow { margin: 0; color: #6faeea; font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.attendees-heading__actions { display: flex; gap: 8px; }
+.export-link { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 11px; border: 1px solid #3b4d6b; border-radius: 8px; color: #c6d4e8; font-size: 12px; font-weight: 650; }
+.export-link:hover { border-color: #659bd2; color: #e7f2ff; }
+.readiness-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.readiness-grid article { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 2px 10px; min-height: 86px; padding: 14px; border: 1px solid #2c3d59; border-radius: 12px; background: #111b2f; }
+.readiness-grid article > span { grid-row: 1 / 3; display: grid; width: 34px; height: 34px; place-items: center; border-radius: 9px; background: #243754; color: #9dccff; }
+.readiness-grid strong { color: #f0f5ff; font-size: 20px; line-height: 1; }
+.readiness-grid p { margin: 3px 0 0; color: #8295b2; font-size: 10px; }
+.readiness-grid .metric--attention { border-color: #66512d; }
+.readiness-grid .metric--attention > span { background: #45391f; color: #efc969; }
+.readiness-grid .metric--ready { border-color: #285e50; }
+.readiness-grid .metric--ready > span { background: #1b4b40; color: #7ee0ba; }
+.fee-strip { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: 1px solid #2b3d5a; border-radius: 11px; background: #152139; }
+.fee-strip > span { color: #82bdf5; }
+.fee-strip strong { color: #eaf2ff; font-size: 13px; }
+.fee-strip p { margin: 2px 0 0; color: #879ab6; font-size: 11px; }
+.roster-panel, .add-panel { overflow: hidden; border: 1px solid #293b59; border-radius: 14px; background: #0f192c; }
+.roster-panel__header, .add-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px 18px; border-bottom: 1px solid #263751; background: #131f35; }
+.roster-panel h3, .add-panel h3 { margin: 3px 0 0; color: #eef4ff; font-size: 16px; font-weight: 700; }
+.add-panel header p:not(.panel-eyebrow) { margin: 4px 0 0; color: #879ab5; font-size: 11px; }
+.roster-search { display: flex; gap: 6px; }
+.roster-search :deep(input) { width: 210px; border-color: #344762; background: #0d1728; color: #e3ecf9; font-size: 12px; }
+.roster-filters { display: flex; gap: 6px; overflow-x: auto; padding: 11px 16px; border-bottom: 1px solid #21324b; }
+.roster-filters button { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 6px 9px; border: 1px solid transparent; border-radius: 8px; color: #8fa2bd; font-size: 11px; font-weight: 650; }
+.roster-filters button span { display: grid; min-width: 19px; height: 19px; place-items: center; border-radius: 999px; background: #263750; color: #bfd0e6; font-size: 9px; }
+.roster-filters button.active { border-color: #37628d; background: #1d3652; color: #c8e4ff; }
+.bulk-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 16px 0; padding: 10px 12px; border: 1px solid #365a7d; border-radius: 10px; background: #162d46; }
+.bulk-bar label, .select-visible { display: flex; align-items: center; gap: 8px; color: #c3d9ef; font-size: 11px; font-weight: 650; }
+.bulk-bar label input, .select-visible input { width: 15px; height: 15px; accent-color: #60a5fa; }
+.bulk-bar > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.select-visible { width: fit-content; margin: 12px 16px 0; }
+.operations-list { display: grid; gap: 9px; padding: 12px 16px 16px; }
+.available-list { padding: 4px 16px 12px; }
+.empty-state { display: grid; justify-items: center; gap: 7px; padding: 30px; color: #7186a5; text-align: center; }
+.empty-state i { font-size: 23px; }
+.empty-state p { margin: 0; font-size: 12px; }
+.attendees-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 220px; color: #879ab7; }
+.attendees-loading i { animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 900px) { .readiness-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .bulk-bar { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 600px) { .attendees-heading { flex-direction: column; } .attendees-heading__actions { width: 100%; } .attendees-heading__actions > * { flex: 1; justify-content: center; } .readiness-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .roster-panel__header { align-items: stretch; flex-direction: column; } .roster-search :deep(input) { width: 100%; } .roster-search { width: 100%; } .roster-search :deep(.p-inputtext) { flex: 1; } .bulk-bar > div :deep(.p-button) { flex: 1; } }
+</style>
