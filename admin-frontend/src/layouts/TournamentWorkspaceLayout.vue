@@ -3,6 +3,7 @@ import { computed, provide, ref, watch } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentStatusBadge from '@/components/TournamentStatusBadge.vue'
+import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
 import TournamentWorkspaceSidebar from '@/components/tournament/TournamentWorkspaceSidebar.vue'
 import { apiFetch, formatApiError } from '@/services/api'
 import {
@@ -47,23 +48,33 @@ watch(id, () => void load(), { immediate: true })
     />
 
     <section class="tournament-workspace-content">
-      <header class="tournament-workspace-header">
-        <div class="min-w-0">
-          <p class="tournament-workspace-header__eyebrow">
-            {{ t('tournamentWorkspace.tournamentNumber', { id }) }}
-          </p>
-          <div class="tournament-workspace-header__title-row">
-            <h1>{{ tournament?.name ?? t('tournamentWorkspace.title') }}</h1>
-            <TournamentStatusBadge v-if="tournament" :state="tournament.state" />
+      <section class="tournament-workspace-summary">
+        <header class="tournament-workspace-header">
+          <div class="min-w-0">
+            <p class="tournament-workspace-header__eyebrow">
+              {{ t('tournamentWorkspace.tournamentNumber', { id }) }}
+            </p>
+            <div class="tournament-workspace-header__title-row">
+              <h1>{{ tournament?.name ?? t('tournamentWorkspace.title') }}</h1>
+              <TournamentStatusBadge v-if="tournament" :state="tournament.state" />
+            </div>
           </div>
-        </div>
-        <div v-if="tournament" class="tournament-workspace-header__players">
-          <i class="bi bi-people" aria-hidden="true"></i>
-          <span>{{
-            t('tournamentWorkspace.playerCount', { count: tournament.participant_count })
-          }}</span>
-        </div>
-      </header>
+          <div v-if="tournament" class="tournament-workspace-header__players">
+            <i class="bi bi-people" aria-hidden="true"></i>
+            <span>{{
+              t('tournamentWorkspace.playerCount', { count: tournament.participant_count })
+            }}</span>
+          </div>
+        </header>
+        <TournamentProgress
+          v-if="tournament"
+          embedded
+          :state="tournament.state"
+          :lifecycle-state="tournament.lifecycle_state"
+          :participant-count="tournament.participant_count"
+          :min-players="tournament.min_players"
+        />
+      </section>
 
       <div v-if="loading" class="tournament-workspace-loading" role="status">
         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
@@ -90,17 +101,20 @@ watch(id, () => void load(), { immediate: true })
   margin: 0 auto;
 }
 .tournament-workspace-content { min-width: 0; }
+.tournament-workspace-summary {
+  overflow: hidden;
+  margin-bottom: 24px;
+  border: 1px solid #263653;
+  border-radius: 14px;
+  background: linear-gradient(120deg, #111d33, #10182b);
+}
 .tournament-workspace-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
   min-height: 88px;
-  margin-bottom: 24px;
   padding: 18px 22px;
-  border: 1px solid #263653;
-  border-radius: 14px;
-  background: linear-gradient(120deg, #111d33, #10182b);
 }
 .tournament-workspace-header__eyebrow {
   margin-bottom: 5px;

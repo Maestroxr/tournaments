@@ -9,7 +9,6 @@ import TournamentFixtureCard from '@/components/TournamentFixtureCard.vue'
 import TournamentLiveAttention from '@/components/tournament/TournamentLiveAttention.vue'
 import TournamentLiveMatchGroup from '@/components/tournament/TournamentLiveMatchGroup.vue'
 import TournamentBracketMatch from '@/components/tournament/TournamentBracketMatch.vue'
-import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
 import TournamentMatchDialog from '@/components/tournament/TournamentMatchDialog.vue'
 import { apiFetch, ApiError } from '@/services/api'
 import { useI18n } from '@/i18n'
@@ -124,19 +123,10 @@ describe('Tournament workspace', () => {
     expect(wrapper.findComponent(TournamentMatchDialog).exists()).toBe(false)
   })
 
-  it.each(['live', 'bracket', 'standings'])('keeps the tournament stages visible in the %s view', async tab => {
-    const { wrapper } = await view(`/tournaments/20/${tab}`)
-    const progress = wrapper.getComponent(TournamentProgress)
-    expect(progress.props('state')).toBe('active')
-    expect(progress.findAll('[data-pc-name="step"]')).toHaveLength(5)
-    expect(progress.get('.tournament-progress__current').text()).toBe('Live matches')
-  })
-
   it('shows the actual final podium and does not open a live socket for a finished tournament', async () => {
     api.mockResolvedValue({ ...progress(), tournament: { ...progress().tournament, state: 'finished', lifecycle_state: 'finished' }, is_finished: true, podium: [{ id: 1, name: 'Winner Dana' }] })
     const { wrapper } = await view('/tournaments/20/results')
     expect(wrapper.text()).toContain('Winner Dana')
-    expect(wrapper.getComponent(TournamentProgress).get('.tournament-progress__current').text()).toBe('Complete')
     expect(wrapper.text()).not.toContain('Periodic updates')
     expect(Socket).not.toHaveBeenCalled()
   })

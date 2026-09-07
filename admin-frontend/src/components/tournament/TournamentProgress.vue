@@ -8,6 +8,7 @@ const props = defineProps<{
   lifecycleState?: string
   participantCount: number
   minPlayers?: number
+  embedded?: boolean
 }>()
 const { t } = useI18n()
 const steps = [
@@ -71,7 +72,10 @@ const hint = computed(() => {
 </script>
 
 <template>
-  <section class="tournament-progress" :aria-label="t('tournamentProgress.title')">
+  <section
+    :class="['tournament-progress', { 'tournament-progress--embedded': embedded }]"
+    :aria-label="t('tournamentProgress.title')"
+  >
     <header class="tournament-progress__header">
       <h2>{{ t('tournamentProgress.title') }}</h2>
       <span class="tournament-progress__current" aria-live="polite">{{ currentLabel }}</span>
@@ -123,6 +127,15 @@ const hint = computed(() => {
   font-size: 12px;
   line-height: 1.6;
 }
+.tournament-progress--embedded {
+  padding: 18px 22px 20px;
+  border: 0;
+  border-top: 1px solid #263653;
+  border-radius: 0;
+  background: rgb(8 16 31 / 28%);
+}
+.tournament-progress--embedded .tournament-progress__header { margin-bottom: 16px; }
+.tournament-progress--embedded .tournament-progress__hint { margin-top: 14px; padding-top: 10px; }
 @media (max-width: 540px) {
   .tournament-progress {
     padding: 18px 12px;

@@ -3,7 +3,6 @@ import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, ApiError, formatApiError } from '@/services/api'
 import AppAlert from '@/components/AppAlert.vue'
-import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
 import TournamentMatchSummary from '@/components/tournament/TournamentMatchSummary.vue'
 import TournamentMatchesPanel from '@/components/tournament/TournamentMatchesPanel.vue'
 import TournamentStandingsPanel from '@/components/tournament/TournamentStandingsPanel.vue'
@@ -102,9 +101,14 @@ async function load(initial = false) {
   if (initial) loading.value = true
   else refreshing.value = true
   try {
+    const previousState = data.value?.tournament.state
+    const previousLifecycleState = data.value?.tournament.lifecycle_state
     const result = await apiFetch<TournamentProgressData>(`/api/admin/tournaments/${id}/progress`)
     if (disposed) return
     data.value = result
+    if (!initial && (previousState !== result.tournament.state || previousLifecycleState !== result.tournament.lifecycle_state)) {
+      await workspace?.refresh()
+    }
     if (result.is_finished) closeSocket()
     error.value = ''
     lastUpdatedAt.value = new Date()
@@ -251,13 +255,6 @@ onBeforeUnmount(() => {
       <Button v-if="!loading && !data" :label="t('common.refresh')" severity="secondary" outlined :loading="refreshing" @click="load()" />
 
       <template v-if="data">
-        <TournamentProgress
-          class="mt-6"
-          :state="data.tournament.state"
-          :lifecycle-state="data.tournament.lifecycle_state"
-          :participant-count="data.tournament.participant_count"
-          :min-players="data.tournament.min_players"
-        />
         <div class="workspace-toolbar">
           <h2>{{ t(`tournamentWorkspace.${selectedView}`) }}</h2>
           <div class="flex flex-wrap items-center gap-3 text-xs text-zinc-500" role="status">

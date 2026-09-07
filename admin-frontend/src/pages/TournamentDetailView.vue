@@ -9,7 +9,6 @@ import Textarea from 'primevue/textarea'
 import TournamentMetaFields from '@/components/TournamentMetaFields.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentMetaItem from '@/components/TournamentMetaItem.vue'
-import TournamentProgress from '@/components/tournament/TournamentProgress.vue'
 import TournamentActions from '@/components/tournament/TournamentActions.vue'
 import TournamentAttentionPanel, {
   type TournamentAttentionItem,
@@ -535,8 +534,6 @@ function podiumLabel(reference: string, index: number) {
           <UserQuickView :user-id="t.creator_id" :username="t.creator || 'Unknown user'" />
         </p>
       </header>
-
-      <TournamentProgress :state="t.state" :lifecycle-state="t.lifecycle_state" :participant-count="t.participant_count" :min-players="t.min_players" />
 
       <TournamentActions
         v-if="isOverviewRoute"
