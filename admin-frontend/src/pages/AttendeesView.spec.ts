@@ -61,7 +61,7 @@ describe('AttendeesView', () => {
     expect(wrapper.getComponent(AttendeeUserRow).props('user').id).toBe(8)
   })
 
-  it('refreshes the balance after a deposit without registering automatically', async () => {
+  it('opens the charge confirmation immediately after a successful top-up', async () => {
     api.mockResolvedValueOnce(response()).mockResolvedValueOnce(response('50.00'))
     const wrapper = view()
     await flushPromises()
@@ -71,8 +71,34 @@ describe('AttendeesView', () => {
     await flushPromises()
     expect(wrapper.findComponent(WalletTopUpDialog).exists()).toBe(false)
     expect(wrapper.getComponent(AttendeeUserRow).props('user').balance).toBe('50.00')
-    expect(wrapper.get('[aria-label="Add Dana"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.getComponent(AddPlayerDialog).props('user')).toMatchObject({ id: 7, balance: '50.00' })
     expect(api.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
+  })
+
+  it('keeps the manager choice to charge a returning player after top-up', async () => {
+    const returning = (balance: string) => ({
+      participants: [{
+        id: 11, name: 'Dana', username: 'Dana', user_id: 7,
+        status: 'withdrawn', payment_status: 'paid',
+      }],
+      available: [{ id: 7, username: 'Dana', balance }],
+      tournament: { state: 'open', entry_fee: '50.00', max_players: 8 },
+    })
+    api.mockResolvedValueOnce(returning('20.00')).mockResolvedValueOnce(returning('50.00'))
+    const wrapper = view()
+    await flushPromises()
+
+    wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
+    await flushPromises()
+    wrapper.getComponent(AddPlayerDialog).vm.$emit('topUp', true)
+    await flushPromises()
+    wrapper.getComponent(WalletTopUpDialog).vm.$emit('saved', '50.00')
+    await flushPromises()
+
+    expect(wrapper.getComponent(AddPlayerDialog).props()).toMatchObject({
+      previouslyPaid: true,
+      initialChargeAgain: true,
+    })
   })
 
   it('shows the charge confirmation before adding a funded player', async () => {

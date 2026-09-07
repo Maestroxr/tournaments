@@ -903,11 +903,11 @@ export const messages = {
       topUp: 'Add balance',
       topUpFor: 'Add balance for {name}',
       topUpHint:
-        'The missing amount is filled in. This credits the wallet; adding the player is a separate action.',
+        'The missing amount is filled in. After adding the balance, review and confirm the tournament registration.',
       balanceAfter: 'Expected balance after adding: {amount}',
-      confirmTopUp: 'Confirm added balance',
+      confirmTopUp: 'Add balance and continue',
       topUpSaved:
-        'Balance added for {name}. You can now add the player if the balance covers the entry fee.',
+        'Balance added for {name}. Review and confirm the tournament registration.',
       topUpUncertain:
         'The balance update could not be confirmed. Close this window and refresh the balance before trying again, to avoid a duplicate credit.',
       manage: 'Manage attendees',
@@ -1894,10 +1894,10 @@ export const messages = {
       topUp: 'הוספת יתרה',
       topUpFor: 'הוספת יתרה לשחקן {name}',
       topUpHint:
-        'הסכום החסר כבר מופיע בשדה. הפעולה תזכה את הארנק; הוספת השחקן לטורניר נעשית בנפרד.',
+        'הסכום החסר כבר מופיע בשדה. לאחר הוספת היתרה יוצג אישור לחיוב ולהוספת השחקן לטורניר.',
       balanceAfter: 'יתרה צפויה לאחר ההוספה: {amount}',
-      confirmTopUp: 'אישור הוספת יתרה',
-      topUpSaved: 'נוספה יתרה לשחקן {name}. אפשר להוסיף אותו לטורניר אם היתרה מספיקה לדמי הכניסה.',
+      confirmTopUp: 'הוספת יתרה והמשך',
+      topUpSaved: 'נוספה יתרה לשחקן {name}. כעת יש לבדוק ולאשר את ההוספה לטורניר.',
       topUpUncertain:
         'לא התקבל אישור לעדכון היתרה. יש לסגור את החלון ולרענן את היתרה לפני ניסיון נוסף, כדי למנוע זיכוי כפול.',
       manage: 'ניהול משתתפים',

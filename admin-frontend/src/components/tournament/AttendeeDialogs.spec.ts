@@ -61,4 +61,21 @@ describe('attendee confirmation dialogs', () => {
     await wrapper.get('.p-button-success').trigger('click')
     expect(wrapper.emitted('confirm')).toEqual([[true]])
   })
+
+  it('keeps the charge-again choice when continuing to add balance', async () => {
+    useI18n().locale.value = 'en'
+    const wrapper = mount(AddPlayerDialog, {
+      props: {
+        user: { id: 7, username: 'Dana', balance: '20.00' },
+        entryFee: 50,
+        previouslyPaid: true,
+        initialChargeAgain: true,
+      },
+      global: { plugins: [PrimeVue], stubs: { Dialog: dialogStub } },
+    })
+
+    expect(wrapper.getComponent(Checkbox).props('modelValue')).toBe(true)
+    await wrapper.get('.p-button-warn').trigger('click')
+    expect(wrapper.emitted('topUp')).toEqual([[true]])
+  })
 })

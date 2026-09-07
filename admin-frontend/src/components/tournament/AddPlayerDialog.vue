@@ -10,17 +10,18 @@ const props = defineProps<{
   user: { id: number; username: string; balance?: string | null }
   entryFee: number
   previouslyPaid?: boolean
+  initialChargeAgain?: boolean
   busy?: boolean
   error?: string
 }>()
-const emit = defineEmits<{ confirm: [chargeAgain: boolean]; cancel: []; topUp: [] }>()
+const emit = defineEmits<{ confirm: [chargeAgain: boolean]; cancel: []; topUp: [chargeAgain: boolean] }>()
 const { t, locale } = useI18n()
 const formatMoney = (value: number) => value.toLocaleString(
   locale.value === 'he' ? 'he-IL' : 'en-US',
   { minimumFractionDigits: 2, maximumFractionDigits: 2 },
 )
 const balance = computed(() => Number(props.user.balance ?? 0))
-const chargeAgain = ref(false)
+const chargeAgain = ref(Boolean(props.previouslyPaid && props.initialChargeAgain))
 const amountToCharge = computed(() => props.previouslyPaid && !chargeAgain.value ? 0 : props.entryFee)
 const sufficientBalance = computed(() => balance.value >= amountToCharge.value)
 const balanceAfter = computed(() => Math.max(0, balance.value - amountToCharge.value))
@@ -53,7 +54,7 @@ function cancel() { if (!props.busy) emit('cancel') }
     <template #footer>
       <div class="attendee-confirm-dialog__footer">
         <Button :label="t('common.cancel')" severity="secondary" outlined :disabled="busy" @click="cancel" />
-        <Button v-if="!sufficientBalance" :label="t('attendees.topUp')" icon="bi bi-wallet2" severity="warn" :disabled="busy" @click="emit('topUp')" />
+        <Button v-if="!sufficientBalance" :label="t('attendees.topUp')" icon="bi bi-wallet2" severity="warn" :disabled="busy" @click="emit('topUp', chargeAgain)" />
         <Button :label="t(previouslyPaid ? 'attendees.confirmRestoreAction' : 'attendees.confirmAddAction')" icon="bi bi-person-plus" severity="success" :loading="busy" :disabled="busy || !sufficientBalance" @click="emit('confirm', chargeAgain)" />
       </div>
     </template>

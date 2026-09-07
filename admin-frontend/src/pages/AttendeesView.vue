@@ -63,8 +63,10 @@ const tournament = ref<TournamentData | null>(null)
 const search = ref('')
 const pendingAction = ref<string | null>(null)
 const topUpUser = ref<AvailableUser | null>(null)
+const topUpChargeAgain = ref(false)
 const pendingUser = ref<AvailableUser | null>(null)
 const pendingPreviouslyPaid = ref(false)
+const pendingInitialChargeAgain = ref(false)
 const addDialogError = ref('')
 const removalRequest = ref<RosterAttendee[] | null>(null)
 const removalDialogError = ref('')
@@ -187,6 +189,7 @@ function requestAdd(userId: number) {
   )) return
   addDialogError.value = ''
   pendingPreviouslyPaid.value = previouslyPaid
+  pendingInitialChargeAgain.value = false
   pendingUser.value = user
 }
 
@@ -208,6 +211,7 @@ async function addUser(user: AvailableUser, chargeAgain: boolean) {
       body: JSON.stringify({ user_id: user.id, charge_again: chargeAgain }),
     })
     pendingUser.value = null
+    pendingInitialChargeAgain.value = false
     await load()
     await workspace?.refresh()
     success.value = t('attendees.playerAdded', { name: user.username })
@@ -215,6 +219,8 @@ async function addUser(user: AvailableUser, chargeAgain: boolean) {
     if (caught instanceof ApiError && /insufficient[_ ](?:funds|balance)/i.test(caught.body)) {
       await load()
       pendingUser.value = null
+      pendingInitialChargeAgain.value = false
+      topUpChargeAgain.value = chargeAgain
       topUpUser.value = available.value.find(item => item.id === user.id) ?? user
       error.value = t('attendees.fundingChanged', { name: user.username })
     } else {
@@ -227,19 +233,41 @@ async function addUser(user: AvailableUser, chargeAgain: boolean) {
   }
 }
 
-function topUpFromAdd() {
+function requestTopUp(user: AvailableUser, chargeAgain = false) {
+  topUpChargeAgain.value = chargeAgain
+  topUpUser.value = user
+}
+
+function closeTopUp() {
+  topUpUser.value = null
+  topUpChargeAgain.value = false
+}
+
+function topUpFromAdd(chargeAgain: boolean) {
   if (!pendingUser.value) return
-  topUpUser.value = pendingUser.value
+  requestTopUp(pendingUser.value, chargeAgain)
   pendingUser.value = null
+  pendingInitialChargeAgain.value = false
 }
 
 async function topUpSaved(balance: string) {
   const user = topUpUser.value
   if (!user) return
+  const chargeAgain = topUpChargeAgain.value
   user.balance = balance
-  topUpUser.value = null
+  closeTopUp()
   await load()
   success.value = t('attendees.topUpSaved', { name: user.username })
+  const refreshedUser = available.value.find(item => item.id === user.id)
+  if (!refreshedUser || !canAdd.value) return
+  const previouslyPaid = hasRetainedPayment(user.id)
+  const amountToCharge = previouslyPaid && !chargeAgain ? 0 : entryFee.value
+  const refreshedBalance = Number(refreshedUser.balance)
+  if (!Number.isFinite(refreshedBalance) || Math.round(refreshedBalance * 100) < Math.round(amountToCharge * 100)) return
+  addDialogError.value = ''
+  pendingPreviouslyPaid.value = previouslyPaid
+  pendingInitialChargeAgain.value = Boolean(previouslyPaid && chargeAgain)
+  pendingUser.value = refreshedUser
 }
 </script>
 
@@ -291,18 +319,19 @@ async function topUpSaved(balance: string) {
           <AttendeeUserRow
             v-for="user in filteredAvailable" :key="user.id" :user="user"
             :entry-fee="hasRetainedPayment(user.id) ? 0 : entryFee" :disabled="!canAdd"
-            :loading="pendingAction === `user-${user.id}`" @add="requestAdd" @top-up="topUpUser = user"
+            :loading="pendingAction === `user-${user.id}`" @add="requestAdd" @top-up="requestTopUp(user)"
           />
           <div v-if="filteredAvailable.length === 0" class="empty-state"><i class="bi bi-search"></i><p>{{ t('attendees.noAvailable') }}</p></div>
         </div>
       </section>
     </div>
 
-    <WalletTopUpDialog v-if="topUpUser" :key="topUpUser.id" :user="topUpUser" :entry-fee="entryFee" @close="topUpUser = null" @saved="topUpSaved" />
+    <WalletTopUpDialog v-if="topUpUser" :key="topUpUser.id" :user="topUpUser" :entry-fee="entryFee" @close="closeTopUp" @saved="topUpSaved" />
     <AddPlayerDialog
       v-if="pendingUser" :key="pendingUser.id" :user="pendingUser" :entry-fee="entryFee" :previously-paid="pendingPreviouslyPaid"
+      :initial-charge-again="pendingInitialChargeAgain"
       :busy="pendingAction === `user-${pendingUser.id}`" :error="addDialogError"
-      @cancel="pendingUser = null" @confirm="confirmAddUser" @top-up="topUpFromAdd"
+      @cancel="pendingUser = null; pendingInitialChargeAgain = false" @confirm="confirmAddUser" @top-up="topUpFromAdd"
     />
     <RosterRemovalDialog
       v-if="removalRequest" :key="removalRequest[0]?.id" :players="removalRequest" action="withdraw"

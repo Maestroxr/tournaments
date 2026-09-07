@@ -11,12 +11,16 @@ import { useI18n } from '@/i18n'
 const props = defineProps<{ user: { id: number; username: string; balance?: string | null }; entryFee: number }>()
 const emit = defineEmits<{ close: []; saved: [balance: string] }>()
 const { t, locale } = useI18n()
-const amount = ref<number | null>(Math.max(0, Math.round(props.entryFee * 100) - Math.round(Number(props.user.balance ?? 0) * 100)) / 100 || null)
+const parsedBalance = Number(props.user.balance ?? 0)
+const currentBalanceCents = Number.isFinite(parsedBalance) ? Math.round(parsedBalance * 100) : 0
+const requiredCents = Math.max(1, Math.round(props.entryFee * 100) - currentBalanceCents)
+const minimumAmount = requiredCents / 100
+const amount = ref<number | null>(minimumAmount)
 const note = ref('')
 const saving = ref(false)
 const uncertain = ref(false)
 const error = ref('')
-const valid = computed(() => amount.value !== null && Number.isFinite(amount.value) && amount.value > 0 && amount.value <= 99999999.99)
+const valid = computed(() => amount.value !== null && Number.isFinite(amount.value) && Math.round(amount.value * 100) >= requiredCents && amount.value <= 99999999.99)
 function money(value: number) { return value.toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-US', { maximumFractionDigits: 2 }) }
 async function save() {
   if (!valid.value || saving.value || uncertain.value) return
@@ -41,7 +45,7 @@ function close() { if (!saving.value) emit('close') }
       <p class="text-sm text-zinc-500">{{ t('attendees.balance', { amount: money(Number(user.balance ?? 0)) }) }} · {{ t('attendees.entryFee', { amount: money(entryFee) }) }}</p>
       <p class="text-sm text-zinc-500">{{ t('attendees.topUpHint') }}</p>
       <AppAlert v-if="error" type="error" :message="error" />
-      <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.amount') }}</span><InputNumber v-model="amount" :min="0.01" :max="99999999.99" :max-fraction-digits="2" highlight-on-focus fluid :disabled="saving || uncertain" /></label>
+      <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.amount') }}</span><InputNumber v-model="amount" :min="minimumAmount" :max="99999999.99" :max-fraction-digits="2" highlight-on-focus fluid :disabled="saving || uncertain" /></label>
       <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.note') }}</span><InputText v-model="note" class="w-full" :disabled="saving || uncertain" /></label>
       <p v-if="valid" class="text-sm text-emerald-700">{{ t('attendees.balanceAfter', { amount: money((Math.round(Number(user.balance ?? 0) * 100) + Math.round(Number(amount) * 100)) / 100) }) }}</p>
       <div class="flex justify-end gap-2">
