@@ -43,7 +43,7 @@ function add() {
     <div class="attendee-user-row__identity">
       <p class="font-semibold text-black">{{ user.username }}</p>
       <p v-if="user.phone_number" class="text-xs text-zinc-500">{{ user.phone_number }}</p>
-      <p class="mt-1 text-xs text-zinc-500">
+      <p v-if="entryFee > 0" class="mt-1 text-xs text-zinc-500">
         {{
           balance === null
             ? t('attendees.balanceUnavailable')

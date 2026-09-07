@@ -15,9 +15,9 @@ vi.mock('@/services/api', async importOriginal => ({
   ...await importOriginal<typeof import('@/services/api')>(), apiFetch: vi.fn(),
 }))
 const api = vi.mocked(apiFetch)
-const response = (balance: string | undefined = '20.00') => ({
+const response = (balance: string | undefined = '20.00', entryFee = '50.00') => ({
   participants: [], available: [{ id: 7, username: 'Dana', balance }],
-  tournament: { state: 'open', entry_fee: '50.00', max_players: 8 },
+  tournament: { state: 'open', entry_fee: entryFee, max_players: 8 },
 })
 function view() {
   return mount(AttendeesView, {
@@ -67,6 +67,22 @@ describe('AttendeesView', () => {
     expect(api).toHaveBeenCalledTimes(1)
     wrapper.getComponent(AddPlayerDialog).vm.$emit('confirm')
     await flushPromises()
+    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: 7, charge_again: false }),
+    })
+  })
+
+  it('adds a player directly when the tournament is free', async () => {
+    api.mockResolvedValue(response('0.00', '0.00'))
+    const wrapper = view()
+    await flushPromises()
+
+    wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
+    await flushPromises()
+
+    expect(wrapper.findComponent(AddPlayerDialog).exists()).toBe(false)
+    expect(wrapper.getComponent(AttendeeUserRow).text()).not.toContain('Balance')
     expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', {
       method: 'POST',
       body: JSON.stringify({ user_id: 7, charge_again: false }),

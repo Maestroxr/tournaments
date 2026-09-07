@@ -163,6 +163,10 @@ function requestAdd(userId: number) {
   const user = available.value.find(item => item.id === userId)
   if (!canAdd.value || !user) return
   const previouslyPaid = hasRetainedPayment(userId)
+  if (entryFee.value <= 0) {
+    void addUser(user, false)
+    return
+  }
   if (!previouslyPaid && entryFee.value > 0 && (
     user.balance == null ||
     !Number.isFinite(Number(user.balance)) ||
@@ -175,7 +179,13 @@ function requestAdd(userId: number) {
 
 async function confirmAddUser(chargeAgain = false) {
   const user = pendingUser.value
-  if (!canAdd.value || !user) return
+  if (!user) return
+  await addUser(user, chargeAgain)
+}
+
+async function addUser(user: AvailableUser, chargeAgain: boolean) {
+  if (!canAdd.value) return
+  const usesDialog = pendingUser.value?.id === user.id
   pendingAction.value = `user-${user.id}`
   error.value = ''
   success.value = ''
@@ -195,7 +205,9 @@ async function confirmAddUser(chargeAgain = false) {
       topUpUser.value = available.value.find(item => item.id === user.id) ?? user
       error.value = t('attendees.fundingChanged', { name: user.username })
     } else {
-      addDialogError.value = formatApiError(caught)
+      const message = formatApiError(caught)
+      if (usesDialog) addDialogError.value = message
+      else error.value = message
     }
   } finally {
     pendingAction.value = null
