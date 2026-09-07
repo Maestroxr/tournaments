@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Button from 'primevue/button'
+import UserQuickView from '@/components/UserQuickView.vue'
 import { useI18n } from '@/i18n'
 
 const props = defineProps<{
@@ -38,34 +39,35 @@ function add() {
 </script>
 
 <template>
-  <div class="attendee-user-row">
-    <span class="attendee-user-row__avatar" aria-hidden="true"><i class="bi bi-person"></i></span>
+  <article class="attendee-user-row">
     <div class="attendee-user-row__identity">
-      <p class="font-semibold text-black">{{ user.username }}</p>
-      <p v-if="user.phone_number" class="text-xs text-zinc-500">{{ user.phone_number }}</p>
-      <p v-if="entryFee > 0" class="mt-1 text-xs text-zinc-500">
+      <UserQuickView :user-id="user.id" :username="user.username" />
+    </div>
+    <div v-if="entryFee > 0" class="attendee-user-row__funding">
+      <span class="attendee-user-row__balance">
         {{
           balance === null
             ? t('attendees.balanceUnavailable')
             : t('attendees.balance', { amount: money(balance) })
         }}
-      </p>
-      <p
-        v-if="entryFee > 0 && shortfall !== null && shortfall > 0"
-        class="mt-1 text-xs text-amber-700"
+      </span>
+      <span
+        v-if="shortfall !== null && shortfall > 0"
+        class="attendee-user-row__shortfall"
       >
         <i class="bi bi-exclamation-circle me-1" aria-hidden="true"></i
         >{{ t('attendees.shortfall', { amount: money(shortfall) }) }}
-      </p>
-      <p v-else-if="entryFee > 0 && shortfall === 0" class="mt-1 text-xs text-emerald-700">
+      </span>
+      <span v-else-if="shortfall === 0" class="attendee-user-row__ready">
         {{ t('attendees.enoughBalance') }}
-      </p>
+      </span>
     </div>
     <div class="attendee-user-row__actions">
       <Button
         v-if="entryFee > 0 && shortfall !== null && shortfall > 0"
         icon="bi bi-wallet2"
         :label="t('attendees.topUp')"
+        :aria-label="t('attendees.topUpFor', { name: user.username })"
         :disabled="disabled || loading"
         size="small"
         severity="info"
@@ -74,67 +76,71 @@ function add() {
       />
       <Button
         icon="bi bi-person-plus"
-        :label="
-          entryFee > 0 && shortfall !== null && shortfall > 0
-            ? t('attendees.insufficientBalance')
-            : t('attendees.addUser')
-        "
+        :label="t('attendees.addUser')"
         :aria-label="t('attendees.addNamedUser', { name: user.username })"
+        :title="entryFee > 0 && shortfall !== null && shortfall > 0 ? t('attendees.insufficientBalance') : undefined"
         :disabled="Boolean(blocked)"
         :loading="loading"
         size="small"
-        severity="secondary"
+        severity="success"
         outlined
         @click="add"
       />
     </div>
-  </div>
+  </article>
 </template>
 
 <style scoped>
 .attendee-user-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: 10px 12px;
-  padding: 16px 2px;
+  gap: 14px 20px;
+  min-height: 64px;
+  padding: 10px 2px;
   border-bottom: 1px solid #263653;
 }
 .attendee-user-row:last-child {
   border-bottom: 0;
 }
-.attendee-user-row__avatar {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border: 1px solid rgba(111, 195, 255, 0.18);
-  border-radius: 11px;
-  background: #1a3150;
-  color: #9bcfff;
-}
 .attendee-user-row__identity {
-  flex: 1;
+  flex: 0 1 200px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.attendee-user-row__identity > p:first-child {
-  font-size: 13px;
+.attendee-user-row__identity :deep(.p-button) {
+  max-width: 100%;
+  padding-inline: 4px;
 }
+.attendee-user-row__funding {
+  display: flex;
+  align-items: center;
+  flex: 1 1 260px;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  min-width: 0;
+  font-size: 12px;
+}
+.attendee-user-row__balance { color: #b7c7dd; }
+.attendee-user-row__shortfall { color: #f5c35b; }
+.attendee-user-row__ready { color: #63d6a6; }
 .attendee-user-row__actions {
   display: flex;
-  grid-column: 2;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 8px;
 }
 .attendee-user-row :deep(.p-button) {
   flex-shrink: 0;
 }
+@media (max-width: 760px) {
+  .attendee-user-row { flex-wrap: wrap; }
+  .attendee-user-row__identity { flex: 1 1 160px; }
+  .attendee-user-row__funding { flex: 1 1 220px; }
+  .attendee-user-row__actions { flex: 1 0 100%; }
+}
 @media (max-width: 480px) {
-  .attendee-user-row__actions {
-    grid-column: 1 / -1;
-  }
+  .attendee-user-row__funding { flex-basis: 100%; }
   .attendee-user-row__actions :deep(.p-button) {
     flex: 1 1 auto;
   }

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
 import AttendeeUserRow from './AttendeeUserRow.vue'
 import WalletTopUpDialog from './WalletTopUpDialog.vue'
+import UserQuickView from '@/components/UserQuickView.vue'
 import { apiFetch } from '@/services/api'
 import { useI18n } from '@/i18n'
 
@@ -11,16 +12,18 @@ vi.mock('@/services/api', async importOriginal => ({
 }))
 const api = vi.mocked(apiFetch)
 const user = { id: 7, username: 'Dana', balance: '20.00' }
-const global = { plugins: [PrimeVue] }
+const global = { plugins: [PrimeVue], stubs: { UserQuickView: true } }
 
 describe('Attendee funding', () => {
   beforeEach(() => { vi.clearAllMocks(); useI18n().locale.value = 'en' })
 
   it('blocks paid registration with insufficient funds and offers a top-up', async () => {
     const wrapper = mount(AttendeeUserRow, { props: { user, entryFee: 50 }, global })
+    expect(wrapper.getComponent(UserQuickView).props()).toMatchObject({ userId: 7, username: 'Dana' })
+    expect(wrapper.findAll('button')).toHaveLength(2)
     expect(wrapper.get('[aria-label="Add Dana"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('30')
-    await wrapper.get('button').trigger('click')
+    await wrapper.get('[aria-label="Add balance for Dana"]').trigger('click')
     expect(wrapper.emitted('topUp')).toHaveLength(1)
     expect(wrapper.emitted('add')).toBeUndefined()
   })
