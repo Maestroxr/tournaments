@@ -23,6 +23,7 @@ from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -163,65 +164,133 @@ class StartGameView(LoginRequiredMixin, View):
             )
             return _start_refusal(refusal, reason)
 
-        # The destination comes from settings and from nowhere else — no host, path or scheme is
-        # ever read from the request or from a ticket claim (plan §2, threat 8).
-        base_url = settings.GAMELINK_BACKGAMMON_URL.rstrip('/')
-        if not base_url:
-            logger.warning('gamelink start refused: GAMELINK_BACKGAMMON_URL is empty [fixture=%s user=%s]',
-                           fixture.pk, request.user.pk)
-            return _start_refusal(412, 'backgammon_url_is_empty')
+        return _issue_game_ticket(request, fixture, seat)
 
-        now = timezone.now()
-        link_ttl = datetime.timedelta(seconds = settings.GAMELINK_LINK_TTL)
 
-        with transaction.atomic():
-            game_link, _ = GameLink.objects.get_or_create(
-                fixture = fixture,
-                defaults = dict(
-                    target_points = fixture.mode.tournament.target_points,
-                    doubling_enabled = fixture.mode.tournament.doubling_enabled,
-                    expires_at = now + link_ttl,
-                ),
+class StartTournamentGameView(LoginRequiredMixin, View):
+    """Start the signed-in player's one current fixture in ``pk``.
+
+    The Vue client deliberately posts a tournament id rather than a fixture id.  A player can
+    have playable fixtures in more than one active tournament, and choosing a fixture in global
+    client state previously allowed two opponents to enter different rooms.  Resolving the
+    fixture here, under the tournament lock, makes the tournament and the signed-in identity the
+    authority for both the fixture and the seat.
+    """
+
+    http_method_names = ['post']
+
+    @transaction.atomic
+    def post(self, request, pk):
+        if not settings.GAMELINK_ENABLED:
+            logger.warning(
+                'gamelink tournament start refused: disabled [tournament=%s user=%s]',
+                pk, request.user.pk)
+            return _start_refusal(412, 'disabled')
+
+        try:
+            tournament = Tournament.objects.select_for_update().get(pk=pk)
+        except Tournament.DoesNotExist:
+            logger.warning(
+                'gamelink tournament start refused: tournament does not exist '
+                '[tournament=%s user=%s]', pk, request.user.pk)
+            return _start_refusal(412, 'tournament_does_not_exist')
+
+        current_stage = tournament.current_stage
+        if tournament.state != 'active' or current_stage is None:
+            logger.warning(
+                'gamelink tournament start refused: tournament not active '
+                '[tournament=%s user=%s]', pk, request.user.pk)
+            return _start_refusal(412, 'tournament_not_active')
+
+        fixtures = list(
+            Fixture.objects.select_for_update().select_related(
+                'mode__tournament', 'player1__user', 'player2__user')
+            .filter(
+                mode_id=current_stage.pk,
+                level=current_stage.current_level,
             )
+            .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+            .order_by('pk')
+        )
+        playable = []
+        for fixture in fixtures:
+            seat, _ = playable_seat(request.user, fixture)
+            if seat is not None:
+                playable.append((fixture, seat))
 
-            # The game has been played and its result reported; a fresh ticket must not be able to
-            # start a second one over the top of it.
-            if game_link.status == 'completed':
-                return HttpResponse(status = 412)
+        if len(playable) != 1:
+            reason = 'current_fixture_not_found' if not playable else 'ambiguous_current_fixtures'
+            logger.error(
+                'gamelink tournament start refused: %s '
+                '[tournament=%s user=%s fixtures=%s]',
+                reason, pk, request.user.pk, [fixture.pk for fixture, _ in playable])
+            return _start_refusal(412, reason)
 
-            update_fields = []
-            if game_link.target_points != fixture.mode.tournament.target_points:
-                game_link.target_points = fixture.mode.tournament.target_points
-                update_fields.append('target_points')
-            if game_link.doubling_enabled != fixture.mode.tournament.doubling_enabled:
-                game_link.doubling_enabled = fixture.mode.tournament.doubling_enabled
-                update_fields.append('doubling_enabled')
+        fixture, seat = playable[0]
+        return _issue_game_ticket(request, fixture, seat)
 
-            # Both players may take a while to click through, and the second one to arrive must
-            # not find the link timed out from under them.
-            if game_link.expires_at <= now:
-                game_link.expires_at = now + link_ttl
-                update_fields.append('expires_at')
 
-            if update_fields:
-                game_link.save(update_fields = update_fields)
+def _issue_game_ticket(request, fixture, seat):
+    """Mint and record a ticket after the caller has locked and authorized ``fixture``."""
+    # The destination comes from settings and from nowhere else — no host, path or scheme is
+    # ever read from the request or from a ticket claim (plan §2, threat 8).
+    base_url = settings.GAMELINK_BACKGAMMON_URL.rstrip('/')
+    if not base_url:
+        logger.warning('gamelink start refused: GAMELINK_BACKGAMMON_URL is empty [fixture=%s user=%s]',
+                       fixture.pk, request.user.pk)
+        return _start_refusal(412, 'backgammon_url_is_empty')
 
-            token, jti = issue_ticket(request.user, fixture, seat, game_link)
-            IssuedTicket.objects.create(
-                jti        = jti,
-                game_link  = game_link,
-                user       = request.user,
-                seat       = seat,
-                expires_at = now + datetime.timedelta(seconds = settings.GAMELINK_TICKET_TTL),
-            )
+    now = timezone.now()
+    link_ttl = datetime.timedelta(seconds = settings.GAMELINK_LINK_TTL)
 
-        response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
+    with transaction.atomic():
+        game_link, _ = GameLink.objects.get_or_create(
+            fixture = fixture,
+            defaults = dict(
+                target_points = fixture.mode.tournament.target_points,
+                doubling_enabled = fixture.mode.tournament.doubling_enabled,
+                expires_at = now + link_ttl,
+            ),
+        )
 
-        # The ticket is in the URL, so keep it out of the next request's `Referer` and out of any
-        # shared cache (plan §2, threat 5).
-        response['Referrer-Policy'] = 'no-referrer'
-        response['Cache-Control']   = 'no-store'
-        return response
+        # The game has been played and its result reported; a fresh ticket must not be able to
+        # start a second one over the top of it.
+        if game_link.status == 'completed':
+            return HttpResponse(status = 412)
+
+        update_fields = []
+        if game_link.target_points != fixture.mode.tournament.target_points:
+            game_link.target_points = fixture.mode.tournament.target_points
+            update_fields.append('target_points')
+        if game_link.doubling_enabled != fixture.mode.tournament.doubling_enabled:
+            game_link.doubling_enabled = fixture.mode.tournament.doubling_enabled
+            update_fields.append('doubling_enabled')
+
+        # Both players may take a while to click through, and the second one to arrive must not
+        # find the link timed out from under them.
+        if game_link.expires_at <= now:
+            game_link.expires_at = now + link_ttl
+            update_fields.append('expires_at')
+
+        if update_fields:
+            game_link.save(update_fields = update_fields)
+
+        token, jti = issue_ticket(request.user, fixture, seat, game_link)
+        IssuedTicket.objects.create(
+            jti        = jti,
+            game_link  = game_link,
+            user       = request.user,
+            seat       = seat,
+            expires_at = now + datetime.timedelta(seconds = settings.GAMELINK_TICKET_TTL),
+        )
+
+    response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
+
+    # The ticket is in the URL, so keep it out of the next request's `Referer` and out of any
+    # shared cache (plan §2, threat 5).
+    response['Referrer-Policy'] = 'no-referrer'
+    response['Cache-Control']   = 'no-store'
+    return response
 
 
 # The result callback (backgammon -> tournaments)

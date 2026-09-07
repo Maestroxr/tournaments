@@ -542,6 +542,9 @@ class StartGameTestBase(TestCase):
     def play_url(self, fixture = None):
         return reverse('gamelink-start', kwargs = dict(pk = (fixture or self.fixture).pk))
 
+    def tournament_play_url(self):
+        return reverse('gamelink-tournament-start', kwargs = dict(pk = self.tournament.pk))
+
     def progress_url(self):
         return reverse('tournament-progress', kwargs = dict(pk = self.tournament.pk))
 
@@ -565,6 +568,57 @@ class StartGameTestBase(TestCase):
 class StartGameViewTest(StartGameTestBase):
 
     def assertNothingIssued(self):
+        self.assertEqual(GameLink.objects.count(), 0)
+        self.assertEqual(IssuedTicket.objects.count(), 0)
+
+    def ticket_payload(self, response):
+        self.assertEqual(response.status_code, 302)
+        return verify_ticket(unquote(response['Location'].split('ticket=', 1)[1]))
+
+    def test_both_players_resolve_the_same_fixture_with_opposite_seats(self):
+        payloads = []
+        for user in (self.user1, self.user2):
+            self.login(user)
+            payloads.append(self.ticket_payload(self.client.post(self.tournament_play_url())))
+
+        self.assertEqual({payload['fix'] for payload in payloads}, {self.fixture.pk})
+        self.assertEqual({payload['trn'] for payload in payloads}, {self.tournament.pk})
+        self.assertEqual([payload['seat'] for payload in payloads], ['p1', 'p2'])
+        self.assertEqual(GameLink.objects.count(), 1)
+        self.assertEqual(
+            set(IssuedTicket.objects.values_list('seat', flat=True)),
+            {'p1', 'p2'},
+        )
+
+    def test_posted_fixture_id_cannot_override_the_server_resolution(self):
+        other = Fixture.objects.create(
+            mode=self.knockout,
+            level=1,
+            player1=self.participants['player-1'],
+            player2=self.participants['player-3'],
+            extras=dict(),
+        )
+        self.login(self.user1)
+
+        payload = self.ticket_payload(self.client.post(
+            self.tournament_play_url(), {'fixture_id': other.pk}))
+
+        self.assertEqual(payload['fix'], self.fixture.pk)
+        self.assertEqual(payload['seat'], 'p1')
+
+    def test_ambiguous_current_fixtures_are_refused_instead_of_splitting_rooms(self):
+        Fixture.objects.create(
+            mode=self.knockout,
+            level=0,
+            player1=self.participants['player-1'],
+            player2=self.participants['player-3'],
+            extras=dict(),
+        )
+        self.login(self.user1)
+
+        response = self.client.post(self.tournament_play_url())
+
+        self.assertEqual(response.status_code, 412)
         self.assertEqual(GameLink.objects.count(), 0)
         self.assertEqual(IssuedTicket.objects.count(), 0)
 
@@ -1995,6 +2049,50 @@ class PurgeExpiredTest(GameLinkTestBase):
             call_command('purge_expired', '--nonce-hours', '0.1')
 
         self.assertEqual(SeenNonce.objects.count(), 1)
+
+
+@gamelink_settings
+class ResetActiveGameLinksCommandTest(GameLinkTestBase):
+    def setUp(self):
+        super().setUp()
+        GameLink.objects.filter(pk=self.game_link.pk).update(
+            status='playing',
+            external_room_id='wrong-room',
+            live_snapshot={'status': 'playing'},
+            live_updated_at=timezone.now(),
+        )
+
+    def test_dry_run_preserves_the_link(self):
+        out = StringIO()
+
+        call_command(
+            'reset_active_game_links',
+            tournament_id=self.tournament.pk,
+            stdout=out,
+        )
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'playing')
+        self.assertEqual(self.game_link.external_room_id, 'wrong-room')
+        self.assertIn('Dry run', out.getvalue())
+
+    def test_execute_releases_the_fixture_for_a_fresh_room(self):
+        out = StringIO()
+
+        call_command(
+            'reset_active_game_links',
+            tournament_id=self.tournament.pk,
+            fixture_ids=[self.fixture.pk],
+            execute=True,
+            stdout=out,
+        )
+
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.status, 'pending')
+        self.assertEqual(self.game_link.external_room_id, '')
+        self.assertIsNone(self.game_link.live_snapshot)
+        self.assertIsNone(self.game_link.live_updated_at)
+        self.assertIn('Reset 1 game link', out.getvalue())
 
 
 @skip('Legacy manual score UI was replaced by the tournament progress API')

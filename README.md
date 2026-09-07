@@ -135,6 +135,26 @@ timestamp window can be replayed.
 > the only retry path for a result this server refuses or fails to answer. Without it, one blip
 > here loses a match result permanently and silently. See the backend README on that side.
 
+### Recovering split one-player rooms
+
+If an older client sent opponents into different fixtures, first cancel and detach the one-seat
+rooms on the game server, then release their non-completed GameLink rows here. Both commands are a
+dry run unless `--execute` is supplied, and both accept repeatable `--fixture-id` filters:
+
+```bash
+# game server
+python manage.py cancel_linked_rooms --tournament-id 14
+python manage.py cancel_linked_rooms --tournament-id 14 --execute
+
+# tournaments server
+python manage.py reset_active_game_links --tournament-id 14
+python manage.py reset_active_game_links --tournament-id 14 --execute
+```
+
+The game-server command refuses to touch a room with two occupied seats. Completed links are also
+never reset. After both commands, the players can use the corrected tournament-specific entry
+button to provision one fresh room.
+
 ### Rotating a secret
 
 Each verifier takes a **list** and each signer uses the **first** entry, which is what makes a
