@@ -5,7 +5,9 @@ import TournamentActions from '@/components/tournament/TournamentActions.vue'
 import TournamentAttentionPanel from '@/components/tournament/TournamentAttentionPanel.vue'
 import TournamentOverviewMetrics from '@/components/tournament/TournamentOverviewMetrics.vue'
 import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
+import TournamentDangerDialog from '@/components/tournament/TournamentDangerDialog.vue'
 import { apiFetch } from '@/services/api'
+import { useI18n } from '@/i18n'
 
 const { replace } = vi.hoisted(() => ({ replace: vi.fn() }))
 vi.mock('vue-router', () => ({
@@ -34,7 +36,12 @@ async function open(wrapper: ReturnType<typeof view>) {
 }
 
 describe('Tournament start confirmation', () => {
-  beforeEach(() => { vi.clearAllMocks(); api.mockResolvedValue(tournament) })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.mockReset()
+    useI18n().locale.value = 'en'
+    api.mockResolvedValue(tournament)
+  })
 
   it('opens the custom confirmation without starting, and cancellation makes no request', async () => {
     const wrapper = view()
@@ -45,6 +52,35 @@ describe('Tournament start confirmation', () => {
     await flushPromises()
     expect(wrapper.findComponent(StartTournamentDialog).exists()).toBe(false)
     expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the styled confirmation dialog before returning to draft', async () => {
+    const wrapper = view()
+    await flushPromises()
+    await wrapper.get('[data-testid="revert-to-draft"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.getComponent(TournamentDangerDialog).props('mode')).toBe('revert')
+    expect(api).toHaveBeenCalledTimes(1)
+    wrapper.getComponent(TournamentDangerDialog).vm.$emit('cancel')
+    await flushPromises()
+    expect(wrapper.findComponent(TournamentDangerDialog).exists()).toBe(false)
+  })
+
+  it('returns to draft only after the styled dialog is confirmed', async () => {
+    api.mockResolvedValueOnce(tournament).mockResolvedValueOnce({}).mockResolvedValueOnce({
+      ...tournament, state: 'draft', lifecycle_state: 'draft', published: false, participant_count: 0,
+    })
+    const wrapper = view()
+    await flushPromises()
+    await wrapper.get('[data-testid="revert-to-draft"]').trigger('click')
+    await flushPromises()
+
+    wrapper.getComponent(TournamentDangerDialog).vm.$emit('confirm')
+    await flushPromises()
+
+    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/draft', { method: 'POST' })
+    expect(wrapper.findComponent(TournamentDangerDialog).exists()).toBe(false)
   })
 
   it('starts only after confirmation and prevents duplicate submission', async () => {

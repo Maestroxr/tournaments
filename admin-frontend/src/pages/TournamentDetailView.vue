@@ -18,6 +18,7 @@ import TournamentOverviewMetrics, {
   type TournamentOverviewMetric,
 } from '@/components/tournament/TournamentOverviewMetrics.vue'
 import TournamentStructureCard from '@/components/tournament/TournamentStructureCard.vue'
+import TournamentDangerDialog from '@/components/tournament/TournamentDangerDialog.vue'
 import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
 import { timeControlLabel } from '@/utils/adminLabels'
@@ -35,6 +36,12 @@ const starting = ref(false)
 const publishing = ref(false)
 const showStartDialog = ref(false)
 const startError = ref('')
+const showRevertDialog = ref(false)
+const reverting = ref(false)
+const revertError = ref('')
+const showDeleteDialog = ref(false)
+const deleting = ref(false)
+const deleteError = ref('')
 const loading = ref(true)
 const error = ref('')
 const loadFailed = ref(false)
@@ -353,14 +360,25 @@ async function loadOverviewProgress(tid: string) {
   }
 }
 
-async function remove() {
-  if (!confirm('Delete this draft?')) return
+function requestDelete() {
+  if (deleting.value || t.value?.state !== 'draft') return
+  deleteError.value = ''
+  showDeleteDialog.value = true
+}
+
+async function deleteDraft() {
+  if (!showDeleteDialog.value || deleting.value || t.value?.state !== 'draft') return
+  deleting.value = true
+  deleteError.value = ''
   try {
     const tid = props.id || String(route.params.id)
     await apiFetch(`/api/admin/tournaments/${tid}`, { method: 'DELETE' })
+    showDeleteDialog.value = false
     router.push('/tournaments')
   } catch (e: unknown) {
-    error.value = formatApiError(e)
+    deleteError.value = formatApiError(e)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -399,9 +417,26 @@ async function publishAndManagePlayers() {
   await publish()
   if (t.value?.state === 'open') router.push(`/tournaments/${t.value.id}/players`)
 }
+function requestRevertToDraft() {
+  if (reverting.value || t.value?.state !== 'open') return
+  revertError.value = ''
+  showRevertDialog.value = true
+}
 async function revertToDraft() {
-  if (!confirm('All current attendees will be removed. Revert to draft?')) return
-  try { const tid = props.id || String(route.params.id); await apiFetch(`/api/admin/tournaments/${tid}/draft`, { method: 'POST' }); await load(); await workspace?.refresh() } catch (e: unknown) { error.value = formatApiError(e) }
+  if (!showRevertDialog.value || reverting.value || t.value?.state !== 'open') return
+  reverting.value = true
+  revertError.value = ''
+  try {
+    const tid = props.id || String(route.params.id)
+    await apiFetch(`/api/admin/tournaments/${tid}/draft`, { method: 'POST' })
+    showRevertDialog.value = false
+    await load()
+    await workspace?.refresh()
+  } catch (e: unknown) {
+    revertError.value = formatApiError(e)
+  } finally {
+    reverting.value = false
+  }
 }
 function requestStart() {
   if (starting.value || t.value?.state !== 'open' || t.value.participant_count < t.value.min_players) return
@@ -587,16 +622,24 @@ function podiumLabel(reference: string, index: number) {
       <div class="flex flex-wrap gap-2">
         <template v-if="t.state==='draft'">
           <Button v-if="isSettingsRoute" label="Publish and add players" severity="success" :loading="publishing" :disabled="!hasFormat" @click="publishAndManagePlayers" />
-          <Button label="Delete draft" severity="danger" @click="remove" />
+          <Button data-testid="delete-draft" :label="translate('tournamentDanger.deleteAction')" severity="danger" @click="requestDelete" />
         </template>
         <template v-if="t.state==='open'">
-          <Button class="ms-auto" label="Revert to draft" severity="secondary" outlined @click="revertToDraft" />
+          <Button data-testid="revert-to-draft" class="ms-auto" :label="translate('tournamentDanger.revertAction')" severity="secondary" outlined @click="requestRevertToDraft" />
         </template>
       </div>
     </div>
     <StartTournamentDialog
       v-if="showStartDialog && t" :name="t.name" :participant-count="t.participant_count"
       :busy="starting" :error="startError" @confirm="start" @cancel="showStartDialog = false"
+    />
+    <TournamentDangerDialog
+      v-if="showRevertDialog && t" mode="revert" :name="t.name" :entry-fee="t.entry_fee"
+      :busy="reverting" :error="revertError" @confirm="revertToDraft" @cancel="showRevertDialog = false"
+    />
+    <TournamentDangerDialog
+      v-if="showDeleteDialog && t" mode="delete" :name="t.name"
+      :busy="deleting" :error="deleteError" @confirm="deleteDraft" @cancel="showDeleteDialog = false"
     />
   </div>
 </template>
