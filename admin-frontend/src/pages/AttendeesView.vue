@@ -71,11 +71,24 @@ const removalDialogError = ref('')
 
 const entryFee = computed(() => Number(tournament.value?.entry_fee ?? 0))
 const activeParticipants = computed(() => participants.value.filter(item => item.status === 'registered'))
+function phoneVariants(value: string) {
+  const digits = value.replace(/\D/g, '')
+  if (!digits) return []
+  if (digits.startsWith('972') && digits.length > 3) return [digits, `0${digits.slice(3)}`]
+  if (digits.startsWith('0') && digits.length > 1) return [digits, `972${digits.slice(1)}`]
+  return [digits]
+}
+function matchesPhone(phone: string | undefined, query: string) {
+  if (!phone || !/^[+\d\s()-]+$/.test(query)) return false
+  const queries = phoneVariants(query)
+  const phones = phoneVariants(phone)
+  return queries.some(candidate => phones.some(value => value.includes(candidate)))
+}
 const filteredAvailable = computed(() => {
   const query = search.value.trim().toLocaleLowerCase()
   if (!query) return available.value
   return available.value.filter(user =>
-    user.username.toLocaleLowerCase().includes(query) || user.phone_number?.includes(query),
+    user.username.toLocaleLowerCase().includes(query) || matchesPhone(user.phone_number, query),
   )
 })
 const isFull = computed(() =>

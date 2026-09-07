@@ -41,6 +41,26 @@ describe('AttendeesView', () => {
     expect(api).toHaveBeenCalledTimes(1)
   })
 
+  it('filters available users by username or a formatted phone number', async () => {
+    api.mockResolvedValue({
+      ...response(),
+      available: [
+        { id: 7, username: 'Dana', phone_number: '+972 50-123-4567', balance: '50.00' },
+        { id: 8, username: 'Noam', phone_number: '052-765-4321', balance: '50.00' },
+      ],
+    })
+    const wrapper = view()
+    await flushPromises()
+
+    await wrapper.get('input').setValue('0501234567')
+    expect(wrapper.findAllComponents(AttendeeUserRow)).toHaveLength(1)
+    expect(wrapper.getComponent(AttendeeUserRow).props('user').id).toBe(7)
+
+    await wrapper.get('input').setValue('noam')
+    expect(wrapper.findAllComponents(AttendeeUserRow)).toHaveLength(1)
+    expect(wrapper.getComponent(AttendeeUserRow).props('user').id).toBe(8)
+  })
+
   it('refreshes the balance after a deposit without registering automatically', async () => {
     api.mockResolvedValueOnce(response()).mockResolvedValueOnce(response('50.00'))
     const wrapper = view()
