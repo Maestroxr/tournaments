@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
 import AttendeesView from './AttendeesView.vue'
 import AttendeeUserRow from '@/components/tournament/AttendeeUserRow.vue'
-import AttendeeOperationsRow from '@/components/tournament/AttendeeOperationsRow.vue'
+import AttendeeRosterRow from '@/components/tournament/AttendeeRosterRow.vue'
 import AddPlayerDialog from '@/components/tournament/AddPlayerDialog.vue'
 import RosterRemovalDialog from '@/components/tournament/RosterRemovalDialog.vue'
 import WalletTopUpDialog from '@/components/tournament/WalletTopUpDialog.vue'
@@ -82,7 +82,7 @@ describe('AttendeesView', () => {
     expect(wrapper.getComponent(AttendeeUserRow).props('user').balance).toBe('60.00')
   })
 
-  it('shows readiness metrics and runs a bulk check-in for selected players', async () => {
+  it('shows a compact roster with only the player and remove action', async () => {
     const operational = {
       participants: [{
         id: 11, name: 'Dana', username: 'Dana', user_id: 7, status: 'registered',
@@ -93,22 +93,15 @@ describe('AttendeesView', () => {
       summary: { registered: 1, checked_in: 0, unpaid: 0, waitlisted: 0, attention: 1, ready: 0 },
       tournament: { state: 'open', registration_open: true, entry_fee: '50.00', max_players: 8 },
     }
-    api.mockResolvedValueOnce(operational).mockResolvedValueOnce({}).mockResolvedValueOnce({
-      ...operational,
-      participants: [{ ...operational.participants[0], checked_in_at: '2026-09-07T12:00:00Z', requires_attention: false, attention_reasons: [] }],
-      summary: { ...operational.summary, checked_in: 1, attention: 0, ready: 1 },
-    })
+    api.mockResolvedValue(operational)
     const wrapper = view()
     await flushPromises()
-    expect(wrapper.text()).toContain('Requires attention')
-    await wrapper.get('.select-visible input').setValue(true)
-    await wrapper.get('.bulk-bar .p-button-success').trigger('click')
-    await flushPromises()
-    expect(api).toHaveBeenCalledWith('/api/admin/tournaments/20/attendees', expect.objectContaining({
-      method: 'PATCH',
-      body: JSON.stringify({ participant_ids: [11], action: 'check_in' }),
-    }))
-    expect(wrapper.text()).toContain('1/1')
+    expect(wrapper.getComponent(AttendeeRosterRow).props('attendee').name).toBe('Dana')
+    expect(wrapper.getComponent(AttendeeRosterRow).text()).toContain('Remove attendee')
+    expect(wrapper.text()).not.toContain('Check in')
+    expect(wrapper.text()).not.toContain('Mark unpaid')
+    expect(wrapper.text()).not.toContain('Internal organizer note')
+    expect(wrapper.find('input[type="checkbox"]').exists()).toBe(false)
   })
 
   it('offers a wallet credit before removing a paid player', async () => {
@@ -126,7 +119,7 @@ describe('AttendeesView', () => {
     const wrapper = view()
     await flushPromises()
 
-    wrapper.getComponent(AttendeeOperationsRow).vm.$emit('action', 'withdraw', [11])
+    wrapper.getComponent(AttendeeRosterRow).vm.$emit('remove', 11)
     await flushPromises()
     expect(wrapper.getComponent(RosterRemovalDialog).props('players')).toMatchObject([
       { id: 11, refundable: '50.00' },
