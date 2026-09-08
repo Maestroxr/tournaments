@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -15,17 +15,45 @@ const q = ref('')
 const loading = ref(false)
 const error = ref('')
 const { t } = useI18n()
+let loadRequestId = 0
+let lastPageRefreshAt = 0
 
-async function load() {
-  loading.value = true
-  error.value = ''
+async function load(silent = false) {
+  const requestId = ++loadRequestId
+  if (!silent) loading.value = true
+  if (error.value) error.value = ''
   try {
     const qs = q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''
-    users.value = await apiFetch<User[]>(`/api/admin/users${qs}`)
-  } catch (e: unknown) { error.value = formatApiError(e) }
-  finally { loading.value = false }
+    const next = await apiFetch<User[]>(`/api/admin/users${qs}`)
+    if (requestId === loadRequestId && JSON.stringify(users.value) !== JSON.stringify(next)) {
+      users.value = next
+    }
+  } catch (e: unknown) {
+    if (requestId === loadRequestId) error.value = formatApiError(e)
+  } finally {
+    if (requestId === loadRequestId) loading.value = false
+  }
 }
-onMounted(load)
+
+function refreshWhenPageReturns() {
+  if (document.visibilityState === 'hidden') return
+  const now = Date.now()
+  if (now - lastPageRefreshAt < 500) return
+  lastPageRefreshAt = now
+  void load(true)
+}
+
+onMounted(() => {
+  lastPageRefreshAt = Date.now()
+  void load()
+  window.addEventListener('focus', refreshWhenPageReturns)
+  document.addEventListener('visibilitychange', refreshWhenPageReturns)
+})
+onBeforeUnmount(() => {
+  loadRequestId += 1
+  window.removeEventListener('focus', refreshWhenPageReturns)
+  document.removeEventListener('visibilitychange', refreshWhenPageReturns)
+})
 async function remove(id: number) {
   if (!confirm(t('users.deleteConfirm'))) return
   try { await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' }); await load() } catch (e: unknown) { error.value = formatApiError(e) }
@@ -38,7 +66,7 @@ async function remove(id: number) {
       <h1 class="text-2xl font-bold text-black">{{ t('users.title') }}</h1>
       <Button as="router-link" to="/users/new" :label="t('users.createTitle')" size="small" severity="info" />
     </div>
-    <div class="mb-3"><SearchBar v-model="q" :placeholder="t('users.search')" @search="load" /></div>
+    <div class="mb-3"><SearchBar v-model="q" :placeholder="t('users.search')" @search="load()" /></div>
     <AppAlert v-if="error" class="mb-3" type="error" :message="error" dismissible @close="error = ''" />
     <DataTable v-else :value="users" :loading="loading" data-key="id" striped-rows show-gridlines size="small">
       <template #empty>{{ t('users.empty') }}</template>

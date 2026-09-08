@@ -127,7 +127,7 @@ watch(id, () => void load(), { immediate: true })
           {{ t('common.backTournaments') }}
         </RouterLink>
       </div>
-      <RouterView v-else />
+      <RouterView v-else :key="id" />
     </section>
     <StartTournamentDialog
       v-if="showStartDialog && tournament"

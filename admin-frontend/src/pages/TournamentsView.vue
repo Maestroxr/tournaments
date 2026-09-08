@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
@@ -53,22 +53,50 @@ const stateFilter = ref<TournamentStateFilter>(
 )
 const loading = ref(false)
 const error = ref('')
+let loadRequestId = 0
+let lastPageRefreshAt = 0
 
-async function load() {
-  loading.value = true
-  error.value = ''
+async function load(silent = false) {
+  const requestId = ++loadRequestId
+  if (!silent) loading.value = true
+  if (error.value) error.value = ''
   try {
     const params = new URLSearchParams()
     if (q.value.trim()) params.set('q', q.value.trim())
     const qs = params.toString()
-    tournaments.value = await apiFetch<Tournament[]>(`/api/admin/tournaments${qs ? `?${qs}` : ''}`)
+    const next = await apiFetch<Tournament[]>(`/api/admin/tournaments${qs ? `?${qs}` : ''}`)
+    if (
+      requestId === loadRequestId &&
+      JSON.stringify(tournaments.value) !== JSON.stringify(next)
+    ) {
+      tournaments.value = next
+    }
   } catch (e: unknown) {
-    error.value = formatApiError(e)
+    if (requestId === loadRequestId) error.value = formatApiError(e)
   } finally {
-    loading.value = false
+    if (requestId === loadRequestId) loading.value = false
   }
 }
-onMounted(load)
+
+function refreshWhenPageReturns() {
+  if (document.visibilityState === 'hidden') return
+  const now = Date.now()
+  if (now - lastPageRefreshAt < 500) return
+  lastPageRefreshAt = now
+  void load(true)
+}
+
+onMounted(() => {
+  lastPageRefreshAt = Date.now()
+  void load()
+  window.addEventListener('focus', refreshWhenPageReturns)
+  document.addEventListener('visibilitychange', refreshWhenPageReturns)
+})
+onBeforeUnmount(() => {
+  loadRequestId += 1
+  window.removeEventListener('focus', refreshWhenPageReturns)
+  document.removeEventListener('visibilitychange', refreshWhenPageReturns)
+})
 watch(stateFilter, () => {}) // filter is client-side
 watch(
   () => route.query.state,
@@ -123,7 +151,7 @@ const filteredLabel = computed(() => {
     </div>
 
     <div class="mb-4 flex flex-wrap gap-3">
-      <div class="flex-1 min-w-[240px]"><SearchBar v-model="q" :placeholder="t('tournaments.search')" @search="load" /></div>
+      <div class="flex-1 min-w-[240px]"><SearchBar v-model="q" :placeholder="t('tournaments.search')" @search="load()" /></div>
       <Select v-model="stateFilter" :options="stateOptions" option-label="label" option-value="value" class="min-w-48" />
     </div>
 
