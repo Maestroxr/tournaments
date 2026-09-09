@@ -322,8 +322,8 @@ MAX_SCORE = 32767
 _TIMESTAMP_PATTERN = re.compile(r'\A[0-9]{1,20}\Z')
 _NONCE_PATTERN = re.compile(r'\A[A-Za-z0-9._:-]{1,64}\Z')
 
-# Deliberately uninformative (plan §3.2). A caller learns only that it was refused; *why* goes to
-# the log and nowhere else, so a prober cannot use the response to map the guards.
+# Authentication failures remain generic. After signature and payload validation, result
+# conflicts include a stable code so the trusted sender can explain and stop a blocked delivery.
 _ERRORS = {
     400: 'bad_request',
     401: 'unauthorized',
@@ -439,10 +439,12 @@ class ResultCallbackView(View):
                 game_link = GameLink.objects.select_for_update().get(fixture_id = fixture_id)
                 game_link.fixture = locked_fixture
             except (GameLink.DoesNotExist, Fixture.DoesNotExist):
-                return _reject(request, 404, 'no game link for this fixture', fixture_id = fixture_id)
+                return _reject(request, 404, 'no game link for this fixture', fixture_id = fixture_id,
+                               code='fixture_not_found')
 
             if locked_fixture.admin_result:
-                return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id)
+                return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id,
+                               code='fixture_admin_resolved')
 
             # Terminal idempotency (plan §2, threat 2). A delivery whose response was lost is
             # re-sent under a *fresh* nonce, so it gets this far and must be answered with the
@@ -454,11 +456,12 @@ class ResultCallbackView(View):
             if game_link.status == STATUS_CANCELLED:
                 if body['status'] == STATUS_CANCELLED:
                     return _accepted('already_recorded')
-                return _reject(request, 409, 'a cancelled link cannot then be completed', fixture_id = fixture_id)
+                return _reject(request, 409, 'a cancelled link cannot then be completed', fixture_id = fixture_id,
+                               code='link_cancelled')
 
             if game_link.status not in OPEN_LINK_STATUSES:
                 return _reject(request, 409, f'link is {game_link.status} and takes no result',
-                               fixture_id = fixture_id)
+                               fixture_id = fixture_id, code='link_not_open')
 
             fixture = game_link.fixture
 
@@ -467,13 +470,13 @@ class ResultCallbackView(View):
             # way is not to be acted on.
             if body['tournament_id'] != fixture.mode.tournament_id:
                 return _reject(request, 409, 'tournament_id does not belong to this fixture',
-                               fixture_id = fixture_id)
+                               fixture_id = fixture_id, code='tournament_mismatch')
 
             # The room is pinned on first contact and checked ever after, so a second game cannot
             # report a result over the first one's fixture (plan §2, threat 3).
             if game_link.external_room_id and game_link.external_room_id != body['room_id']:
                 return _reject(request, 409, 'room_id does not match the room this fixture is linked to',
-                               fixture_id = fixture_id)
+                               fixture_id = fixture_id, code='room_mismatch')
 
             if body['status'] == STATUS_CANCELLED:
                 return self._record_cancellation(game_link, body)
@@ -519,7 +522,7 @@ class ResultCallbackView(View):
             fixture.full_clean()
         except ValidationError as error:
             return _reject(request, 409, f'the reported score is not valid for this fixture: {error}',
-                           fixture_id = fixture.pk)
+                           fixture_id = fixture.pk, code='invalid_score')
 
         fixture.save()
 
@@ -687,9 +690,9 @@ def _broadcast_live_snapshot(tournament_id, fixture_id, snapshot):
     )
 
 
-def _reject(request, status, reason, fixture_id = None):
+def _reject(request, status, reason, fixture_id = None, *, code=None):
     """
-    Log why a result was refused, and answer with a response that does not say (plan §6).
+    Log the full reason. Only validated result handlers opt in to a public, fixed error code.
     """
     logger.warning(
         'gamelink result refused with %s: %s [fixture=%s remote=%s signature=%s]',
@@ -698,4 +701,7 @@ def _reject(request, status, reason, fixture_id = None):
         fixture_id,
         request.META.get('REMOTE_ADDR', ''),
         redact(request.headers.get('X-Gamelink-Signature', '')))
-    return JsonResponse({'error': _ERRORS[status]}, status = status)
+    payload = {'error': _ERRORS[status]}
+    if code is not None:
+        payload['code'] = code
+    return JsonResponse(payload, status = status)

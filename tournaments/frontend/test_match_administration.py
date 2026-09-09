@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 from datetime import timedelta
 
@@ -215,6 +216,7 @@ class MatchAdministrationTests(TestCase):
         view = ResultCallbackView()
         response = view.record(RequestFactory().post('/'), {'fixture_id': self.fixture.pk})
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(json.loads(response.content)['code'], 'fixture_admin_resolved')
         self.fixture.refresh_from_db()
         self.assertEqual(self.fixture.winner, self.fixture.player1)
 

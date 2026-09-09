@@ -1485,7 +1485,8 @@ class ResultCallbackViewTest(ResultCallbackTestBase):
         response = self.deliver(self.result_body(tournament_id = self.tournament.pk + 1))
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(json.loads(response.content), {'error': 'conflict'})
+        self.assertEqual(json.loads(response.content),
+                         {'error': 'conflict', 'code': 'tournament_mismatch'})
         self.assertNothingRecorded()
 
     def test_the_room_is_pinned_on_first_contact(self):
@@ -1505,6 +1506,7 @@ class ResultCallbackViewTest(ResultCallbackTestBase):
         response = self.deliver()
 
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'room_mismatch')
         self.fixture.refresh_from_db()
         self.assertIsNone(self.fixture.score1)
 
@@ -1514,6 +1516,7 @@ class ResultCallbackViewTest(ResultCallbackTestBase):
         response = self.deliver(self.result_body(score = {'p1': 1, 'p2': 1}, winner_seat = None))
 
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'invalid_score')
         self.assertNothingRecorded()
 
     # Cancellation
@@ -1572,6 +1575,7 @@ class ResultCallbackViewTest(ResultCallbackTestBase):
         response = self.deliver()
 
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'link_cancelled')
         self.fixture.refresh_from_db()
         self.assertIsNone(self.fixture.score1)
 
@@ -1593,6 +1597,7 @@ class ResultCallbackViewTest(ResultCallbackTestBase):
         response = self.deliver()
 
         self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'link_not_open')
         self.fixture.refresh_from_db()
         self.assertIsNone(self.fixture.score1)
 
