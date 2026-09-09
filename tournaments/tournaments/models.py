@@ -28,6 +28,7 @@ class Tournament(models.Model):
     published = models.BooleanField(default = False)
     creator = models.ForeignKey('auth.User', on_delete = models.SET_NULL, related_name = 'tournaments', null = True, blank = True)
     # New easy fields — keep YAML for knockout/groups/division structure, add UI-friendly metadata
+    created_at = models.DateTimeField(auto_now_add=True)
     starts_at = models.DateTimeField(null=True, blank=True)
     min_players = models.PositiveSmallIntegerField(default=6)
     max_players = models.PositiveSmallIntegerField(null=True, blank=True)

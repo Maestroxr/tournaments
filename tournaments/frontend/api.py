@@ -211,6 +211,7 @@ def _serialize_tournament(t, request):
         "results_confirmed_at": t.results_confirmed_at.isoformat() if t.results_confirmed_at else None,
         "creator": t.creator.username if t.creator else None,
         "creator_id": t.creator_id,
+        "created_at": t.created_at.isoformat(),
         "is_creator": bool(request.user.is_authenticated and t.creator_id == request.user.id),
         "is_joined": is_joined,
         "registration_status": registration_status,

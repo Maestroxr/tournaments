@@ -37,8 +37,8 @@ const now = new Date()
 now.setMinutes(now.getMinutes() + 5, 0, 0)
 const minStartsDate = ref(dateInputValue(now))
 const minStartsTime = ref(timeInputValue(now))
-const startsDate = ref(minStartsDate.value)
-const startsTime = ref(minStartsTime.value)
+const startsDate = ref('')
+const startsTime = ref('')
 const startsAt = computed(() =>
   startsDate.value ? `${startsDate.value}T${startsTime.value || '00:00'}` : '',
 )
@@ -576,7 +576,11 @@ async function create() {
               />
               <div class="grid min-w-0 grid-cols-2 gap-3">
                 <label class="block min-w-0"
-                  ><span class="mb-1 block text-sm font-medium">{{ t('tournaments.date') }}</span
+                  ><span class="mb-1 block text-sm font-medium"
+                    >{{ t('tournaments.date') }}
+                    <span class="font-normal text-zinc-500"
+                      >({{ t('tournamentCreate.optional') }})</span
+                    ></span
                   ><DatePicker
                     v-model="startsDateObject"
                     date-format="dd/mm/yy"

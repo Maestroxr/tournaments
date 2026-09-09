@@ -3,6 +3,7 @@ from unittest.mock import patch
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from tournaments.models import Tournament, Fixture
 
@@ -25,6 +26,10 @@ class TournamentCreationTests(TestCase):
         self.assertTrue(tournament.published)
         self.assertEqual(tournament.state, 'open')
         self.assertEqual(response.json()['state'], 'open')
+        self.assertIsNone(tournament.starts_at)
+        self.assertIsNotNone(tournament.created_at)
+        self.assertLessEqual(tournament.created_at, timezone.now())
+        self.assertEqual(response.json()['created_at'], tournament.created_at.isoformat())
         self.assertFalse(Fixture.objects.filter(mode__tournament=tournament).exists())
 
     def test_legacy_create_remains_a_draft(self):

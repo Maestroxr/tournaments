@@ -302,6 +302,21 @@ describe('TournamentCreateView', () => {
     expect(routerPush).toHaveBeenCalledWith({ name: 'tournament-detail', params: { id: 8 } })
   })
 
+  it('leaves the tournament start optional by default', async () => {
+    const wrapper = mountView()
+    await inputAt(wrapper, 0).setValue('Unscheduled tournament')
+
+    for (let step = 0; step < 4; step++) await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+
+    const createCall = apiFetchMock.mock.calls.find(
+      ([path, opts]) => path === '/api/admin/tournaments' && opts?.method === 'POST',
+    )
+    expect(createCall).toBeDefined()
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ starts_at: null })
+    expect(wrapper.text()).not.toContain('Start time must be now or in the future.')
+  })
+
   it('keeps a saved tournament for retry when publishing fails, without creating a duplicate', async () => {
     let state = 'draft'
     let failPublish = true
