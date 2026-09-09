@@ -10,6 +10,7 @@ import AppStepProgress from '@/components/AppStepProgress.vue'
 import TournamentMetaFields from '@/components/TournamentMetaFields.vue'
 import { useI18n } from '@/i18n'
 import { apiFetch, formatApiError } from '@/services/api'
+import { timeControlLabel } from '@/utils/adminLabels'
 
 const router = useRouter()
 const { direction, locale, t } = useI18n()
@@ -377,7 +378,7 @@ function describeSuggestion(tournament: ExistingTournament) {
   return [
     t('tournamentCreate.suggestionPlayers', { min: tournament.min_players ?? 6, max }),
     t('tournaments.raceTo', { points: tournament.target_points ?? 5 }),
-    tournament.time_control ?? 'normal',
+    timeControlLabel(tournament.time_control ?? 'normal', tournament.target_points ?? 5, t),
   ].join(' · ')
 }
 
@@ -873,6 +874,12 @@ async function create() {
                   <dt class="text-xs text-zinc-500">{{ t('tournaments.match') }}</dt>
                   <dd class="font-semibold text-black">
                     {{ t('tournaments.raceTo', { points: targetPoints }) }}
+                  </dd>
+                </div>
+                <div class="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2">
+                  <dt class="text-xs text-zinc-500">{{ t('tournaments.timeControl') }}</dt>
+                  <dd class="font-semibold text-black">
+                    {{ timeControlLabel(timeControl, targetPoints, t) }}
                   </dd>
                 </div>
                 <div class="rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2">

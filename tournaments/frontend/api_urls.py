@@ -1,14 +1,25 @@
 from django.urls import path
 from . import api
+from . import accounts
+from . import push
+from .operations import health
 from .admin_matches import admin_match
 
 urlpatterns = [
+    path('push/config', push.config, name='api-push-config'),
+    path('push/subscription', push.subscription, name='api-push-subscription'),
+    path('health/', health, name='api-health'),
     path('csrf/', api.api_csrf, name='api-csrf'),
     path('client/log', api.api_client_log, name='api-client-log'),
     path('auth/me', api.api_me, name='api-me'),
+    path('auth/profile', api.api_profile, name='api-profile'),
     path('auth/login', api.api_login, name='api-login'),
     path('auth/logout', api.api_logout, name='api-logout'),
-    path('auth/signup', api.api_signup, name='api-signup'),
+    path('auth/signup', accounts.signup, name='api-signup'),
+    path('auth/verify/request', accounts.request_link, {'purpose': 'verify'}, name='api-verify-request'),
+    path('auth/verify/confirm', accounts.confirm_link, {'purpose': 'verify'}, name='api-verify-confirm'),
+    path('auth/reset/request', accounts.request_link, {'purpose': 'reset'}, name='api-reset-request'),
+    path('auth/reset/confirm', accounts.confirm_link, {'purpose': 'reset'}, name='api-reset-confirm'),
     path('tournaments', api.api_tournaments, name='api-tournaments'),
     path('tournaments/<int:pk>', api.api_tournament_detail,
          name='api-tournament-detail'),
@@ -29,7 +40,6 @@ urlpatterns = [
     path('admin/tournaments/<int:pk>/draw', api.api_admin_tournament_draw, name='api-admin-tournament-draw'),
     path('admin/tournaments/<int:pk>/draw/confirm', api.api_admin_tournament_confirm_draw, name='api-admin-tournament-confirm-draw'),
     path('admin/tournaments/<int:pk>/start', api.api_admin_tournament_start, name='api-admin-tournament-start'),
-    path('admin/tournaments/<int:pk>/results/confirm', api.api_admin_tournament_confirm_results, name='api-admin-tournament-confirm-results'),
     path('admin/tournaments/<int:pk>/progress', api.api_admin_tournament_progress, name='api-admin-tournament-progress'),
     path('admin/tournaments/<int:pk>/attendees', api.api_admin_tournament_attendees, name='api-admin-tournament-attendees'),
     path('admin/wallet-transactions', api.api_admin_wallet_transactions, name='api-admin-wallet-transactions'),

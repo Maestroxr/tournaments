@@ -44,17 +44,18 @@ const refundPlayers = computed(
   () => data.value?.players.filter((p) => p.disqualified && Number(p.refundable) > 0) ?? [],
 )
 const allOptions = computed(() => {
-  const actions: MatchAdminAction[] = data.value?.can_rule ? ['score', 'advance', 'disqualify'] : []
+  const actions: MatchAdminAction[] = data.value?.can_rule ? ['score', 'finish', 'advance', 'disqualify'] : []
   if (refundPlayers.value.length) actions.push('refund')
   return actions.map((value) => ({ value, label: t(`matchAdmin.actions.${value}`) }))
 })
 const options = computed(() =>
   allOptions.value.filter((o) =>
-    props.section === 'players' ? o.value !== 'score' : o.value === 'score',
+    props.section === 'players' ? !['score', 'finish'].includes(o.value) : ['score', 'finish'].includes(o.value),
   ),
 )
 const actionIcons = {
   score: 'bi bi-pencil-square',
+  finish: 'bi bi-stop-circle',
   advance: 'bi bi-arrow-up-right',
   disqualify: 'bi bi-person-x',
   refund: 'bi bi-wallet2',
@@ -75,6 +76,11 @@ const playerOptions = computed(() =>
   action.value === 'refund' ? refundPlayers.value : (data.value?.players ?? []),
 )
 const selectedPlayer = computed(() => playerOptions.value.find((p) => p.id === participantId.value))
+const isScoreAction = computed(() => action.value === 'score' || action.value === 'finish')
+const scoreReachesTarget = computed(() =>
+  isScoreAction.value && Math.max(score1.value ?? -1, score2.value ?? -1) >= (data.value?.target_points ?? Infinity),
+)
+const terminalAction = computed(() => action.value !== 'score' || scoreReachesTarget.value)
 const refundAmount = computed(() =>
   Number(selectedPlayer.value?.refundable ?? 0).toLocaleString(locale.value),
 )
@@ -84,20 +90,25 @@ const valid = computed(
     !needsRefresh.value &&
     reason.value.trim().length > 0 &&
     options.value.some((o) => o.value === action.value) &&
-    (action.value === 'score'
+    (isScoreAction.value
       ? Number.isInteger(score1.value) &&
         Number.isInteger(score2.value) &&
         score1.value! >= 0 &&
         score2.value! >= 0 &&
         score1.value! <= 32767 &&
         score2.value! <= 32767 &&
-        score1.value !== score2.value
+        (!terminalAction.value || score1.value !== score2.value)
       : !!selectedPlayer.value),
 )
 const confirmation = computed(() => {
   const name = selectedPlayer.value?.name ?? ''
   if (action.value === 'score')
-    return t('matchAdmin.confirmScore', { score: `${score1.value} : ${score2.value}` })
+    return t(scoreReachesTarget.value ? 'matchAdmin.confirmScoreFinal' : 'matchAdmin.confirmScoreInterim', {
+      score: `${score1.value} : ${score2.value}`,
+      target: data.value?.target_points ?? 0,
+    })
+  if (action.value === 'finish')
+    return t('matchAdmin.confirmFinish', { score: `${score1.value} : ${score2.value}` })
   if (action.value === 'advance') return t('matchAdmin.confirmAdvance', { name })
   if (action.value === 'refund')
     return t('matchAdmin.confirmRefund', { name, amount: refundAmount.value })
@@ -198,13 +209,21 @@ onMounted(() => load(true))
     </div>
     <p v-if="success" role="status" class="match-admin__success">{{ success }}</p>
     <template v-if="data && !loading">
+      <div
+        v-if="data.needs_admin_adjudication"
+        class="match-admin__adjudication"
+        role="alert"
+      >
+        <strong>{{ t('matchAdmin.adjudicationTitle') }}</strong>
+        <span>{{ t('matchAdmin.adjudicationBothMissing') }}</span>
+      </div>
       <section v-show="section === 'score' || section === 'players'" class="match-admin__section">
         <h3>{{ t(`matchDetails.sections.${section === 'players' ? 'players' : 'score'}`) }}</h3>
         <p v-if="!data.can_rule" class="match-admin__hint">{{ t('matchAdmin.locked') }}</p>
         <form v-if="options.length" @submit.prevent="reviewing = valid">
           <fieldset :disabled="busy || needsRefresh || reviewing">
             <div
-              v-if="section === 'players'"
+              v-if="section === 'players' || options.length > 1"
               class="match-admin__action-choices"
               role="group"
               :aria-label="t('matchAdmin.action')"
@@ -223,7 +242,7 @@ onMounted(() => load(true))
                 @click="action = option.value"
               />
             </div>
-            <div v-if="action === 'score'" class="match-admin__scores">
+            <div v-if="isScoreAction" class="match-admin__scores">
               <div v-for="(player, index) in data.players" :key="player.id">
                 <label :for="`${prefix}-score-${index}`">{{ player.name }}</label>
                 <InputNumber
@@ -301,7 +320,7 @@ onMounted(() => load(true))
               required
               :disabled="busy || needsRefresh || reviewing"
             />
-            <small>{{ t('matchAdmin.private') }}</small>
+            <small>{{ t(terminalAction ? 'matchAdmin.sharedReason' : 'matchAdmin.private') }}</small>
           </fieldset>
           <Button
             v-if="!reviewing"
@@ -322,7 +341,7 @@ onMounted(() => load(true))
               })
             }}
           </p>
-          <p v-if="action !== 'refund'" class="match-admin__hint">
+            <p v-if="terminalAction && action !== 'refund'" class="match-admin__hint">
             {{ t('matchAdmin.finalWarning') }}
           </p>
           <div class="match-admin__buttons">
@@ -371,6 +390,15 @@ onMounted(() => load(true))
   gap: 16px;
   margin-top: 20px;
   font-size: 13px;
+}
+.match-admin__adjudication {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  color: #fef3c7;
+  background: #451a03;
 }
 .match-admin__section {
   padding: 16px;

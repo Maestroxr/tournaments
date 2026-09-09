@@ -1,4 +1,4 @@
-export type MatchAdminAction = 'score' | 'advance' | 'disqualify' | 'refund'
+export type MatchAdminAction = 'score' | 'finish' | 'advance' | 'disqualify' | 'refund'
 export type MatchPanelSection = 'live' | 'score' | 'players' | 'times' | 'note' | 'history'
 export interface MatchAdminPlayer {
   id: number
@@ -35,6 +35,8 @@ export interface MatchAdministration {
   }
   players: MatchAdminPlayer[]
   target_points: number
+  needs_admin_adjudication: boolean
+  absent_since: Partial<Record<'white' | 'black', number>>
   times: {
     connection_created_at: string | null
     live_started_at: string | null

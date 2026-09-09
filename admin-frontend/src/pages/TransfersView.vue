@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import AutoComplete, { type AutoCompleteCompleteEvent } from 'primevue/autocomplete'
 import WalletAdjustmentPanel from '@/components/WalletAdjustmentPanel.vue'
 import { transferKindLabel } from '@/utils/adminLabels'
 import { useI18n } from '@/i18n'
@@ -24,16 +25,53 @@ const transfers = ref<Transfer[]>([])
 const loading = ref(false)
 const error = ref('')
 const { locale, t } = useI18n()
+interface UserOption { id: number; username: string; phone_number: string }
+const selectedUser = ref<UserOption | string | null>(null)
+const userOptions = ref<UserOption[]>([])
+const userSearchError = ref('')
+const offset = ref(0)
+const pageSize = 50
+const count = ref(0)
+let loadSequence = 0
+let searchSequence = 0
+
+async function searchUsers(event: AutoCompleteCompleteEvent) {
+  const sequence = ++searchSequence
+  userSearchError.value = ''
+  try {
+    const users = await apiFetch<UserOption[]>(`/api/admin/users?q=${encodeURIComponent(event.query.trim())}`)
+    if (sequence === searchSequence) userOptions.value = users
+  } catch (caught) {
+    if (sequence === searchSequence) userSearchError.value = formatApiError(caught)
+  }
+}
+
+watch(() => typeof selectedUser.value === 'object' ? selectedUser.value?.id : null, () => {
+  offset.value = 0
+  void load()
+})
+
+function changePage(delta: number) {
+  offset.value = Math.max(0, offset.value + delta * pageSize)
+  void load()
+}
 
 async function load() {
+  const sequence = ++loadSequence
   loading.value = true
   error.value = ''
   try {
-    transfers.value = await apiFetch<Transfer[]>('/api/admin/transfers')
+    const query = new URLSearchParams({ limit: String(pageSize), offset: String(offset.value) })
+    if (selectedUser.value && typeof selectedUser.value === 'object') query.set('user_id', String(selectedUser.value.id))
+    const data = await apiFetch<{ items: Transfer[]; count: number }>(`/api/admin/wallet-transactions?${query}`)
+    if (sequence === loadSequence) {
+      transfers.value = data.items
+      count.value = data.count
+    }
   } catch (caught: unknown) {
-    error.value = formatApiError(caught)
+    if (sequence === loadSequence) error.value = formatApiError(caught)
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -55,6 +93,20 @@ onMounted(load)
     </div>
 
     <WalletAdjustmentPanel @adjusted="load" />
+
+    <div class="mb-4 flex flex-wrap items-end gap-3">
+      <label class="block w-full max-w-sm">
+        <span class="mb-1 block text-sm">{{ t('transfers.filterUser') }}</span>
+        <AutoComplete v-model="selectedUser" :suggestions="userOptions" option-label="username" :placeholder="t('transfers.searchUser')" force-selection dropdown fluid @complete="searchUsers">
+          <template #option="{ option }">
+            <span class="text-inherit">{{ option.username }} <small>{{ option.phone_number }}</small></span>
+          </template>
+        </AutoComplete>
+      </label>
+      <Button :label="t('transfers.allUsers')" severity="secondary" outlined @click="selectedUser = null" />
+      <span class="text-sm">{{ t('transfers.resultCount', { count }) }}</span>
+    </div>
+    <p v-if="userSearchError" role="alert" class="mb-3 text-red-400">{{ userSearchError }}</p>
 
     <div v-if="error" class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ error }}</div>
     <DataTable v-else :value="transfers" :loading="loading" data-key="id" striped-rows show-gridlines size="small">
@@ -82,5 +134,9 @@ onMounted(load)
         <template #body="{ data }">{{ data.note || '-' }}</template>
       </Column>
     </DataTable>
+    <nav v-if="count > pageSize" class="mt-4 flex justify-end gap-2" :aria-label="t('transfers.title')">
+      <Button :label="t('transfers.previousPage')" severity="secondary" :disabled="loading || offset === 0" @click="changePage(-1)" />
+      <Button :label="t('transfers.nextPage')" severity="secondary" :disabled="loading || offset + pageSize >= count" @click="changePage(1)" />
+    </nav>
   </section>
 </template>

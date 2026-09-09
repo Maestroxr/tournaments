@@ -24,6 +24,8 @@ function data(extra: Partial<MatchAdministration> = {}): MatchAdministration {
     note: '',
     can_rule: true,
     target_points: 5,
+    needs_admin_adjudication: false,
+    absent_since: {},
     players: [
       { id: 1, name: 'Dana', disqualified: false, refundable: '50.00' },
       { id: 2, name: 'Ben', disqualified: false, refundable: '50.00' },
@@ -82,6 +84,18 @@ describe('Match organizer actions', () => {
     expect(wrapper.findAll('.match-times dd').map((n) => n.text())).toEqual(['—', '—', '—'])
   })
 
+  it('flags both absent players for an administrator without deciding the result', async () => {
+    await view(data({ needs_admin_adjudication: true, absent_since: { white: 10, black: 11 } }))
+
+    expect(wrapper.get('.match-admin__adjudication').text()).toContain(
+      'Administrator decision required',
+    )
+    expect(wrapper.get('.match-admin__adjudication').text()).toContain(
+      'no winner was selected automatically',
+    )
+    expect(posts()).toHaveLength(0)
+  })
+
   it.each([false, true])(
     'requires review before tournament-wide disqualification, refund=%s',
     async (refund) => {
@@ -136,6 +150,45 @@ describe('Match organizer actions', () => {
       score1: 5,
       score2: 2,
     })
+  })
+
+  it('allows a tied score while it remains below the match target', async () => {
+    await view()
+    const inputs = wrapper.findAllComponents(InputNumber)
+    inputs[0]!.vm.$emit('update:modelValue', 2)
+    inputs[1]!.vm.$emit('update:modelValue', 2)
+    await wrapper.get('#match-admin-12-reason').setValue('Scoreboard correction')
+
+    await review()
+
+    expect(wrapper.get('.match-admin__confirmation').text()).toContain('match remains active')
+    expect(wrapper.get('.match-admin__confirmation').text()).toContain('2 : 2')
+  })
+
+  it('distinguishes an interim score from an explicit below-target finish', async () => {
+    await view()
+    let inputs = wrapper.findAllComponents(InputNumber)
+    inputs[0]!.vm.$emit('update:modelValue', 2)
+    inputs[1]!.vm.$emit('update:modelValue', 1)
+    await wrapper.get('#match-admin-12-reason').setValue('Scoreboard correction')
+    await review()
+    expect(wrapper.get('.match-admin__confirmation').text()).toContain('match remains active')
+    api.mockResolvedValueOnce(data({ version: 'v2', result: { score: [2, 1], confirmed: false, winner_id: 1, resolution: '' } }))
+    await wrapper.get('[data-testid="confirm-ruling"]').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(posts()[0]![1]!.body as string).action).toBe('score')
+
+    await wrapper.get('[data-action="finish"]').trigger('click')
+    inputs = wrapper.findAllComponents(InputNumber)
+    inputs[0]!.vm.$emit('update:modelValue', 2)
+    inputs[1]!.vm.$emit('update:modelValue', 1)
+    await wrapper.get('#match-admin-12-reason').setValue('Organizer ended play')
+    await review()
+    expect(wrapper.get('.match-admin__confirmation').text()).toContain('End the match now')
+    api.mockResolvedValueOnce(data({ version: 'v3', can_rule: false }))
+    await wrapper.get('[data-testid="confirm-ruling"]').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(posts()[1]![1]!.body as string).action).toBe('finish')
   })
 
   it('offers a later refund only for a disqualified player with a remaining payment', async () => {

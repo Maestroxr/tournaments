@@ -5,6 +5,14 @@
   </h1>
 </div>
 
+## Business model and legal review
+
+The proposed subscription, tournament, prize, Coins, and existing-wallet transition rules are documented in [the Hebrew business and legal rules draft](BUSINESS_AND_LEGAL_RULES.he.md). Company-funded prizes and free entry do not by themselves establish legality. The new model must not launch payments or prizes before the required Israeli legal and accounting reviews and implementation checks are completed. The draft is not a professional approval or an implemented runtime restriction.
+
+## Beta budget and launch plan
+
+The [Hebrew beta launch plan](BETA_LAUNCH_PLAN.he.md) defines a proposed two-month budget, 5% and 10% paid-conversion scenarios, the corrected ILS 152,000 annual prize total, recruitment cohorts, measurement definitions, support operations, and expansion criteria. A separate [sponsor proposal draft](BETA_SPONSOR_PROPOSAL.he.md) specifies deliverables and funding conditions. These are planning documents; funding, recruitment, analytics implementation, and a full month of observed cohort data remain outstanding.
+
 ## Screenshots
 
 <div align="center">
@@ -177,3 +185,32 @@ which valid messages are rejected.
 Enable the **game server first**. It can only accept tickets that nobody is yet able to mint, so
 that half is inert on its own. Then enable this side. Rolling back is `GAMELINK_ENABLED=0` here:
 the button disappears and manual scoring carries on untouched.
+
+### Sandbox membership plan selection
+
+Map verified sandbox plans with `PAYPAL_GOLD_PLAN_ID`, `PAYPAL_PREMIUM_PLAN_ID`,
+and `PAYPAL_VIP_PLAN_ID`. Each configured ID must be valid and distinct. An empty
+tier cannot be purchased. Billing checks require at least one mapped plan when
+billing is enabled. `PAYPAL_PLAN_ID` is an optional default and, when set, must
+match one of these explicit mappings. It never assigns a tier by itself.
+
+Authenticated API calls (relative to `/tournaments-api`):
+
+- `GET /billing/plan?tier=GOLD` returns the selected `tier`, provider `amount`,
+  `currency`, and monthly `interval`.
+- `POST /billing/checkout` with JSON `{"tier":"GOLD"}` starts that purchase.
+  `PREMIUM` and `VIP` use the same endpoints. The server chooses the provider
+  plan and price; client-supplied prices, plan IDs, and access flags are ignored.
+- Omitting the tier uses only the explicitly mapped default, for compatibility
+  with the existing single-plan UI. Malformed bodies and invalid tiers are rejected.
+
+The saved purchase fixes its tier, provider plan, price, and currency. A retry
+with different terms returns a conflict and does not replace the pending purchase.
+Only a verified completed payment activates paid entitlements; checkout and
+provider activation alone do not. Existing unmapped subscriptions stay unmapped.
+No upgrade or proration flow is added here.
+
+The three-tier selection is currently available in the backend API; the existing
+UI has no tier selector yet. Tests simulate provider responses in an isolated
+database (`python manage.py test billing`); they are not a completed PayPal
+sandbox transaction. Configure actual sandbox IDs before an interactive trial.

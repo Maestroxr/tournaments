@@ -26,9 +26,16 @@ def validate_phone_number(value):
     return phone_number
 
 
+def require_phone_number(value):
+    phone_number = validate_phone_number(value)
+    if not phone_number:
+        raise ValidationError('Phone number is required.')
+    return phone_number
+
+
 class AdminUserCreateForm(UserCreationForm):
     is_staff = forms.BooleanField(required=False, label='Staff (admin access)')
-    phone_number = forms.CharField(required=False, max_length=24)
+    phone_number = forms.CharField(required=True, max_length=24)
 
     class Meta(UserCreationForm.Meta):
         model = User
@@ -42,7 +49,7 @@ class AdminUserCreateForm(UserCreationForm):
         return ret
 
     def clean_phone_number(self):
-        return validate_phone_number(self.cleaned_data.get('phone_number'))
+        return require_phone_number(self.cleaned_data.get('phone_number'))
 
     def save(self, commit=True):
         user = super().save(commit=commit)
@@ -56,7 +63,7 @@ class AdminUserCreateForm(UserCreationForm):
 
 class AdminUserUpdateForm(forms.ModelForm):
     is_staff = forms.BooleanField(required=False)
-    phone_number = forms.CharField(required=False, max_length=24)
+    phone_number = forms.CharField(required=True, max_length=24)
     new_password = forms.CharField(
         required=False, widget=forms.PasswordInput, label='New password (leave blank to keep)')
 
@@ -78,7 +85,7 @@ class AdminUserUpdateForm(forms.ModelForm):
         return username
 
     def clean_phone_number(self):
-        return validate_phone_number(self.cleaned_data.get('phone_number'))
+        return require_phone_number(self.cleaned_data.get('phone_number'))
 
     def save(self, commit=True):
         user = super().save(commit=False)

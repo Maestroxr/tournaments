@@ -17,6 +17,7 @@ from django.contrib import admin
 from django.urls import include, path
 
 urlpatterns = [
+    path('api/billing/', include('billing.urls')),
     path('admin/', admin.site.urls),
     path('', include('gamelink.urls')),
     path('', include('frontend.urls')),

@@ -16,7 +16,7 @@ from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
+from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, UserContact
 
 from gamelink import checks
 from gamelink.housekeeping import minimum_nonce_retention, purge_expired
@@ -36,12 +36,14 @@ from gamelink.views import playable_seat
 TICKET_SECRET = 'test-ticket-secret-not-a-real-one-0123456789'
 OTHER_SECRET  = 'test-other-secret-not-a-real-one-9876543210'
 RESULT_SECRET = 'test-result-secret-not-a-real-one-0123456789'
+COMMAND_SECRET = 'test-command-secret-not-a-real-one-0123456789'
 ROTATED_SECRET = 'test-rotated-secret-not-a-real-one-0123456789'
 
 gamelink_settings = override_settings(
     GAMELINK_ENABLED = True,
     GAMELINK_TICKET_SECRET = TICKET_SECRET,
     GAMELINK_RESULT_SECRETS = [RESULT_SECRET],
+    GAMELINK_COMMAND_SECRET = COMMAND_SECRET,
 )
 
 
@@ -423,6 +425,7 @@ class ChecksTest(TestCase):
             DEBUG = False,
             GAMELINK_TICKET_SECRET = TICKET_SECRET,
             GAMELINK_RESULT_SECRETS = [RESULT_SECRET],
+            GAMELINK_COMMAND_SECRET = COMMAND_SECRET,
             GAMELINK_BACKGAMMON_URL = 'https://backgammon.example',
         )
         settings.update(overrides)
@@ -474,6 +477,7 @@ class SettingsTest(TestCase):
         self.assertFalse(settings.GAMELINK_ENABLED)
         self.assertEqual(settings.GAMELINK_TICKET_SECRET, '')
         self.assertEqual(settings.GAMELINK_RESULT_SECRETS, list())
+        self.assertEqual(settings.GAMELINK_COMMAND_SECRET, '')
         self.assertEqual(settings.GAMELINK_BACKGAMMON_URL, '')
 
 
@@ -486,6 +490,7 @@ start_game_settings = override_settings(
     GAMELINK_ENABLED = True,
     GAMELINK_TICKET_SECRET = TICKET_SECRET,
     GAMELINK_RESULT_SECRETS = [RESULT_SECRET],
+    GAMELINK_COMMAND_SECRET = COMMAND_SECRET,
     GAMELINK_BACKGAMMON_URL = BACKGAMMON_URL,
 )
 
@@ -515,6 +520,8 @@ class StartGameTestBase(TestCase):
             User.objects.create_user(username = f'player-{user_idx + 1}', password = 'password')
             for user_idx in range(3)
         ]
+        for user_idx, user in enumerate((self.user1, self.user2, self.user3), start=1):
+            UserContact.objects.create(user=user, phone_number=f'050-123-45{user_idx:02d}')
         self.participants = {
             user.username: Participant.create_for_user(user)
             for user in (self.user1, self.user2, self.user3)
@@ -589,6 +596,17 @@ class StartGameViewTest(StartGameTestBase):
             set(IssuedTicket.objects.values_list('seat', flat=True)),
             {'p1', 'p2'},
         )
+
+    def test_phone_less_legacy_player_cannot_start_a_game(self):
+        UserContact.objects.filter(user=self.user1).delete()
+        self.login(self.user1)
+
+        direct_response = self.client.post(self.play_url())
+        tournament_response = self.client.post(self.tournament_play_url())
+
+        self.assertEqual(direct_response.status_code, 412)
+        self.assertEqual(tournament_response.status_code, 412)
+        self.assertNothingIssued()
 
     def test_posted_fixture_id_cannot_override_the_server_resolution(self):
         other = Fixture.objects.create(

@@ -39,7 +39,8 @@ const clientFieldErrors = computed(() => {
   if (!username.value.trim()) errs.username = t('users.usernameRequired')
   else if (!/^[A-Za-z0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameCharacters')
   if (!password.value) errs.password1 = t('users.passwordRequired')
-  if (phoneNumber.value && !/^\+?[0-9 ()-]+$/.test(phoneNumber.value)) errs.phone_number = t('users.validPhone')
+  if (!phoneNumber.value.trim()) errs.phone_number = t('users.validPhone')
+  else if (!/^\+?[0-9 ()-]+$/.test(phoneNumber.value)) errs.phone_number = t('users.validPhone')
   else if (phoneNumber.value) {
     const digitCount = phoneNumber.value.replace(/\D/g, '').length
     if (digitCount < 7 || digitCount > 15) errs.phone_number = t('users.validPhone')

@@ -463,7 +463,7 @@ function activityIcon(kind: ActivityKind) {
 
 function activityActionLabel(action: string) {
   const knownActions = new Set([
-    'score', 'advance', 'disqualify', 'refund', 'player_result',
+    'score', 'finish', 'advance', 'disqualify', 'refund', 'player_result',
     'deposit', 'withdrawal', 'tournament_entry', 'tournament_refund',
     'tournament_prize', 'registered',
   ])

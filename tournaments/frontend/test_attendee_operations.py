@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
-from tournaments.models import Participant, Tournament, TournamentRegistration, WalletTransaction
+from tournaments.models import Participant, Tournament, TournamentRegistration, UserContact, WalletTransaction
 
 
 DEFINITION = """
@@ -23,6 +23,8 @@ class AttendeeOperationsTests(TestCase):
     def setUp(self):
         self.staff = User.objects.create_user(username='organizer', is_staff=True)
         self.players = [User.objects.create_user(username=f'player-{index}') for index in range(4)]
+        for index, player in enumerate(self.players):
+            UserContact.objects.create(user=player, phone_number=f'050-123-45{index:02d}')
         self.tournament = Tournament.load(
             DEFINITION,
             'Operations cup',
@@ -72,6 +74,18 @@ class AttendeeOperationsTests(TestCase):
             tournament=self.tournament, participant__user=self.players[2]).exists())
         self.assertEqual(self.tournament.participations.count(), 2)
         self.assertEqual(WalletTransaction.balance_for_user(self.players[2]), before)
+
+    def test_admin_cannot_add_a_legacy_player_without_a_phone_number(self):
+        legacy_player = User.objects.create_user(username='legacy-no-phone')
+
+        response = self.post_player(legacy_player)
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('phone_number', response.json()['errors'])
+        self.assertFalse(TournamentRegistration.objects.filter(
+            tournament=self.tournament,
+            participant__user=legacy_player,
+        ).exists())
 
     def test_public_join_can_waitlist_only_after_capacity_closure(self):
         self.post_player(self.players[0])

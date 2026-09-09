@@ -1,4 +1,22 @@
-type Translate = (key: string) => string
+type Translate = (key: string, params?: Record<string, string | number>) => string
+
+const BANK_SECONDS_PER_POINT: Record<string, number> = {
+  fast: 30,
+  normal: 60,
+  slow: 120,
+}
+
+function formatClockUnit(count: number, singularKey: string, pluralKey: string, translate: Translate): string {
+  return translate(count === 1 ? singularKey : pluralKey, { count })
+}
+
+function formatClockDuration(seconds: number, translate: Translate): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  if (!minutes) return formatClockUnit(remainder, 'tournaments.clockSecond', 'tournaments.clockSeconds', translate)
+  if (!remainder) return formatClockUnit(minutes, 'tournaments.clockMinute', 'tournaments.clockMinutes', translate)
+  return `${formatClockUnit(minutes, 'tournaments.clockMinute', 'tournaments.clockMinutes', translate)} ${formatClockUnit(remainder, 'tournaments.clockSecond', 'tournaments.clockSeconds', translate)}`
+}
 
 export function tournamentStateLabel(state: string, translate?: Translate): string {
   if (translate && ['draft', 'open', 'active', 'finished'].includes(state)) {
@@ -27,10 +45,27 @@ export function tournamentStateFilterLabel(state: string, translate?: Translate)
   return state
 }
 
-export function timeControlLabel(value: string, translate?: Translate): string {
+export function timeControlDetail(value: string, targetPoints?: number, translate?: Translate): string {
+  if (translate && BANK_SECONDS_PER_POINT[value]) {
+    const secondsPerPoint = BANK_SECONDS_PER_POINT[value]
+    const points = Number.isFinite(targetPoints) && Number(targetPoints) > 0 ? Number(targetPoints) : 1
+    return translate('tournaments.timeControlDetail', {
+      bank: formatClockDuration(secondsPerPoint * points, translate),
+      rate: formatClockDuration(secondsPerPoint, translate),
+    })
+  }
+  return value
+}
+
+export function timeControlLabel(value: string, targetPoints?: number, translate?: Translate): string {
   if (translate) {
     if (value === 'none') return translate('tournaments.noClock')
-    if (['fast', 'normal', 'slow'].includes(value)) return translate(`tournaments.${value}`)
+    if (BANK_SECONDS_PER_POINT[value]) {
+      return translate('tournaments.timeControlSummary', {
+        pace: translate(`tournaments.${value}`),
+        detail: timeControlDetail(value, targetPoints, translate),
+      })
+    }
   }
   if (value === 'none') return 'No clock'
   if (value === 'fast') return 'Fast clock'

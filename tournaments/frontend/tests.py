@@ -20,6 +20,7 @@ def strip_yaml_indent(yaml):
     return '\n'.join((line[indent:] for line in lines))
 
 
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
 class SignupApiTests(TestCase):
 
     def test_signup_capitalizes_first_username_character(self):
@@ -27,6 +28,8 @@ class SignupApiTests(TestCase):
             reverse('api-signup'),
             data=json.dumps({
                 'username': 'uSer1',
+                'email': 'user1@example.com',
+                'phone_number': '0501234567',
                 'password1': password1,
                 'password2': password1,
             }),
@@ -34,9 +37,8 @@ class SignupApiTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()['username'], 'USer1')
         self.assertTrue(models.User.objects.filter(username='USer1').exists())
-        self.assertTrue(response.wsgi_request.user.is_authenticated)
+        self.assertFalse(response.wsgi_request.user.is_authenticated)
 
     def test_signup_checks_duplicates_after_capitalization(self):
         models.User.objects.create_user(username='User1', password=password1)
@@ -403,6 +405,7 @@ class ApiJoinAutoCloseRegistrationTests(TestCase):
         )
         add_participants(tournament, num_users=5)
         final_user = models.User.objects.create_user(username='final-player', password=password1)
+        models.UserContact.objects.create(user=final_user, phone_number='0501234567')
         self.client.force_login(final_user)
 
         response = self.client.post(reverse('api-join', kwargs={'pk': tournament.pk}))
@@ -423,6 +426,8 @@ class ApiTournamentPlayabilitySummaryTests(TestCase):
             published=True,
         )
         self.users = start_tournament(self.tournament, num_users=10)
+        for index, user in enumerate(self.users):
+            models.UserContact.objects.create(user=user, phone_number=f'05012345{index:02d}')
         self.client.force_login(self.users[0])
 
     def tournament_payload(self):

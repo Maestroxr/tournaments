@@ -157,7 +157,7 @@ class Tournament(models.Model):
         if self.state == 'active':
             return 'active'
         if self.state == 'finished':
-            return 'results_confirmed' if self.results_confirmed_at else 'finished'
+            return 'finished'
         if self.registration_closed_at is None:
             return 'registration_open'
         if self.draw_generated_at is None or not self.draw_order:
@@ -1195,7 +1195,7 @@ class Fixture(models.Model):
         # A result reported by a trusted game server is authoritative and collects no human
         # confirmations, so without this it would never reach `required_confirmations_count` and
         # would stall the tournament forever.
-        if self.auto_confirmed or self.admin_result == 'score':
+        if self.auto_confirmed or self.admin_result in ('score', 'finish'):
             return True
         return self.confirmations.count() >= self.required_confirmations_count
 

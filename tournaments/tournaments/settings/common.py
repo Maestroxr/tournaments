@@ -41,6 +41,11 @@ def env_list(name):
 # Deployment environments can still provide real environment variables, which always take priority.
 load_local_env(BASE_DIR.parent / '.env')
 
+# Opt-in Web Push. The private key belongs only on the server.
+WEB_PUSH_PUBLIC_KEY = os.environ.get('WEB_PUSH_PUBLIC_KEY', '')
+WEB_PUSH_PRIVATE_KEY = os.environ.get('WEB_PUSH_PRIVATE_KEY', '')
+WEB_PUSH_SUBJECT = os.environ.get('WEB_PUSH_SUBJECT', '')
+
 
 # Application definition
 
@@ -60,6 +65,7 @@ INSTALLED_APPS = [
     'tournaments',
     'frontend',
     'gamelink',
+    'billing',
 ]
 
 MIDDLEWARE = [
@@ -187,8 +193,35 @@ GAMELINK_AUDIENCE       = 'backgammon'
 GAMELINK_BACKGAMMON_URL = os.environ.get('GAMELINK_BACKGAMMON_URL', '')  # https://…, no path
 GAMELINK_TICKET_SECRET  = os.environ.get('GAMELINK_TICKET_SECRET', '')
 GAMELINK_RESULT_SECRETS = [s for s in os.environ.get('GAMELINK_RESULT_SECRETS', '').split(',') if s]
+GAMELINK_COMMAND_SECRET = os.environ.get('GAMELINK_COMMAND_SECRET', '')
 GAMELINK_TICKET_TTL     = 120        # seconds a minted ticket stays redeemable
 GAMELINK_LINK_TTL       = 7200       # seconds a game link stays open before it is refreshed
 GAMELINK_CLOCK_SKEW     = 300        # seconds of tolerance on an inbound result timestamp
 GAMELINK_MAX_BODY       = 64 * 1024  # bytes; larger result bodies are rejected unread
 GAMELINK_TARGET_POINTS  = 1          # match length, in points; decided (plan §9, decision 1)
+
+# Set the canonical public website URL, never construct email links from the Host header.
+ACCOUNT_FRONTEND_URL = os.environ.get('ACCOUNT_FRONTEND_URL', 'http://localhost:5174/tournaments')
+PASSWORD_RESET_TIMEOUT = 3600
+EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', '1') == '1'
+EMAIL_TIMEOUT = 10
+DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'accounts@localhost')
+
+# Sandbox subscriptions. No real-money endpoint is supported by this integration.
+BILLING_ENABLED = os.environ.get('BILLING_ENABLED', '0') == '1'
+PAYPAL_ENVIRONMENT = os.environ.get('PAYPAL_ENVIRONMENT', 'sandbox')
+PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
+PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')
+PAYPAL_WEBHOOK_ID = os.environ.get('PAYPAL_WEBHOOK_ID', '')
+PAYPAL_PLAN_ID = os.environ.get('PAYPAL_PLAN_ID', '')
+# Explicit sandbox provider-plan mapping. PAYPAL_PLAN_ID is an optional default
+# and must match one of these IDs; it never assigns a tier on its own.
+PAYPAL_GOLD_PLAN_ID = os.environ.get('PAYPAL_GOLD_PLAN_ID', '')
+PAYPAL_PREMIUM_PLAN_ID = os.environ.get('PAYPAL_PREMIUM_PLAN_ID', '')
+PAYPAL_VIP_PLAN_ID = os.environ.get('PAYPAL_VIP_PLAN_ID', '')
+BILLING_RETURN_URL = os.environ.get('BILLING_RETURN_URL', 'http://localhost:5173/tournaments/subscription')

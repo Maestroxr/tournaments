@@ -36,7 +36,7 @@ const { t } = useI18n()
       />
       <AppInput
         v-model="phoneNumber"
-        :label="t('users.phoneOptional')"
+        :label="t('users.phone')"
         :placeholder="t('users.phonePlaceholder')"
         type="tel"
         :error="errors.phone_number"

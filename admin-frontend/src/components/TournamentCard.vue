@@ -134,7 +134,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
 
     <dl class="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 text-sm">
       <TournamentMetaItem :label="t('tournaments.matchFormat')" :value="t('tournaments.raceTo', { points: tournament.target_points })" />
-      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, t)" />
+      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, tournament.target_points, t)" />
       <TournamentMetaItem
         :label="t('tournaments.doublingCube')"
         :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')"

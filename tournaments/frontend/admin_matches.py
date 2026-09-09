@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from gamelink.models import GameLink
+from gamelink.commands import deliver_admin_command_safely, queue_admin_command
 from tournaments.models import (Fixture, FixtureAdminState, FixtureAudit, Knockout,
                                 Participation, Tournament, TournamentRegistration,
                                 User, WalletTransaction)
@@ -44,6 +45,7 @@ def rule_allowed(fixture):
 def details(fixture):
     state = FixtureAdminState.objects.filter(fixture=fixture).first()
     link = GameLink.objects.filter(fixture=fixture).first()
+    live_presence = (((link.live_snapshot or {}).get('state') or {}).get('presence') or {}) if link else {}
     start = fixture.audit_events.filter(action='live_started').order_by('created_at').first()
     version_data = {**snapshot(fixture), 'revision': state.revision if state else 0,
                     'link_status': link.status if link else None}
@@ -57,6 +59,8 @@ def details(fixture):
     return {'fixture_id': fixture.id, 'version': hashlib.sha256(json.dumps(version_data, sort_keys=True).encode()).hexdigest(),
             'note': state.note if state else '', 'result': snapshot(fixture), 'can_rule': bool(rule_allowed(fixture)),
             'players': players, 'target_points': fixture.mode.tournament.target_points,
+            'needs_admin_adjudication': bool(live_presence.get('needsAdminAdjudication')),
+            'absent_since': live_presence.get('absentSince') or {},
             'times': {'connection_created_at': link.created_at.isoformat() if link else None,
                       'live_started_at': start.created_at.isoformat() if start else None,
                       'ended_at': (fixture.admin_resolved_at or (link.completed_at if link else None)).isoformat()
@@ -108,7 +112,7 @@ def admin_match(request, pk, fixture_id):
             if body.get('version') != current['version']:
                 return JsonResponse({'detail': 'Match changed. Refresh its details before trying again.'}, status=409)
             action = body.get('action')
-            if action not in ('note', 'score', 'advance', 'disqualify', 'refund'):
+            if action not in ('note', 'score', 'finish', 'advance', 'disqualify', 'refund'):
                 raise ValidationError('Unknown action.')
             reason = body.get('reason', '')
             if not isinstance(reason, str) or len(reason) > 1000 or (action != 'note' and not reason.strip()):
@@ -135,11 +139,16 @@ def admin_match(request, pk, fixture_id):
                     return JsonResponse({'detail': 'Only unsettled current-round matches with both players in a single-stage knockout can be ruled on. Confirmed results are locked.'}, status=409)
                 if body.get('confirm') is not True:
                     raise ValidationError('Explicit confirmation is required.')
-                if action == 'score':
+                terminal = action in ('finish', 'advance', 'disqualify')
+                if action in ('score', 'finish'):
                     scores = [body.get('score1'), body.get('score2')]
-                    if any(type(score) is not int or score < 0 or score > 32767 for score in scores) or scores[0] == scores[1]:
-                        raise ValidationError('Enter two non-negative integer scores with a winner.')
+                    if any(type(score) is not int or score < 0 or score > 32767 for score in scores):
+                        raise ValidationError('Enter two non-negative integer scores.')
                     fixture.score1, fixture.score2 = scores
+                    terminal = terminal or max(scores) >= tournament.target_points
+                    if terminal and scores[0] == scores[1]:
+                        raise ValidationError('A final score must have a winner.')
+                    fixture.admin_winner = None
                 else:
                     player = next((p for p in [fixture.player1, fixture.player2] if p.pk == body.get('participant_id')), None)
                     if player is None:
@@ -159,14 +168,36 @@ def admin_match(request, pk, fixture_id):
                         registration.save(update_fields=['status', 'checked_in_at', 'updated_at'])
                         if body.get('refund') is True:
                             extra['refund'] = refund(tournament, player, request.user, reason.strip())
-                fixture.admin_result = action
-                fixture.admin_resolved_at = timezone.now()
+                fixture.admin_result = action if terminal else ''
+                fixture.admin_resolved_at = timezone.now() if terminal else None
                 # The legacy score fields allow SQL NULL but not blank form values.
                 # Administrative walkovers deliberately carry no invented score.
-                fixture.full_clean(exclude=['score1', 'score2'] if action != 'score' else None)
+                if terminal or action not in ('score', 'finish'):
+                    fixture.full_clean(exclude=['score1', 'score2'] if action not in ('score', 'finish') else None)
                 fixture.save()
                 fixture.confirmations.clear()
-                tournament.update_state()
+                link = GameLink.objects.select_for_update().filter(fixture=fixture).first()
+                if link is not None:
+                    winner = fixture.winner if terminal else None
+                    winner_seat = ('p1' if winner and winner.pk == fixture.player1_id else
+                                   'p2' if winner and winner.pk == fixture.player2_id else None)
+                    command = queue_admin_command(link, {
+                        'v': 1,
+                        'command_revision': state.revision + 1,
+                        'action': 'finish' if terminal else 'score_update',
+                        'score': [fixture.score1, fixture.score2],
+                        'winner_seat': winner_seat,
+                        'reason': reason.strip() if terminal else '',
+                    })
+                    if terminal:
+                        link.status = 'completed'
+                        link.completed_at = timezone.now()
+                        link.save(update_fields=['status', 'completed_at'])
+                    if command is not None:
+                        transaction.on_commit(
+                            lambda command_id=command.pk: deliver_admin_command_safely(command_id))
+                if terminal:
+                    tournament.update_state()
             state.revision += 1
             state.save()
             FixtureAudit.objects.create(fixture=fixture, actor=request.user, action=action,

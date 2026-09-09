@@ -62,24 +62,12 @@ class AlertMixin:
         return context
 
 
-class SignupView(VersionInfoMixin, View):
-
+class SignupView(View):
     def get(self, request, *args, **kwargs):
-        context = self.get_context_data(**kwargs)
-        context['form'] = SignupForm()
-        return render(request, 'frontend/signup.html', context)
+        from django.conf import settings
+        return redirect(f'{settings.ACCOUNT_FRONTEND_URL.rstrip("/")}/account/signup')
 
-    def post(self, request, *args, **kwargs):
-        form = SignupForm(request.POST)
-        if form.is_valid():
-            form.save()
-            username = form.cleaned_data.get('username')
-            password = form.cleaned_data.get('password1')
-            user = authenticate(username=username, password=password)
-            login(request, user)
-            return redirect('index')
-        else:
-            return render(request, 'frontend/signup.html', dict(form=form))
+    post = get
 
 
 class DashboardView(AdminRequiredMixin, VersionInfoMixin, View):
@@ -736,6 +724,9 @@ class UserCreateView(AdminRequiredMixin, VersionInfoMixin, FormView):
     form_class = AdminUserCreateForm
 
     def form_valid(self, form):
+        from .permissions import may_manage_user
+        if not may_manage_user(self.request.user, grant_staff=form.cleaned_data.get('is_staff', False)):
+            return HttpResponseForbidden('Only a superuser can manage administrator accounts.')
         user = form.save()
         self.request.session['alert'] = dict(status='success', text=f'User "{user.username}" created.')
         return redirect('user-list')
@@ -769,6 +760,10 @@ class UserUpdateView(AdminRequiredMixin, VersionInfoMixin, FormView):
         return kw
 
     def form_valid(self, form):
+        from .permissions import may_manage_user
+        original = User.objects.get(pk=self.user_obj.pk)
+        if not may_manage_user(self.request.user, original, grant_staff=form.cleaned_data.get('is_staff', False)):
+            return HttpResponseForbidden('Only a superuser can manage administrator accounts.')
         user = form.save()
         self.request.session['alert'] = dict(status='success', text=f'User "{user.username}" updated.')
         return redirect('user-list')
@@ -794,6 +789,9 @@ class UserDeleteView(AdminRequiredMixin, VersionInfoMixin, View):
 
     def post(self, req, pk):
         u = get_object_or_404(User, pk=pk)
+        from .permissions import may_manage_user
+        if not may_manage_user(req.user, u):
+            return HttpResponseForbidden('Only a superuser can manage administrator accounts.')
         if u.id == req.user.id:
             return HttpResponse('Cannot delete yourself', status=403)
         u.delete()

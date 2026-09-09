@@ -77,6 +77,10 @@ async function adjust(action: 'deposit' | 'withdraw') {
     error.value = t('users.positiveAmount')
     return
   }
+  if (!note.value.trim()) {
+    error.value = t('transfers.noteRequired')
+    return
+  }
 
   submitting.value = true
   try {
@@ -147,12 +151,12 @@ async function adjust(action: 'deposit' | 'withdraw') {
             <template #option="{ option }">
               <div class="flex w-full items-center justify-between gap-4 py-1">
                 <div class="min-w-0">
-                  <div class="truncate font-semibold text-white">{{ option.username }}</div>
-                  <div class="truncate text-xs text-zinc-500">
+                  <div class="truncate font-semibold text-inherit">{{ option.username }}</div>
+                  <div class="truncate text-xs text-inherit opacity-80">
                     {{ option.phone_number || t('common.noPhone') }}
                   </div>
                 </div>
-                <span class="shrink-0 text-sm font-semibold text-emerald-700">{{
+                <span class="shrink-0 text-sm font-semibold text-inherit">{{
                   Number(option.balance || 0).toFixed(2)
                 }}</span>
               </div>
@@ -177,12 +181,13 @@ async function adjust(action: 'deposit' | 'withdraw') {
         <label class="block min-w-0">
           <span class="mb-1.5 block text-sm font-semibold text-zinc-800">{{
             t('common.note')
-          }}</span>
+          }} *</span>
           <InputText
             v-model="note"
             :placeholder="t('transfers.notePlaceholder')"
             class="w-full"
             maxlength="255"
+            required
           />
         </label>
       </div>

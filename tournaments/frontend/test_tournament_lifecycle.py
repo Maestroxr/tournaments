@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from tournaments.models import (
     Fixture, Participant, Participation, Tournament, TournamentRegistration,
-    WalletTransaction,
+    UserContact, WalletTransaction,
 )
 
 
@@ -30,6 +30,8 @@ class TournamentLifecycleTests(TestCase):
             User.objects.create_user(username=f"player{index}", password="pass")
             for index in range(1, 4)
         ]
+        for index, player in enumerate(self.players):
+            UserContact.objects.create(user=player, phone_number=f'050123456{index}')
         self.tournament = Tournament.load(
             DEFINITION,
             "Lifecycle cup",
@@ -291,13 +293,7 @@ class TournamentLifecycleTests(TestCase):
         locked = self.post("api-admin-tournament-draw")
         self.assertEqual(locked.status_code, 412)
 
-    def test_only_finished_results_can_be_confirmed(self):
-        for user in self.players[:2]:
-            self.add_player(user)
-        response = self.post("api-admin-tournament-confirm-results")
-        self.assertEqual(response.status_code, 412)
-
-    def test_finished_results_receive_explicit_organizer_approval(self):
+    def test_results_are_final_automatically_when_tournament_finishes(self):
         for user in self.players[:2]:
             self.add_player(user)
         self.post("api-admin-tournament-close-registration")
@@ -312,9 +308,15 @@ class TournamentLifecycleTests(TestCase):
         self.tournament.refresh_from_db()
         self.assertEqual(self.tournament.state, "finished")
 
-        response = self.post("api-admin-tournament-confirm-results")
+        self.assertEqual(self.tournament.lifecycle_state, "finished")
+        self.assertIsNone(self.tournament.results_confirmed_at)
+        self.assertEqual(
+            list(self.tournament.podium.values_list("user_id", flat=True)),
+            [fixture.player1.user_id, fixture.player2.user_id],
+        )
 
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()["lifecycle_state"], "results_confirmed")
+        # Historical organizer approvals must not introduce a separate lifecycle step.
+        self.tournament.results_confirmed_at = timezone.now()
+        self.tournament.save(update_fields=["results_confirmed_at"])
         self.tournament.refresh_from_db()
-        self.assertIsNotNone(self.tournament.results_confirmed_at)
+        self.assertEqual(self.tournament.lifecycle_state, "finished")

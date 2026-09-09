@@ -2,11 +2,11 @@ from decimal import Decimal
 from datetime import timedelta
 
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from gamelink.models import GameLink
+from gamelink.models import AdminGameCommand, GameLink
 from tournaments.models import Tournament, Participant, Participation, Fixture, FixtureAudit, WalletTransaction
 
 
@@ -66,6 +66,81 @@ class MatchAdministrationTests(TestCase):
         final = self.tournament.stages.first().fixtures.get(level=1)
         self.assertIn(self.fixture.player1_id, [final.player1_id, final.player2_id])
         self.assertEqual(self.post(action='score', score1=2, score2=5).status_code, 409)
+
+    def test_interim_score_below_target_keeps_match_open(self):
+        response = self.post(action='score', score1=2, score2=1)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (2, 1))
+        self.assertFalse(self.fixture.is_confirmed)
+        self.assertEqual(self.fixture.admin_result, '')
+        self.assertIsNone(self.fixture.admin_resolved_at)
+        self.assertTrue(response.json()['can_rule'])
+        self.assertEqual(self.post(action='score', score1=3, score2=1).status_code, 200)
+
+    def test_tied_interim_score_is_allowed_but_a_tied_final_score_is_not(self):
+        response = self.post(action='score', score1=2, score2=2)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.score, (2, 2))
+        self.assertFalse(self.fixture.is_confirmed)
+        self.assertEqual(self.post(action='finish', score1=2, score2=2).status_code, 400)
+        self.assertEqual(self.post(action='score', score1=5, score2=5).status_code, 400)
+
+    def test_both_missing_live_players_are_flagged_without_settling_the_fixture(self):
+        GameLink.objects.create(
+            fixture=self.fixture, expires_at=timezone.now() + timedelta(hours=1),
+            live_snapshot={'state': {'presence': {
+                'needsAdminAdjudication': True,
+                'absentSince': {'white': 10, 'black': 11},
+            }}},
+        )
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['needs_admin_adjudication'])
+        self.assertEqual(response.json()['absent_since'], {'white': 10, 'black': 11})
+        self.fixture.refresh_from_db()
+        self.assertFalse(self.fixture.is_confirmed)
+
+    def test_explicit_finish_can_close_a_below_target_score(self):
+        response = self.post(action='finish', score1=2, score2=1)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.fixture.refresh_from_db()
+        self.assertTrue(self.fixture.is_confirmed)
+        self.assertEqual(self.fixture.admin_result, 'finish')
+        final = self.tournament.stages.first().fixtures.get(level=1)
+        self.assertIn(self.fixture.player1_id, [final.player1_id, final.player2_id])
+
+    @override_settings(
+        GAMELINK_ENABLED=True,
+        GAMELINK_COMMAND_SECRET='test-command-secret-not-real-0123456789',
+    )
+    def test_live_score_and_finish_create_durable_idempotent_commands(self):
+        link = GameLink.objects.create(
+            fixture=self.fixture, status='playing', external_room_id='11111111-1111-1111-1111-111111111111',
+            expires_at=timezone.now() + timedelta(hours=1), target_points=5,
+        )
+        with self.captureOnCommitCallbacks(execute=False):
+            response = self.post(action='score', score1=2, score2=1)
+        self.assertEqual(response.status_code, 200, response.content)
+        command = AdminGameCommand.objects.get(game_link=link)
+        self.assertEqual(command.body['action'], 'score_update')
+        self.assertEqual(command.body['score'], [2, 1])
+        self.assertEqual(command.body['command_id'], str(command.pk))
+        self.assertEqual(command.body['command_revision'], 1)
+
+        with self.captureOnCommitCallbacks(execute=False):
+            response = self.post(action='finish', score1=2, score2=1, reason='Stopped by organizer')
+        self.assertEqual(response.status_code, 200, response.content)
+        terminal = AdminGameCommand.objects.filter(game_link=link).order_by('created_at').last()
+        self.assertEqual(terminal.body['action'], 'finish')
+        self.assertEqual(terminal.body['winner_seat'], 'p1')
+        self.assertEqual(terminal.body['reason'], 'Stopped by organizer')
+        self.assertEqual(terminal.body['command_revision'], 2)
+        link.refresh_from_db()
+        self.assertEqual(link.status, 'completed')
 
     def test_disqualification_is_tournament_wide_without_fabricated_score_or_automatic_refund(self):
         response = self.post(action='disqualify', participant_id=self.fixture.player1_id)

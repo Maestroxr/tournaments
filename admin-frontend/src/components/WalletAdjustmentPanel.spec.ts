@@ -192,6 +192,7 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => expect(wrapper.find('.suggestion').exists()).toBe(true))
     await wrapper.get('.suggestion').trigger('click')
     await wrapper.get('[data-test="amount"]').setValue('10')
+    await wrapper.get('[data-test="note"]').setValue('Withdrawal request')
     await wrapper
       .findAll('button')
       .find((button) => button.text() === 'Withdraw')!
@@ -200,7 +201,7 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => {
       expect(apiFetchMock).toHaveBeenLastCalledWith('/api/admin/users/9/wallet', {
         method: 'POST',
-        body: JSON.stringify({ action: 'withdraw', amount: 10, note: '' }),
+        body: JSON.stringify({ action: 'withdraw', amount: 10, note: 'Withdrawal request' }),
       })
     })
   })
@@ -222,6 +223,7 @@ describe('WalletAdjustmentPanel', () => {
     expect(wrapper.text()).not.toContain('Withdraw')
 
     await wrapper.get('[data-test="amount"]').setValue('25')
+    await wrapper.get('[data-test="note"]').setValue('Opening deposit')
     await wrapper
       .findAll('button')
       .find((button) => button.text() === 'Deposit')!
@@ -230,8 +232,16 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users/12/wallet', {
         method: 'POST',
-        body: JSON.stringify({ action: 'deposit', amount: 25, note: '' }),
+        body: JSON.stringify({ action: 'deposit', amount: 25, note: 'Opening deposit' }),
       })
     })
+  })
+  it('rejects a whitespace-only note without sending an adjustment', async () => {
+    const wrapper = mountPanel({ user: { id: 12, username: 'dana', phone_number: '', balance: '0.00' } })
+    await wrapper.get('[data-test="amount"]').setValue('25')
+    await wrapper.get('[data-test="note"]').setValue('   ')
+    await wrapper.findAll('button').find(button => button.text() === 'Deposit')!.trigger('click')
+    expect(apiFetchMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Enter a reason for this adjustment.')
   })
 })

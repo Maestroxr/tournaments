@@ -4,13 +4,14 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 
-from tournaments.models import Tournament, WalletTransaction
+from tournaments.models import Tournament, UserContact, WalletTransaction
 
 
 class AttendeeFundingTests(TestCase):
     def setUp(self):
         self.staff = User.objects.create_user(username='organizer', is_staff=True)
         self.player = User.objects.create_user(username='player')
+        UserContact.objects.create(user=self.player, phone_number='0501234567')
         self.client.force_login(self.staff)
         response = self.client.post(reverse('api-admin-tournaments'), data={
             'name': 'Club tournament', 'template': 'knockout', 'min_players': 2,
@@ -39,7 +40,7 @@ class AttendeeFundingTests(TestCase):
 
     def test_top_up_then_register_charges_once_and_keeps_registration_open(self):
         response = self.client.post(reverse('api-admin-user-wallet', kwargs={'pk': self.player.pk}),
-                                    {'action': 'deposit', 'amount': '30.00'}, content_type='application/json')
+                                    {'action': 'deposit', 'amount': '30.00', 'note': 'Tournament top-up'}, content_type='application/json')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(Decimal(response.json()['balance']), Decimal('50.00'))
         self.assertEqual(self.tournament.participations.count(), 0)

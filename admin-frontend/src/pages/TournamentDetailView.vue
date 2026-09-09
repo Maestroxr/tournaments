@@ -20,6 +20,7 @@ import TournamentStructureCard from '@/components/tournament/TournamentStructure
 import TournamentDangerDialog from '@/components/tournament/TournamentDangerDialog.vue'
 import StartTournamentDialog from '@/components/tournament/StartTournamentDialog.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
+import { timeControlLabel } from '@/utils/adminLabels'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture, TournamentProgressData } from '@/types/tournamentProgress'
@@ -596,7 +597,7 @@ function podiumLabel(reference: string, index: number) {
           <TournamentMetaItem :label="translate('tournamentSettings.starts')" :value="formatDate(t.starts_at)" />
           <TournamentMetaItem :label="translate('tournamentSettings.players')" :value="playerRange(t.min_players, t.max_players)" />
           <TournamentMetaItem :label="translate('tournaments.match')" :value="translate('tournaments.raceTo', { points: t.target_points })" />
-          <TournamentMetaItem :label="translate('tournaments.timeControl')" :value="translate(`tournaments.${t.time_control === 'none' ? 'noClock' : t.time_control}`)" />
+          <TournamentMetaItem :label="translate('tournaments.timeControl')" :value="timeControlLabel(t.time_control, t.target_points, translate)" />
           <TournamentMetaItem :label="translate('tournaments.doubling')" :value="translate(t.doubling_enabled ? 'common.enabled' : 'common.disabled')" />
           <TournamentMetaItem :label="translate('tournaments.entryFee')" :value="Number(t.entry_fee || 0).toFixed(2)" />
           <TournamentMetaItem :label="translate('tournaments.prize')" :value="Number(t.prize_money || 0).toFixed(2)" />

@@ -9,7 +9,6 @@ import TournamentStandingsPanel from '@/components/tournament/TournamentStanding
 import TournamentMatchDialog from '@/components/tournament/TournamentMatchDialog.vue'
 import TournamentLiveAttention from '@/components/tournament/TournamentLiveAttention.vue'
 import TournamentLiveMatchGroup from '@/components/tournament/TournamentLiveMatchGroup.vue'
-import TournamentResultsConfirmDialog from '@/components/tournament/TournamentResultsConfirmDialog.vue'
 import { useI18n } from '@/i18n'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import Button from 'primevue/button'
@@ -24,9 +23,6 @@ const loading = ref(true)
 const error = ref('')
 const data = ref<TournamentProgressData | null>(null)
 const refreshing = ref(false)
-const confirmingResults = ref(false)
-const resultsConfirmationOpen = ref(false)
-const resultsConfirmationError = ref('')
 const lastUpdatedAt = ref<Date | null>(null)
 const liveConnected = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
@@ -222,32 +218,6 @@ function formatUpdatedAt(value: Date | null) {
   return value.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function requestResultsConfirmation() {
-  if (!data.value?.is_finished || data.value.tournament.lifecycle_state === 'results_confirmed' || confirmingResults.value) return
-  resultsConfirmationError.value = ''
-  resultsConfirmationOpen.value = true
-}
-
-function cancelResultsConfirmation() {
-  if (!confirmingResults.value) resultsConfirmationOpen.value = false
-}
-
-async function confirmResults() {
-  if (!data.value?.is_finished || data.value.tournament.lifecycle_state === 'results_confirmed' || confirmingResults.value) return
-  confirmingResults.value = true
-  resultsConfirmationError.value = ''
-  try {
-    const result = await apiFetch<{ lifecycle_state: string }>(`/api/admin/tournaments/${id}/results/confirm`, { method: 'POST' })
-    data.value.tournament.lifecycle_state = result.lifecycle_state
-    resultsConfirmationOpen.value = false
-    await workspace?.refresh()
-  } catch (caught: unknown) {
-    resultsConfirmationError.value = formatApiError(caught)
-  } finally {
-    confirmingResults.value = false
-  }
-}
-
 onMounted(async () => {
   await load(true)
   connectLiveSocket()
@@ -323,35 +293,9 @@ onBeforeUnmount(() => {
           </section>
         </template>
         <TournamentMatchesPanel v-else-if="selectedView === 'matches'" :stages="data.stages" @select="selectedFixtureId = $event" />
-        <template v-else>
-          <section v-if="data.is_finished" class="results-approval">
-            <div>
-              <p>{{ t('tournamentResults.eyebrow') }}</p>
-              <h3>{{ t(data.tournament.lifecycle_state === 'results_confirmed' ? 'tournamentResults.confirmed' : 'tournamentResults.ready') }}</h3>
-              <span>{{ t(data.tournament.lifecycle_state === 'results_confirmed' ? 'tournamentResults.confirmedHint' : 'tournamentResults.readyHint') }}</span>
-            </div>
-            <Button
-              v-if="data.tournament.lifecycle_state !== 'results_confirmed'"
-              :label="t('tournamentResults.confirmAction')"
-              icon="bi bi-check2-circle"
-              severity="success"
-              :loading="confirmingResults"
-              @click="requestResultsConfirmation"
-            />
-            <span v-else class="results-approval__confirmed"><i class="bi bi-check-lg" aria-hidden="true"></i>{{ t('tournamentResults.confirmedBadge') }}</span>
-          </section>
-          <TournamentStandingsPanel :finished="data.is_finished" :podium="data.podium || []" />
-        </template>
+        <TournamentStandingsPanel v-else :finished="data.is_finished" :podium="data.podium || []" />
         <TournamentMatchDialog v-if="selectedFixture" :key="selectedFixture.id" :fixture="selectedFixture"
           :tournament-id="id" :round="selectedRound" :sources="selectedSources" :live-connected="liveConnected" :updated-at="lastUpdatedAt" @saved="load()" @close="selectedFixtureId = null" />
-        <TournamentResultsConfirmDialog
-          v-if="resultsConfirmationOpen"
-          :tournament-name="data.tournament.name"
-          :busy="confirmingResults"
-          :error="resultsConfirmationError"
-          @cancel="cancelResultsConfirmation"
-          @confirm="confirmResults"
-        />
       </template>
   </div>
 </template>
@@ -359,11 +303,5 @@ onBeforeUnmount(() => {
 <style scoped>
 .workspace-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 22px 0; }
 .workspace-toolbar h2 { color: #eaf2ff; font-size: 21px; font-weight: 650; }
-.results-approval { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; padding: 18px; border: 1px solid #315476; border-radius: 12px; background: #132740; }
-.results-approval p { margin: 0 0 4px; color: #7fcfff; font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
-.results-approval h3 { margin: 0; color: #eef5ff; font-size: 15px; font-weight: 680; }
-.results-approval div > span { display: block; margin-top: 5px; color: #afc1d7; font-size: 11px; }
-.results-approval__confirmed { display: inline-flex; align-items: center; gap: 7px; border-radius: 999px; padding: 8px 11px; background: #17614e; color: #caffed; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .live-groups { display: grid; gap: 14px; }
-@media (max-width: 620px) { .results-approval { align-items: flex-start; flex-direction: column; } }
 </style>

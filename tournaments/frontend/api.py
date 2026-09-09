@@ -26,6 +26,7 @@ from .forms import (
     CreateTournamentForm,
     validate_admin_username,
     validate_phone_number,
+    require_phone_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -518,7 +519,21 @@ def api_me(request):
     return JsonResponse({"is_authenticated": False}, status=401)
 
 
-@csrf_exempt
+@require_http_methods(["PUT"])
+def api_profile(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    try:
+        data = json.loads(request.body or "{}")
+        phone_number = require_phone_number(data.get("phone_number"))
+    except json.JSONDecodeError:
+        return JsonResponse({"detail": "Invalid JSON"}, status=400)
+    except ValidationError as error:
+        return JsonResponse({"errors": {"phone_number": error.messages}}, status=400)
+    models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
+    return JsonResponse(_serialize_user(request.user))
+
+
 @require_http_methods(["POST"])
 def api_login(request):
     try:
@@ -533,29 +548,10 @@ def api_login(request):
     return JsonResponse(_serialize_user(user))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_logout(request):
     logout(request)
     return JsonResponse({"detail": "Logged out"})
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-def api_signup(request):
-    try:
-        data = json.loads(request.body or "{}")
-    except json.JSONDecodeError:
-        return JsonResponse({"detail": "Invalid JSON"}, status=400)
-    form = SignupForm(data)
-    if form.is_valid():
-        form.save()
-        user = authenticate(username=form.cleaned_data.get("username"),
-                            password=data.get("password1"))
-        if user:
-            login(request, user)
-        return JsonResponse(_serialize_user(user), status=201)
-    return JsonResponse({"errors": form.errors}, status=400)
 
 
 @require_http_methods(["GET"])
@@ -594,11 +590,12 @@ def api_tournament_detail(request, pk):
     return JsonResponse(data)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_join(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
+    if not models.UserContact.objects.filter(user=request.user).exclude(phone_number='').exists():
+        return JsonResponse({"detail": "Add a phone number to your profile before joining a tournament."}, status=412)
     try:
         with transaction.atomic():
             t = models.Tournament.objects.select_for_update().get(pk=pk)
@@ -642,7 +639,6 @@ def api_join(request, pk):
     return JsonResponse(_serialize_tournament(t, request))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_withdraw(request, pk):
     if not request.user.is_authenticated:
@@ -691,7 +687,6 @@ def _require_staff(request):
     return None
 
 
-@csrf_exempt
 @require_http_methods(["GET", "POST"])
 def api_admin_tournaments(request):
     err = _require_staff(request)
@@ -745,7 +740,6 @@ def api_admin_tournaments(request):
     return JsonResponse(_serialize_tournament(tournament, request), status=201)
 
 
-@csrf_exempt
 @require_http_methods(["GET", "PUT", "DELETE"])
 def api_admin_tournament_detail(request, pk):
     err = _require_staff(request)
@@ -813,7 +807,6 @@ def api_admin_tournament_detail(request, pk):
     return JsonResponse(_serialize_tournament(t, request))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_admin_tournament_publish(request, pk):
     err = _require_staff(request)
@@ -834,7 +827,6 @@ def api_admin_tournament_publish(request, pk):
     return JsonResponse(_serialize_tournament(t, request))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_admin_tournament_draft(request, pk):
     err = _require_staff(request)
@@ -942,7 +934,6 @@ def _attendee_csv(tournament, rows):
     return response
 
 
-@csrf_exempt
 @require_http_methods(["GET", "POST", "PATCH", "DELETE"])
 @transaction.atomic
 def api_admin_tournament_attendees(request, pk):
@@ -1004,6 +995,12 @@ def api_admin_tournament_attendees(request, pk):
         try:
             if data.get('user_id'):
                 user = User.objects.get(pk=int(data['user_id']))
+                if not models.UserContact.objects.filter(user=user).exclude(phone_number='').exists():
+                    return JsonResponse({
+                        'errors': {'phone_number': [
+                            'Phone number is required before adding this player to a tournament.'
+                        ]},
+                    }, status=400)
                 participant = models.Participant.get_or_create_for_user(user)
             elif data.get('name'):
                 name = str(data['name']).strip()
@@ -1475,7 +1472,6 @@ def _serialize_draw(tournament):
     }
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @transaction.atomic
 def api_admin_tournament_close_registration(request, pk):
@@ -1495,7 +1491,6 @@ def api_admin_tournament_close_registration(request, pk):
     return JsonResponse(_serialize_tournament(tournament, request))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @transaction.atomic
 def api_admin_tournament_reopen_registration(request, pk):
@@ -1514,7 +1509,6 @@ def api_admin_tournament_reopen_registration(request, pk):
     return JsonResponse(_serialize_tournament(tournament, request))
 
 
-@csrf_exempt
 @require_http_methods(["GET", "POST"])
 @transaction.atomic
 def api_admin_tournament_draw(request, pk):
@@ -1553,7 +1547,6 @@ def api_admin_tournament_draw(request, pk):
     return JsonResponse(_serialize_draw(tournament))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @transaction.atomic
 def api_admin_tournament_confirm_draw(request, pk):
@@ -1575,7 +1568,6 @@ def api_admin_tournament_confirm_draw(request, pk):
     return JsonResponse(_serialize_draw(tournament))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 @transaction.atomic
 def api_admin_tournament_start(request, pk):
@@ -1618,22 +1610,6 @@ def api_admin_tournament_start(request, pk):
         return JsonResponse({"detail": "; ".join(error.messages)}, status=412)
     t.update_state()
     return JsonResponse(_serialize_tournament(t, request))
-
-
-@csrf_exempt
-@require_http_methods(["POST"])
-@transaction.atomic
-def api_admin_tournament_confirm_results(request, pk):
-    err = _require_staff(request)
-    if err:
-        return err
-    tournament = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
-    if tournament.state != "finished":
-        return JsonResponse({"detail": f"Cannot confirm results, state={tournament.state}"}, status=412)
-    if tournament.results_confirmed_at is None:
-        tournament.results_confirmed_at = timezone.now()
-        tournament.save(update_fields=["results_confirmed_at"])
-    return JsonResponse(_serialize_tournament(tournament, request))
 
 
 def _admin_finance_payload(days=30):
@@ -1959,7 +1935,6 @@ def api_admin_notifications(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(["GET"])
 def api_admin_dashboard(request):
     err = _require_staff(request)
@@ -2132,6 +2107,9 @@ def api_admin_users(request):
     form = AdminUserCreateForm(data)
     if not form.is_valid():
         return JsonResponse({"errors": form.errors}, status=400)
+    from .permissions import may_manage_user
+    if not may_manage_user(request.user, grant_staff=form.cleaned_data.get('is_staff', False)):
+        return JsonResponse({'detail': 'Only a superuser can manage administrator accounts.'}, status=403)
     with transaction.atomic():
         user = form.save()
         if initial_balance:
@@ -2229,13 +2207,18 @@ def api_admin_wallet_transactions(request):
     limit = min(max(limit, 1), 500)
 
     total_count = qs.count()
-    items = list(qs[:limit])
+    try:
+        offset = max(0, int(request.GET.get("offset", 0)))
+    except (TypeError, ValueError):
+        return JsonResponse({"detail": "Invalid offset"}, status=400)
+    items = list(qs[offset:offset + limit])
     incoming = sum(item.amount for item in items if item.amount > 0)
     outgoing = sum(item.amount for item in items if item.amount < 0)
 
     return JsonResponse({
         "count": total_count,
         "limit": limit,
+        "offset": offset,
         "incoming": str(incoming),
         "outgoing": str(outgoing),
         "net": str(incoming + outgoing),
@@ -2247,7 +2230,6 @@ def api_admin_wallet_transactions(request):
     })
 
 
-@csrf_exempt
 @require_http_methods(["GET", "PUT", "DELETE"])
 def api_admin_user_detail(request, pk):
     err = _require_staff(request)
@@ -2261,6 +2243,9 @@ def api_admin_user_detail(request, pk):
             for item in u.wallet_transactions.select_related("user", "actor", "tournament")[:50]
         ]
         return JsonResponse(data)
+    from .permissions import may_manage_user
+    if not may_manage_user(request.user, u):
+        return JsonResponse({'detail': 'Only a superuser can manage administrator accounts.'}, status=403)
     if request.method == "DELETE":
         if u.id == request.user.id:
             return JsonResponse({"detail": "Cannot delete yourself"}, status=403)
@@ -2271,6 +2256,10 @@ def api_admin_user_detail(request, pk):
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
     # allow partial update
+    if 'is_staff' in data and not isinstance(data['is_staff'], bool):
+        return JsonResponse({'detail': 'is_staff must be a boolean.'}, status=400)
+    if not may_manage_user(request.user, u, grant_staff=data.get('is_staff', False)):
+        return JsonResponse({'detail': 'Only a superuser can manage administrator accounts.'}, status=403)
     if "username" in data:
         try:
             u.username = validate_admin_username(data["username"])
@@ -2279,9 +2268,11 @@ def api_admin_user_detail(request, pk):
     phone_number = None
     if "phone_number" in data:
         try:
-            phone_number = validate_phone_number(data["phone_number"])
+            phone_number = require_phone_number(data["phone_number"])
         except ValidationError as validation_error:
             return JsonResponse({"errors": {"phone_number": validation_error.messages}}, status=400)
+    elif not models.UserContact.objects.filter(user=u).exclude(phone_number='').exists():
+        return JsonResponse({"errors": {"phone_number": ["Phone number is required."]}}, status=400)
     if "is_staff" in data:
         u.is_staff = bool(data["is_staff"])
     if "is_active" in data:
@@ -2314,7 +2305,6 @@ def api_admin_user_detail(request, pk):
     return JsonResponse(_serialize_user(u))
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def api_admin_user_wallet(request, pk):
     err = _require_staff(request)
@@ -2325,6 +2315,11 @@ def api_admin_user_wallet(request, pk):
         data = json.loads(request.body or "{}")
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({"detail": "Expected an object"}, status=400)
+    note = data.get("note")
+    if not isinstance(note, str) or not note.strip() or len(note.strip()) > 255:
+        return JsonResponse({"errors": {"note": ["A note of 1–255 characters is required."]}}, status=400)
     try:
         amount = _parse_money(data.get("amount"), "amount")
     except ValueError as error:
@@ -2343,7 +2338,7 @@ def api_admin_user_wallet(request, pk):
             amount=amount,
             kind=kind,
             actor=request.user,
-            note=(data.get("note") or "").strip(),
+            note=note.strip(),
         )
     except Exception as error:
         return JsonResponse({"detail": str(error)}, status=400)

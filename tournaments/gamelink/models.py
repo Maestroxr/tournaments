@@ -84,3 +84,21 @@ class SeenNonce(models.Model):
 
     def __str__(self):
         return self.nonce
+
+
+class AdminGameCommand(models.Model):
+    """Durable tournaments-to-game command; the UUID is the receiver's idempotency key."""
+
+    STATUS = [('pending', 'Pending'), ('delivered', 'Delivered'), ('failed', 'Failed')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    game_link = models.ForeignKey(GameLink, on_delete=models.CASCADE, related_name='admin_commands')
+    body = models.JSONField()
+    status = models.CharField(max_length=16, choices=STATUS, default='pending')
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ('created_at',)

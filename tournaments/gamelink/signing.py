@@ -31,6 +31,7 @@ TICKET_VERSION = 1
 TICKET_SALT = 'gamelink.ticket.v1'
 
 RESULT_SIGNATURE_VERSION = 'v1'
+COMMAND_SIGNATURE_VERSION = 'v1'
 
 SEATS = ('p1', 'p2')
 
@@ -197,6 +198,21 @@ def verify_result_signature(raw_body, timestamp, nonce, header):
 
 def _result_secrets():
     return [secret for secret in getattr(settings, 'GAMELINK_RESULT_SECRETS', list()) if secret]
+
+
+def command_signature_base(raw_body, timestamp):
+    """Return the bytes covered by a tournaments-to-game command signature."""
+    digest = hashlib.sha256(_as_bytes(raw_body)).hexdigest()
+    return f'{COMMAND_SIGNATURE_VERSION}:{timestamp}:{digest}'.encode()
+
+
+def sign_command_body(raw_body, timestamp):
+    """Sign an administrative game command with its independent channel secret."""
+    secret = getattr(settings, 'GAMELINK_COMMAND_SECRET', '')
+    if not secret:
+        raise ImproperlyConfigured('GAMELINK_COMMAND_SECRET is not configured')
+    signature = hmac.new(secret.encode(), command_signature_base(raw_body, timestamp), hashlib.sha256)
+    return f'{COMMAND_SIGNATURE_VERSION}={signature.hexdigest()}'
 
 
 def _as_bytes(value):

@@ -30,7 +30,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 from channels.layers import get_channel_layer
-from tournaments.models import Fixture, FixtureAudit, Tournament
+from tournaments.models import Fixture, FixtureAudit, Tournament, UserContact
 
 from .models import GameLink, IssuedTicket, SeenNonce
 from .signing import SEATS, issue_ticket, redact, verify_result_signature
@@ -59,6 +59,11 @@ def playable_seat(user, fixture):
 
     if user is None or not user.is_authenticated:
         return None, 403
+
+    # Legacy accounts may sign in before completing their profile, but cannot enter a game
+    # until they supply the phone number required for tournament players.
+    if not UserContact.objects.filter(user=user).exclude(phone_number='').exists():
+        return None, 412
 
     # 2. The tournament has to be running.
     tournament = fixture.mode.tournament
@@ -96,6 +101,8 @@ def _playable_refusal_reason(user, fixture):
         return 'disabled'
     if user is None or not user.is_authenticated:
         return 'not_authenticated'
+    if not UserContact.objects.filter(user=user).exclude(phone_number='').exists():
+        return 'phone_number_required'
 
     tournament = fixture.mode.tournament
     if tournament.state != 'active':

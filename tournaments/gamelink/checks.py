@@ -31,6 +31,7 @@ def check_gamelink_settings(app_configs, **kwargs):
                 id = 'gamelink.E001'))
 
     result_secrets = [secret for secret in getattr(settings, 'GAMELINK_RESULT_SECRETS', list()) if secret]
+    command_secret = getattr(settings, 'GAMELINK_COMMAND_SECRET', '')
     if not result_secrets or not all(_is_strong(secret) for secret in result_secrets):
         errors.append(
             Error(
@@ -47,7 +48,20 @@ def check_gamelink_settings(app_configs, **kwargs):
                        'thereby also be able to report match results.',
                 id = 'gamelink.E003'))
 
-    if getattr(settings, 'GAMELINK_TICKET_SECRET', '') == settings.SECRET_KEY:
+    if not _is_strong(command_secret):
+        errors.append(Error(
+            'GAMELINK_COMMAND_SECRET is missing or too short.',
+            hint=f'Set it from the environment to at least {MINIMUM_SECRET_LENGTH} characters.',
+            id='gamelink.E006'))
+
+    if command_secret in result_secrets or command_secret == getattr(settings, 'GAMELINK_TICKET_SECRET', ''):
+        errors.append(Error(
+            'GAMELINK_COMMAND_SECRET is reused by another channel.',
+            hint='Administrative commands require an independent secret.',
+            id='gamelink.E007'))
+
+    if (getattr(settings, 'GAMELINK_TICKET_SECRET', '') == settings.SECRET_KEY
+            or command_secret == settings.SECRET_KEY):
         errors.append(
             Error(
                 'GAMELINK_TICKET_SECRET must not be the Django SECRET_KEY.',

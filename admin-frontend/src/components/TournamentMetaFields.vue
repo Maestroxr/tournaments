@@ -5,6 +5,7 @@ import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
 import { useI18n } from '@/i18n'
+import { timeControlDetail } from '@/utils/adminLabels'
 
 const props = defineProps<{
   startsDate?: string
@@ -38,10 +39,11 @@ function selectNumber(event: MouseEvent) {
 }
 const timeOptions = computed(() => [
   { value: 'none', label: t('tournaments.noClock'), detail: t('tournaments.untimedMatch') },
-  { value: 'fast', label: t('tournaments.fast'), detail: t('tournaments.fastDetail') },
-  { value: 'normal', label: t('tournaments.normal'), detail: t('tournaments.normalDetail') },
-  { value: 'slow', label: t('tournaments.slow'), detail: t('tournaments.slowDetail') },
+  { value: 'fast', label: t('tournaments.fast'), detail: timeControlDetail('fast', props.targetPoints, t) },
+  { value: 'normal', label: t('tournaments.normal'), detail: timeControlDetail('normal', props.targetPoints, t) },
+  { value: 'slow', label: t('tournaments.slow'), detail: timeControlDetail('slow', props.targetPoints, t) },
 ])
+const selectedTimeOption = computed(() => timeOptions.value.find(option => option.value === props.timeControl))
 const pad = (value: number) => String(value).padStart(2, '0')
 const dateInputValue = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 const timeInputValue = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`
@@ -86,7 +88,20 @@ const startsTimeObject = computed<Date | null>({
       </label>
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.timeControl') }}</span>
-        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))" />
+        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))">
+          <template #value>
+            <div v-if="selectedTimeOption" class="flex min-w-0 flex-col py-0.5">
+              <span class="text-sm font-medium text-inherit">{{ selectedTimeOption.label }}</span>
+              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ selectedTimeOption.detail }}</span>
+            </div>
+          </template>
+          <template #option="{ option }">
+            <div class="flex min-w-0 flex-col py-0.5">
+              <span class="text-sm font-medium text-inherit">{{ option.label }}</span>
+              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ option.detail }}</span>
+            </div>
+          </template>
+        </Select>
       </label>
     </div>
 
@@ -109,7 +124,20 @@ const startsTimeObject = computed<Date | null>({
       </label>
       <label v-if="rulesOnly" class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.clockSetting') }}</span>
-        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))" />
+        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))">
+          <template #value>
+            <div v-if="selectedTimeOption" class="flex min-w-0 flex-col py-0.5">
+              <span class="text-sm font-medium text-inherit">{{ selectedTimeOption.label }}</span>
+              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ selectedTimeOption.detail }}</span>
+            </div>
+          </template>
+          <template #option="{ option }">
+            <div class="flex min-w-0 flex-col py-0.5">
+              <span class="text-sm font-medium text-inherit">{{ option.label }}</span>
+              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ option.detail }}</span>
+            </div>
+          </template>
+        </Select>
         <span class="text-xs text-zinc-500">{{ t('tournaments.clockSettingHelp') }}</span>
       </label>
       <label class="block">
@@ -146,8 +174,8 @@ const startsTimeObject = computed<Date | null>({
   --p-toggleswitch-handle-size: 20px;
   --p-toggleswitch-background: #53627b;
   --p-toggleswitch-hover-background: #64748b;
-  --p-toggleswitch-checked-background: #10b981;
-  --p-toggleswitch-checked-hover-background: #059669;
+  --p-toggleswitch-checked-background: #3f79e4;
+  --p-toggleswitch-checked-hover-background: #2e64c7;
   --p-toggleswitch-handle-background: #fff;
   --p-toggleswitch-handle-hover-background: #fff;
   --p-toggleswitch-handle-checked-background: #fff;

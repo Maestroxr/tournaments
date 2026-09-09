@@ -56,7 +56,8 @@ const clientFieldErrors = computed(() => {
   const errs: Record<string, string> = {}
   if (!username.value.trim()) errs.username = t('users.usernameRequiredShort')
   else if (!/^[A-Za-z0-9]+$/.test(username.value.trim())) errs.username = t('users.usernameCharactersShort')
-  if (phoneNumber.value && !/^\+?[0-9 ()-]+$/.test(phoneNumber.value)) errs.phone_number = t('users.invalidPhone')
+  if (!phoneNumber.value.trim()) errs.phone_number = t('users.invalidPhone')
+  else if (!/^\+?[0-9 ()-]+$/.test(phoneNumber.value)) errs.phone_number = t('users.invalidPhone')
   else if (phoneNumber.value) {
     const digitCount = phoneNumber.value.replace(/\D/g, '').length
     if (digitCount < 7 || digitCount > 15) errs.phone_number = t('users.invalidPhone')

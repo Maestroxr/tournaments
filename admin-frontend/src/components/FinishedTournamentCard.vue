@@ -114,7 +114,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
       <TournamentMetaItem :label="t('tournaments.finishedFrom')" :value="formatDate(tournament.starts_at)" />
       <TournamentMetaItem :label="t('nav.users')" :value="String(tournament.participant_count)" />
       <TournamentMetaItem :label="t('tournaments.match')" :value="t('tournaments.raceTo', { points: tournament.target_points })" />
-      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, t)" />
+      <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, tournament.target_points, t)" />
       <TournamentMetaItem :label="t('tournaments.doubling')" :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')" />
       <TournamentMetaItem :label="t('tournaments.entryFee')" :value="Number(tournament.entry_fee || 0).toFixed(2)" />
       <TournamentMetaItem :label="t('tournaments.prize')" :value="Number(tournament.prize_money || 0).toFixed(2)" />

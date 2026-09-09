@@ -5,6 +5,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from tournaments.models import WalletTransaction
+from tournaments.models import UserContact
 
 
 class AdminUserCreationTests(TestCase):
@@ -102,6 +103,7 @@ class AdminUserCreationTests(TestCase):
 
     def test_rejects_weak_password_when_editing_user(self):
         player = User.objects.create_user(username="maayan")
+        UserContact.objects.create(user=player, phone_number="050-123-4567")
         response = self.client.put(
             reverse("api-admin-user-detail", kwargs={"pk": player.pk}),
             {
