@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Payment, Receipt, Refund, Subscription, WebhookEvent
+from .models import Payment, Receipt, Refund, Subscription, WebhookEvent, CheckoutRequest, CheckoutEvent, StoreProduct, StoreProductAudit
 
 
 class BillingAuditAdmin(admin.ModelAdmin):
@@ -25,3 +25,5 @@ class PaymentAdmin(BillingAuditAdmin):
 
 
 admin.site.register((Receipt, Refund, WebhookEvent), BillingAuditAdmin)
+admin.site.register((CheckoutRequest, CheckoutEvent), BillingAuditAdmin)
+admin.site.register((StoreProduct, StoreProductAudit), BillingAuditAdmin)

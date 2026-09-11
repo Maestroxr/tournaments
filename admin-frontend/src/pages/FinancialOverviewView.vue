@@ -81,10 +81,8 @@ async function selectRange(value: FinanceRangeDays | null) {
 
 function formatMoney(value: string) {
   return new Intl.NumberFormat(localeTag.value, {
-    style: 'currency',
-    currency: data.value?.currency || 'USD',
     maximumFractionDigits: 2,
-  }).format(Number(value))
+  }).format(Number(value)) + (locale.value === 'he' ? ' קויינס' : ' coins')
 }
 
 function formatDate(value: string) {

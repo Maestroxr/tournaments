@@ -22,6 +22,7 @@ htmlcov/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+*.log
 *.egg-info/
 # frontend generated
 coverage/
@@ -31,4 +32,6 @@ admin-frontend/.eslintcache
 # local env - keep .env.example
 admin-frontend/.env
 # optional: ignore generated specs
-docs/
+docs/*
+!docs/TRANZILA_PREPARATION.he.md
+!docs/TRANZILA_INTEGRATION_GUIDE.he.md

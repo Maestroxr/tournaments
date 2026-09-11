@@ -60,6 +60,14 @@ class AccountJourneyTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('phone_number', response.json()['errors'])
 
+    def test_signup_rejects_mixed_alphabet_username(self):
+        response = self.post('signup', {'username': 'CקרGםד', 'email': 'new@example.com',
+            'phone_number': '0501234567', 'password1': 'Another-Good-Secret-735!',
+            'password2': 'Another-Good-Secret-735!'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('username', response.json()['errors'])
+        self.assertFalse(User.objects.filter(email='new@example.com').exists())
+
     def test_legacy_user_can_complete_phone_number_from_profile(self):
         user = User.objects.create_user('legacy', password='Another-Good-Secret-735!')
         self.client.force_login(user)

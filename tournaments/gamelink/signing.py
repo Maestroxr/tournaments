@@ -87,6 +87,31 @@ def issue_ticket(user, fixture, seat, game_link):
     return token, jti
 
 
+def issue_direct_play_ticket(user, table, seat):
+    """Mint a game ticket for a paid one-on-one table (not a tournament fixture)."""
+    if seat not in SEATS:
+        raise ValueError(f'unknown seat: "{seat}"')
+    from .models import LinkedAccount
+    opponent = table.guest if seat == 'p1' else table.host
+    issued_at = int(time.time())
+    jti = uuid.uuid4()
+    payload = {
+        'v': TICKET_VERSION, 'iss': settings.GAMELINK_ISSUER,
+        'aud': settings.GAMELINK_AUDIENCE, 'jti': str(jti),
+        'iat': issued_at, 'exp': issued_at + settings.GAMELINK_TICKET_TTL,
+        'sub': LinkedAccount.external_id_for(user), 'name': user.username,
+        # Negative fixture ids occupy a disjoint namespace on the game server.
+        'trn': 0, 'fix': -table.pk, 'seat': seat,
+        'opp': opponent.username if opponent else '', 'tp': table.target_points,
+        'dbl': table.doubling_enabled, 'tc': table.time_control,
+        **({'format': table.game_format, 'cube_max': table.rules_snapshot['max_cube'],
+            'jacoby': table.rules_snapshot['jacoby'], 'stake': str(table.amount),
+            'loss_limit': str(table.amount * table.rules_snapshot['loss_limit_multiplier'] if table.game_format == 'money' else table.amount)} if table.game_format != 'legacy' else {}),
+    }
+    token = signing.dumps(payload, key=_ticket_secret(), salt=TICKET_SALT, compress=False)
+    return token, jti
+
+
 def verify_ticket(token, max_age = None):
     """
     Verify `token` and return its payload.

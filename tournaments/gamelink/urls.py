@@ -13,6 +13,8 @@ urlpatterns = [
     path('t/fixture/<int:pk>/play', views.StartGameView.as_view(), name='gamelink-start'),
     path('t/tournament/<int:pk>/play', views.StartTournamentGameView.as_view(),
          name='gamelink-tournament-start'),
+    path('t/head-to-head/<str:code>/play', views.StartDirectPlayView.as_view(),
+         name='gamelink-direct-play-start'),
     path('api/gamelink/result/', views.ResultCallbackView.as_view(), name='gamelink-result'),
     path('api/gamelink/live/', views.LiveSnapshotCallbackView.as_view(), name='gamelink-live'),
 ]

@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 const props = defineProps<{
   userId: number | null
   username: string
+  interactive?: boolean
 }>()
 
 const loading = ref(false)
@@ -63,6 +64,8 @@ function close() {
       icon="bi bi-person-circle"
       link
       severity="contrast"
+      @click="interactive && show($event)"
+      @focus="interactive && show($event)"
       @mouseenter="show"
       @mouseleave="scheduleClose"
     />

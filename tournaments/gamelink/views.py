@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+from decimal import Decimal
 from urllib.parse import quote
 
 from asgiref.sync import async_to_sync
@@ -30,12 +31,46 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 from channels.layers import get_channel_layer
-from tournaments.models import Fixture, FixtureAudit, Tournament, UserContact
+from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, Tournament, UserContact, WalletTransaction
 
 from .models import GameLink, IssuedTicket, SeenNonce
-from .signing import SEATS, issue_ticket, redact, verify_result_signature
+from .signing import SEATS, issue_direct_play_ticket, issue_ticket, redact, verify_result_signature
 
 logger = logging.getLogger(__name__)
+
+
+class StartDirectPlayView(LoginRequiredMixin, View):
+    """Issue a short-lived game ticket for either player at a funded direct-play table."""
+
+    http_method_names = ['post']
+
+    @transaction.atomic
+    def post(self, request, code):
+        if not settings.GAMELINK_ENABLED:
+            return HttpResponse(status=412)
+        base_url = getattr(settings, 'GAMELINK_BACKGAMMON_URL', '').rstrip('/')
+        if not base_url:
+            return HttpResponse(status=412)
+        try:
+            table = HeadToHeadTable.objects.select_for_update().get(code=code.upper())
+        except HeadToHeadTable.DoesNotExist:
+            return HttpResponse(status=404)
+        if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING):
+            return HttpResponse(status=412)
+        if request.user.id == table.host_id:
+            seat = 'p1'
+        elif request.user.id == table.guest_id:
+            seat = 'p2'
+        else:
+            return HttpResponse(status=403)
+        token, _ = issue_direct_play_ticket(request.user, table, seat)
+        if table.status == HeadToHeadTable.STATUS_READY:
+            table.status = HeadToHeadTable.STATUS_PLAYING
+            table.save(update_fields=['status', 'updated_at'])
+        response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
+        response['Referrer-Policy'] = 'no-referrer'
+        response['Cache-Control'] = 'no-store'
+        return response
 
 
 def playable_seat(user, fixture):
@@ -431,6 +466,9 @@ class ResultCallbackView(View):
         """
         fixture_id = body['fixture_id']
 
+        if body.get('tournament_id') == 0 and fixture_id < 0:
+            return self._record_direct_play(request, -fixture_id, body)
+
         with transaction.atomic():
             try:
                 tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
@@ -482,6 +520,72 @@ class ResultCallbackView(View):
                 return self._record_cancellation(game_link, body)
 
             return self._record_completion(request, game_link, fixture, body)
+
+    def _record_direct_play(self, request, table_id, body):
+        """Settle a versioned contract, retaining fee-only settlement for legacy friend tables."""
+        with transaction.atomic():
+            try:
+                table = HeadToHeadTable.objects.select_for_update().select_related('host', 'guest').get(pk=table_id)
+            except HeadToHeadTable.DoesNotExist:
+                return _reject(request, 404, 'no direct-play table for this result', fixture_id=-table_id)
+            if table.status == HeadToHeadTable.STATUS_COMPLETED:
+                return _accepted('already_recorded')
+            if table.status == HeadToHeadTable.STATUS_CANCELLED:
+                return _accepted('already_recorded') if body['status'] == STATUS_CANCELLED else _reject(
+                    request, 409, 'cancelled direct-play table cannot be completed', fixture_id=-table_id)
+            if table.game_format != 'legacy':
+                from frontend.game_formats import settle
+                from django.core.exceptions import ValidationError
+                try:
+                    with transaction.atomic():
+                        settle(table, body)
+                except ValidationError as error:
+                    return _reject(request, 409, '; '.join(error.messages), fixture_id=-table_id)
+                return _accepted('recorded')
+            if table.external_room_id and table.external_room_id != body['room_id']:
+                return _reject(request, 409, 'room mismatch for direct-play table', fixture_id=-table_id)
+            if body['status'] != STATUS_CANCELLED:
+                if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING) or not table.guest_id:
+                    return _reject(request, 409, 'direct-play table is not funded', fixture_id=-table_id)
+                charge_kind = WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
+                charge_amount = table.fee_per_player if table.is_friend_game else table.amount
+                for player_id in (table.host_id, table.guest_id):
+                    charges = table.wallet_transactions.filter(user_id=player_id, kind=charge_kind, amount=-charge_amount)
+                    if charges.count() != 1 or table.wallet_transactions.filter(user_id=player_id, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists():
+                        return _reject(request, 409, 'direct-play table is not funded', fixture_id=-table_id)
+            table.external_room_id = body['room_id']
+            if body['status'] == STATUS_CANCELLED:
+                for charge in table.wallet_transactions.filter(amount__lt=0).select_related('user'):
+                    if not table.wallet_transactions.filter(
+                        user=charge.user, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+                    ).exists():
+                        WalletTransaction.create_entry(
+                            user=charge.user, amount=-charge.amount,
+                            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+                            head_to_head_table=table, note=f'Cancelled table {table.code}',
+                        )
+                table.status = HeadToHeadTable.STATUS_CANCELLED
+                table.save(update_fields=['external_room_id', 'status', 'updated_at'])
+                return _accepted('recorded')
+            winner = table.host if body.get('winner_seat') == 'p1' else table.guest if body.get('winner_seat') == 'p2' else None
+            if winner is None:
+                return _reject(request, 400, 'direct-play result has no winner', fixture_id=-table_id)
+            if not table.is_friend_game:
+                pot = table.amount * Decimal('2')
+                # ``amount`` is the advertised stake. The rake is a percentage of
+                # that stake, not of the combined two-player pot.
+                platform_fee = table.fee_per_player
+                WalletTransaction.create_entry(
+                    user=winner, amount=pot - platform_fee,
+                    kind=WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE,
+                    head_to_head_table=table,
+                    note=f'Match-play prize for table {table.code}; platform fee {platform_fee}',
+                )
+            table.winner = winner
+            table.status = HeadToHeadTable.STATUS_COMPLETED
+            table.completed_at = timezone.now()
+            table.save(update_fields=['external_room_id', 'winner', 'status', 'completed_at', 'updated_at'])
+            return _accepted('recorded')
 
     def _record_cancellation(self, game_link, body):
         """

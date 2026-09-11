@@ -37,12 +37,21 @@ class Tournament(models.Model):
     doubling_enabled = models.BooleanField(default=True)
     entry_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     prize_money = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
     registration_closed_at = models.DateTimeField(null=True, blank=True)
     registration_closed_reason = models.CharField(max_length=20, blank=True, default='')
     draw_order = models.JSONField(default=list, blank=True)
     draw_generated_at = models.DateTimeField(null=True, blank=True)
     draw_confirmed_at = models.DateTimeField(null=True, blank=True)
     results_confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            CheckConstraint(
+                check=Q(platform_fee_percent__gte=8, platform_fee_percent__lte=10),
+                name="tournament_platform_fee_percent_range",
+            ),
+        ]
 
     def __str__(self):
         return self.name
@@ -214,7 +223,8 @@ class Tournament(models.Model):
                 pass
 
     def award_prize_money(self):
-        if self.prize_money <= 0:
+        prize_amount = self.effective_prize_money
+        if prize_amount <= 0:
             return
         winner = self.participations.filter(podium_position=0).select_related('participant__user').first()
         if winner is None or winner.participant.user is None:
@@ -226,11 +236,30 @@ class Tournament(models.Model):
             return
         WalletTransaction.create_entry(
             user=winner.participant.user,
-            amount=self.prize_money,
+            amount=prize_amount,
             kind=WalletTransaction.KIND_TOURNAMENT_PRIZE,
             tournament=self,
             note=f"Prize for winning {self.name}",
         )
+
+    @property
+    def collected_entry_fees(self):
+        """Net paid entries after refunds, expressed as a positive amount."""
+        net = self.wallet_transactions.filter(kind__in=(
+            WalletTransaction.KIND_TOURNAMENT_ENTRY,
+            WalletTransaction.KIND_TOURNAMENT_REFUND,
+        )).aggregate(models.Sum('amount'))['amount__sum'] or Decimal("0.00")
+        return max(-net, Decimal("0.00"))
+
+    @property
+    def effective_prize_money(self):
+        if self.entry_fee <= 0:
+            return self.prize_money
+        return (
+            self.collected_entry_fees
+            * (Decimal("100.00") - self.platform_fee_percent)
+            / Decimal("100.00")
+        ).quantize(Decimal("0.01"))
 
     @property
     def state(self):
@@ -462,12 +491,203 @@ class UserContact(models.Model):
         return f'{self.user}: {self.phone_number}'
 
 
+def default_stake_amounts():
+    return [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 1000000]
+
+
+def validate_stake_amounts(value):
+    if (not isinstance(value, list) or len(value) > 100
+            or any(type(amount) is not int or not 100 <= amount <= 99999999 for amount in value)
+            or len(value) != len(set(value))):
+        raise ValidationError("Use up to 100 unique whole-coin amounts between 100 and 99999999.")
+
+
+def default_game_rules():
+    return {mode: {
+        'enabled': True,
+        'target_points': [1, 3, 5, 7, 9],
+        'time_controls': ['none', 'normal', 'fast', 'slow'],
+        'doubling_options': [True, False],
+    } for mode in ('match', 'friend', 'quick')}
+
+
+def validate_game_rules(value):
+    if not isinstance(value, dict) or set(value) != {'match', 'friend', 'quick'}:
+        raise ValidationError('Provide rules for match, friend and quick games.')
+    for mode, rule in value.items():
+        if (not isinstance(rule, dict)
+                or set(rule) != {'enabled', 'target_points', 'time_controls', 'doubling_options'}
+                or type(rule['enabled']) is not bool):
+            raise ValidationError('Each game mode needs enabled, target_points, time_controls and doubling_options.')
+        points = rule['target_points']
+        clocks = rule['time_controls']
+        doubling = rule['doubling_options']
+        allowed_points = (1, 3, 5, 7, 9) if mode == 'friend' else range(1, 26)
+        if (not isinstance(points, list) or not points or len(points) > 25
+                or any(type(point) is not int or point not in allowed_points for point in points)
+                or len(points) != len(set(points))):
+            raise ValidationError('Choose unique supported target points for each mode (1–25; friend: 1, 3, 5, 7, 9).')
+        if (not isinstance(clocks, list) or not clocks or len(clocks) > 4
+                or any(type(clock) is not str or clock not in ('none', 'normal', 'fast', 'slow') for clock in clocks)
+                or len(clocks) != len(set(clocks))):
+            raise ValidationError('Choose at least one unique supported clock per game mode.')
+        if (not isinstance(doubling, list) or not doubling or len(doubling) > 2
+                or any(type(option) is not bool for option in doubling)
+                or len(doubling) != len(set(doubling))):
+            raise ValidationError('Choose at least one doubling option per game mode.')
+
+
+def default_format_profiles():
+    return {name: {
+        'enabled': True, 'public': True, 'private': True, 'quick': True,
+        'target_points': [1] if name == 'money' else [1, 3, 5, 7, 9],
+        'time_controls': ['none', 'normal', 'fast', 'slow'],
+        'doubling_options': [True, False], 'stake_amounts': default_stake_amounts(),
+        'fee_percent': 5, 'max_cube': 8 if name == 'money' else 64,
+        'loss_limit_multiplier': 8, 'jacoby': name == 'money',
+    } for name in ('match', 'money')}
+
+
+def validate_format_profiles(value):
+    expected = default_format_profiles()
+    if not isinstance(value, dict) or set(value) != set(expected):
+        raise ValidationError('Provide match and money format profiles.')
+    for name, profile in value.items():
+        if not isinstance(profile, dict) or set(profile) != set(expected[name]):
+            raise ValidationError('Invalid format profile fields.')
+        if any(type(profile[key]) is not bool for key in ('enabled', 'public', 'private', 'quick', 'jacoby')):
+            raise ValidationError('Format switches must be booleans.')
+        validate_stake_amounts(profile['stake_amounts'])
+        rule = {key: profile[key] for key in ('enabled', 'target_points', 'time_controls', 'doubling_options')}
+        validate_game_rules({'match': rule, 'quick': rule, 'friend': default_game_rules()['friend']})
+        if name == 'money' and profile['target_points'] != [1]:
+            raise ValidationError('Money games settle one game at a time.')
+        if name == 'match' and profile['jacoby']:
+            raise ValidationError('Jacoby is only available for money games.')
+        if type(profile['max_cube']) is not int or profile['max_cube'] not in (2, 4, 8, 16, 32, 64):
+            raise ValidationError('Cube limit must be 2, 4, 8, 16, 32 or 64.')
+        if type(profile['loss_limit_multiplier']) is not int or not 1 <= profile['loss_limit_multiplier'] <= 192:
+            raise ValidationError('Loss limit must be between 1 and 192 times the base stake.')
+        fee = profile['fee_percent']
+        if type(fee) not in (int, float) or not math.isfinite(fee) or not 0 <= fee <= 100:
+            raise ValidationError('Fee must be between 0 and 100 percent.')
+        if Decimal(str(fee)) != Decimal(str(fee)).quantize(Decimal('0.01')):
+            raise ValidationError('Fee supports at most two decimal places.')
+        multiplier = profile['loss_limit_multiplier'] if name == 'money' else 1
+        if any(amount * multiplier * 2 > 99999999 for amount in profile['stake_amounts']):
+            raise ValidationError('The configured stake and loss limit exceed the wallet transaction limit.')
+
+
+class DirectPlaySettings(models.Model):
+    """Admin-controlled commercial rules for one-on-one games."""
+
+    enabled = models.BooleanField(default=True)
+    stake_amounts = models.JSONField(default=default_stake_amounts, blank=True, validators=[validate_stake_amounts])
+    game_rules = models.JSONField(default=default_game_rules, validators=[validate_game_rules])
+    format_profiles = models.JSONField(default=default_format_profiles, validators=[validate_format_profiles])
+    friend_game_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
+    head_to_head_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
+    tournament_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
+    coin_grant_enabled = models.BooleanField(default=True)
+    coin_grant_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("400.00"))
+    coin_grant_interval_hours = models.PositiveSmallIntegerField(default=12)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Direct play settings"
+        verbose_name_plural = "Direct play settings"
+        constraints = [
+            CheckConstraint(check=Q(friend_game_fee__gt=0), name="direct_play_friend_game_fee_positive"),
+            CheckConstraint(check=Q(head_to_head_fee_percent__gte=0, head_to_head_fee_percent__lte=100), name="direct_play_fee_percent_range"),
+            CheckConstraint(check=Q(tournament_fee_percent__gte=8, tournament_fee_percent__lte=10), name="tournament_fee_percent_range"),
+            CheckConstraint(check=Q(coin_grant_amount__gt=0), name="coin_grant_amount_positive"),
+            CheckConstraint(check=Q(coin_grant_interval_hours__gt=0), name="coin_grant_interval_positive"),
+        ]
+
+    @classmethod
+    def load(cls):
+        return cls.objects.get_or_create(pk=1)[0]
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        return None
+
+    def friend_fee_for(self, target_points):
+        """Each player pays the same fixed fee, regardless of match length."""
+        return self.friend_game_fee.quantize(Decimal("0.01"))
+
+    def mode_enabled(self, mode):
+        return self.enabled and self.game_rules[mode]['enabled']
+
+    def validate_new_game(self, mode, target_points, time_control, doubling_enabled):
+        rule = self.game_rules[mode]
+        if (target_points not in rule['target_points'] or time_control not in rule['time_controls']
+                or doubling_enabled not in rule['doubling_options']):
+            raise ValidationError('These game settings are no longer available. Please choose the available options.')
+
+
+class HeadToHeadTable(models.Model):
+    game_format = models.CharField(max_length=12, default='legacy', choices=[('legacy', 'Legacy'), ('match', 'Match'), ('money', 'Money')])
+    rules_snapshot = models.JSONField(default=dict, blank=True)
+    settlement = models.JSONField(default=dict, blank=True)
+    MODE_MATCH = "match"
+    MODE_FRIEND = "friend"
+    MODE_CHOICES = [(MODE_MATCH, "Match play"), (MODE_FRIEND, "Play with a friend")]
+    STATUS_OPEN = "open"
+    STATUS_READY = "ready"
+    STATUS_PLAYING = "playing"
+    STATUS_COMPLETED = "completed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "Open"), (STATUS_READY, "Ready"), (STATUS_PLAYING, "Playing"),
+        (STATUS_COMPLETED, "Completed"), (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    code = models.CharField(max_length=6, unique=True)
+    mode = models.CharField(max_length=16, choices=MODE_CHOICES)
+    host = models.ForeignKey('auth.User', on_delete=models.PROTECT, related_name='hosted_head_to_head_tables')
+    guest = models.ForeignKey('auth.User', on_delete=models.PROTECT, related_name='joined_head_to_head_tables', null=True, blank=True)
+    winner = models.ForeignKey('auth.User', on_delete=models.SET_NULL, related_name='won_head_to_head_tables', null=True, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    fee_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    fee_per_player = models.DecimalField(max_digits=10, decimal_places=2)
+    target_points = models.PositiveSmallIntegerField(default=1)
+    time_control = models.CharField(max_length=20, choices=Tournament.TIME_CHOICES, default="normal")
+    doubling_enabled = models.BooleanField(default=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    external_room_id = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    is_quick_match = models.BooleanField(default=False)
+    quick_stakes = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        constraints = [
+            CheckConstraint(check=Q(amount__gt=0), name="head_to_head_amount_positive"),
+            CheckConstraint(check=Q(fee_per_player__gte=0), name="head_to_head_fee_nonnegative"),
+        ]
+
+    @property
+    def is_friend_game(self):
+        return self.mode == self.MODE_FRIEND
+
+
 class WalletTransaction(models.Model):
     KIND_DEPOSIT = "deposit"
     KIND_WITHDRAWAL = "withdrawal"
     KIND_TOURNAMENT_ENTRY = "tournament_entry"
     KIND_TOURNAMENT_REFUND = "tournament_refund"
     KIND_TOURNAMENT_PRIZE = "tournament_prize"
+    KIND_HEAD_TO_HEAD_ENTRY = "head_to_head_entry"
+    KIND_FRIEND_GAME_FEE = "friend_game_fee"
+    KIND_HEAD_TO_HEAD_REFUND = "head_to_head_refund"
+    KIND_HEAD_TO_HEAD_PRIZE = "head_to_head_prize"
+    KIND_RECURRING_BONUS = "recurring_bonus"
 
     KIND_CHOICES = [
         (KIND_DEPOSIT, "Deposit"),
@@ -475,10 +695,16 @@ class WalletTransaction(models.Model):
         (KIND_TOURNAMENT_ENTRY, "Tournament entry"),
         (KIND_TOURNAMENT_REFUND, "Tournament refund"),
         (KIND_TOURNAMENT_PRIZE, "Tournament prize"),
+        (KIND_HEAD_TO_HEAD_ENTRY, "Head-to-head entry"),
+        (KIND_FRIEND_GAME_FEE, "Friend game fee"),
+        (KIND_HEAD_TO_HEAD_REFUND, "Head-to-head refund"),
+        (KIND_HEAD_TO_HEAD_PRIZE, "Head-to-head prize"),
+        (KIND_RECURRING_BONUS, "Recurring coin bonus"),
     ]
 
     user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='wallet_transactions')
     tournament = models.ForeignKey('Tournament', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
+    head_to_head_table = models.ForeignKey('HeadToHeadTable', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
     actor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, related_name='wallet_transactions_created', null=True, blank=True)
     kind = models.CharField(max_length=32, choices=KIND_CHOICES)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -502,7 +728,7 @@ class WalletTransaction(models.Model):
 
     @staticmethod
     @transaction.atomic
-    def create_entry(*, user, amount, kind, tournament=None, actor=None, note=""):
+    def create_entry(*, user, amount, kind, tournament=None, head_to_head_table=None, actor=None, note=""):
         User.objects.select_for_update().get(pk=user.pk)
         amount = Decimal(str(amount)).quantize(Decimal("0.01"))
         if amount == 0:
@@ -514,6 +740,7 @@ class WalletTransaction(models.Model):
         return WalletTransaction.objects.create(
             user=user,
             tournament=tournament,
+            head_to_head_table=head_to_head_table,
             actor=actor,
             kind=kind,
             amount=amount,

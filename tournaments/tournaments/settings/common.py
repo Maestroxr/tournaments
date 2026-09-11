@@ -202,6 +202,7 @@ GAMELINK_TARGET_POINTS  = 1          # match length, in points; decided (plan §
 
 # Set the canonical public website URL, never construct email links from the Host header.
 ACCOUNT_FRONTEND_URL = os.environ.get('ACCOUNT_FRONTEND_URL', 'http://localhost:5174/tournaments')
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 PASSWORD_RESET_TIMEOUT = 3600
 EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = os.environ.get('EMAIL_HOST', 'localhost')
@@ -214,6 +215,17 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'accounts@localhost')
 
 # Sandbox subscriptions. No real-money endpoint is supported by this integration.
 BILLING_ENABLED = os.environ.get('BILLING_ENABLED', '0') == '1'
+# Tranzila preparation is independent of the legacy PayPal sandbox switch.
+# "test" identifies a merchant test terminal; it does not select a sandbox URL.
+TRANZILA_ENABLED = os.environ.get('TRANZILA_ENABLED', '0') == '1'
+TRANZILA_ENVIRONMENT = os.environ.get('TRANZILA_ENVIRONMENT', 'test')
+TRANZILA_TERMINAL = os.environ.get('TRANZILA_TERMINAL', '')
+TRANZILA_APP_KEY = os.environ.get('TRANZILA_APP_KEY', '')
+TRANZILA_APP_SECRET = os.environ.get('TRANZILA_APP_SECRET', '')
+TRANZILA_RETURN_URL = os.environ.get('TRANZILA_RETURN_URL', '')
+TRANZILA_NOTIFY_URL = os.environ.get('TRANZILA_NOTIFY_URL', '')
+TRANZILA_REPORT_MAPPING_CONFIRMED = os.environ.get('TRANZILA_REPORT_MAPPING_CONFIRMED', '0') == '1'
+TRANZILA_APPROVED_TRANSTATUS = os.environ.get('TRANZILA_APPROVED_TRANSTATUS', '')
 PAYPAL_ENVIRONMENT = os.environ.get('PAYPAL_ENVIRONMENT', 'sandbox')
 PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
 PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')

@@ -3,13 +3,16 @@ import { computed } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 import Menu from 'primevue/menu'
 import { useI18n } from '@/i18n'
+import { paymentMessages } from '@/i18n/payments'
 
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const items = computed(() => [
   { label: t('transfers.navigation.transactions'), icon: 'bi bi-arrow-left-right', to: '/transfers', routeName: 'transfers' },
   { label: t('transfers.navigation.finance'), icon: 'bi bi-graph-up-arrow', to: '/transfers/finance', routeName: 'transfers-finance' },
+  { label: paymentMessages[locale.value].title, icon: 'bi bi-credit-card', to: '/transfers/payments', routeName: 'transfers-payments' },
+  { label: locale.value === 'he' ? 'מנויים וחבילות קויינס' : 'Plans & coin packages', icon: 'bi bi-tags', to: '/transfers/catalog', routeName: 'transfers-catalog' },
 ])
 </script>
 
@@ -18,6 +21,7 @@ const items = computed(() => [
     <header class="admin-page-header mb-5">
       <h1>{{ t('transfers.workspaceTitle') }}</h1>
       <p>{{ t('transfers.workspaceSubtitle') }}</p>
+      <p>{{ paymentMessages[locale].separation }}</p>
     </header>
 
     <div class="transfers-workspace__grid">

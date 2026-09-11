@@ -99,6 +99,7 @@ describe('UserCreateView', () => {
   it('uses one password field while sending the backend confirmation value automatically', async () => {
     const wrapper = mountView()
     await wrapper.get('[aria-label="Username"]').setValue('dana')
+    await wrapper.get('[aria-label="Phone number"]').setValue('0501234567')
     await wrapper.get('[aria-label="Password"]').setValue('Secure!Pass42')
     await wrapper.get('form').trigger('submit.prevent')
 
@@ -106,7 +107,7 @@ describe('UserCreateView', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users', {
       method: 'POST',
       body: JSON.stringify({
-        username: 'dana', phone_number: '', password1: 'Secure!Pass42', password2: 'Secure!Pass42', is_staff: false, initial_balance: 0,
+        username: 'dana', phone_number: '0501234567', password1: 'Secure!Pass42', password2: 'Secure!Pass42', is_staff: false, initial_balance: 0,
       }),
     })
     expect(wrapper.text()).toContain('User created successfully')
@@ -117,6 +118,7 @@ describe('UserCreateView', () => {
   it('creates the user with the opening balance entered in the form', async () => {
     const wrapper = mountView()
     await wrapper.get('[aria-label="Username"]').setValue('dana')
+    await wrapper.get('[aria-label="Phone number"]').setValue('0501234567')
     await wrapper.get('[aria-label="Password"]').setValue('Secure!Pass42')
     await wrapper.get('[aria-label="Opening balance amount"]').setValue('75.5')
     await wrapper.get('form').trigger('submit.prevent')
@@ -124,7 +126,7 @@ describe('UserCreateView', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users', {
       method: 'POST',
       body: JSON.stringify({
-        username: 'dana', phone_number: '', password1: 'Secure!Pass42', password2: 'Secure!Pass42', is_staff: false, initial_balance: 75.5,
+        username: 'dana', phone_number: '0501234567', password1: 'Secure!Pass42', password2: 'Secure!Pass42', is_staff: false, initial_balance: 75.5,
       }),
     })
   })
@@ -141,6 +143,7 @@ describe('UserCreateView', () => {
   it('accepts only English letters and numbers in the username', async () => {
     const wrapper = mountView()
     await wrapper.get('[aria-label="Username"]').setValue('דנה_12')
+    await wrapper.get('[aria-label="Phone number"]').setValue('0501234567')
     await wrapper.get('[aria-label="Password"]').setValue('Secure!Pass42')
     await wrapper.get('form').trigger('submit.prevent')
 
@@ -148,10 +151,10 @@ describe('UserCreateView', () => {
     expect(wrapper.text()).toContain('Use English letters and numbers only.')
   })
 
-  it('sends the optional phone number instead of email', async () => {
+  it('sends the required phone number instead of email', async () => {
     const wrapper = mountView()
     await wrapper.get('[aria-label="Username"]').setValue('dana12')
-    await wrapper.get('[aria-label="Phone number (optional)"]').setValue('050-123-4567')
+    await wrapper.get('[aria-label="Phone number"]').setValue('050-123-4567')
     await wrapper.get('[aria-label="Password"]').setValue('Secure!Pass42')
     await wrapper.get('form').trigger('submit.prevent')
 
@@ -168,6 +171,7 @@ describe('UserCreateView', () => {
     apiFieldErrorsMock.mockReturnValueOnce({ password2: 'The password is too similar to the username.' })
     const wrapper = mountView()
     await wrapper.get('[aria-label="Username"]').setValue('maayan')
+    await wrapper.get('[aria-label="Phone number"]').setValue('0501234567')
     await wrapper.get('[aria-label="Password"]').setValue('maayan12345')
     await wrapper.get('form').trigger('submit.prevent')
 

@@ -74,6 +74,12 @@ def capabilities_for(tier):
     capabilities = {}
     for item in reversed(lineage):
         capabilities.update(TIER_FEATURES[item])
+    # Stored permissions are a complete, explicit set for this tier. Disabling
+    # sale of a plan does not remove rights from members who already paid.
+    from .models import StoreProduct
+    configured = StoreProduct.objects.filter(kind='subscription', tier=lineage[0]).first()
+    if configured:
+        capabilities.update(configured.capabilities)
     return capabilities
 
 
@@ -122,7 +128,13 @@ def paid_access(user):
 
 
 def has_membership(user):
-    return user.is_authenticated and paid_access(user).exists()
+    return user.is_authenticated and (paid_access(user).exists() or tranzila_access(user).exists())
+
+
+def tranzila_access(user):
+    from .models import CheckoutRequest
+    return CheckoutRequest.objects.filter(user=user, product='subscription', environment='live',
+        status='paid', paid_at__lte=timezone.now(), valid_until__gt=timezone.now())
 
 
 def entitlement_for(user):
@@ -134,6 +146,10 @@ def entitlement_for(user):
     receive only the effective FREE catalog.
     """
     access = paid_access(user).select_related('subscription').order_by('-period_end', '-paid_at', '-pk').first()
+    direct = tranzila_access(user).order_by('-valid_until', '-paid_at', '-pk').first()
+    if direct and (not access or direct.valid_until > access.period_end):
+        return {'membership': True, 'tier': direct.tier, 'valid_until': direct.valid_until,
+                'capabilities': capabilities_for(direct.tier)}
     tier = access.subscription.tier if access and access.subscription.tier in KNOWN_TIERS else 'FREE'
     return {
         'membership': bool(access),

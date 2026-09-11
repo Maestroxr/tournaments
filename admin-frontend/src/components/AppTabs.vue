@@ -2,10 +2,11 @@
 import { RouterLink, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useI18n } from '@/i18n'
+import { paymentMessages } from '@/i18n/payments'
 
 const auth = useAuthStore()
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 function isDashboardActive(): boolean {
   return route.name === 'dashboard' || route.path === '/' || route.path === '/dashboard'
@@ -26,7 +27,13 @@ function isUsersActive(): boolean {
   )
 }
 function isTransfersActive(): boolean {
-  return String(route.name ?? '').startsWith('transfers') || route.path.startsWith('/transfers')
+  return !isPaymentsActive() && (String(route.name ?? '').startsWith('transfers') || route.path.startsWith('/transfers'))
+}
+function isPaymentsActive(): boolean {
+  return route.name === 'transfers-payments' || route.path === '/transfers/payments' || route.path === '/transfers/catalog'
+}
+function isDirectPlayActive(): boolean {
+  return String(route.name ?? '') === 'direct-play' || route.path.startsWith('/direct-play')
 }
 
 const baseBtn = 'admin-nav-link'
@@ -66,6 +73,17 @@ const baseBtn = 'admin-nav-link'
       {{ t('nav.history') }}
     </RouterLink>
     <RouterLink
+      to="/direct-play"
+      :class="[
+        baseBtn,
+        isDirectPlayActive()
+          ? 'bg-dark text-white border-dark hover:bg-dark-hover'
+          : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
+      ]"
+    >
+      {{ t('nav.directPlay') }}
+    </RouterLink>
+    <RouterLink
       to="/users"
       :class="[
         baseBtn,
@@ -86,6 +104,19 @@ const baseBtn = 'admin-nav-link'
       ]"
     >
       {{ t('nav.transfers') }}
+    </RouterLink>
+    <RouterLink
+      v-if="auth.isAdmin"
+      to="/transfers/payments"
+      :aria-current="isPaymentsActive() ? 'page' : undefined"
+      :class="[
+        baseBtn,
+        isPaymentsActive()
+          ? 'bg-dark text-white border-dark hover:bg-dark-hover'
+          : 'bg-white text-dark border-dark hover:bg-dark hover:text-white',
+      ]"
+    >
+      {{ paymentMessages[locale].title }}
     </RouterLink>
 
     <template v-if="auth.isLoggedIn">

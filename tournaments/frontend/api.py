@@ -2,6 +2,8 @@ import csv
 import json
 import logging
 import random
+import secrets
+import string
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from django.contrib.auth import authenticate, login, logout
@@ -14,7 +16,7 @@ from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.shortcuts import get_object_or_404
 from django.db.models import Count, F, Q, Sum
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -228,10 +230,12 @@ def _serialize_tournament(t, request):
         "time_control": getattr(t, "time_control", "normal"),
         "doubling_enabled": getattr(t, "doubling_enabled", True),
         "entry_fee": str(getattr(t, "entry_fee", Decimal("0.00"))),
-        "prize_money": str(getattr(t, "prize_money", Decimal("0.00"))),
+        "prize_money": str(t.effective_prize_money),
+        "platform_fee_percent": str(t.platform_fee_percent),
+        "collected_entry_fees": str(t.collected_entry_fees),
         # placeholders for your Vue fields (map backend -> frontend)
         "enterPrice": float(getattr(t, "entry_fee", Decimal("0.00"))),
-        "prizeMoney": float(getattr(t, "prize_money", Decimal("0.00"))),
+        "prizeMoney": float(t.effective_prize_money),
         "capacity": t.max_players or 8,
     }
     if request.user.is_authenticated and request.user.is_staff:
@@ -257,6 +261,8 @@ def _parse_money(value, field="amount"):
         amount = Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, TypeError, ValueError):
         raise ValueError(f"{field} must be a valid amount.")
+    if not amount.is_finite():
+        raise ValueError(f"{field} must be a valid amount.")
     if amount < 0:
         raise ValueError(f"{field} cannot be negative.")
     return amount
@@ -272,6 +278,8 @@ def _serialize_wallet_transaction(item):
         "balance_after": str(item.balance_after),
         "tournament_id": item.tournament_id,
         "tournament_name": item.tournament.name if item.tournament else None,
+        "head_to_head_table_id": item.head_to_head_table_id,
+        "head_to_head_code": item.head_to_head_table.code if item.head_to_head_table else None,
         "actor_id": item.actor_id,
         "actor_username": item.actor.username if item.actor else None,
         "note": item.note,
@@ -319,6 +327,16 @@ def _validated_tournament_metadata(data):
         cleaned["prize_money"] = _parse_money(data.get("prize_money", data.get("prizeMoney", 0)), "prize_money")
     except ValueError as error:
         errors["prize_money"] = str(error)
+
+    try:
+        cleaned["platform_fee_percent"] = _parse_money(
+            data.get("platform_fee_percent", models.DirectPlaySettings.load().tournament_fee_percent),
+            "platform_fee_percent",
+        )
+        if not Decimal("8") <= cleaned["platform_fee_percent"] <= Decimal("10"):
+            errors["platform_fee_percent"] = "Must be between 8% and 10%."
+    except ValueError as error:
+        errors["platform_fee_percent"] = str(error)
 
     time_control = data.get("time_control", "normal")
     if time_control not in {choice[0] for choice in models.Tournament.TIME_CHOICES}:
@@ -675,6 +693,523 @@ def api_withdraw(request, pk):
                     'draw_generated_at', 'draw_confirmed_at',
                 ])
     return JsonResponse(_serialize_tournament(t, request))
+
+
+def _serialize_head_to_head(table):
+    from .game_formats import required_reserve
+    reserve_stake = max(Decimal(value) for value in table.quick_stakes) if table.is_quick_match and table.status == 'open' and table.quick_stakes else table.amount
+    return {
+        "game_format": table.game_format,
+        "rules_snapshot": table.rules_snapshot,
+        "required_reserve": str(required_reserve(table, reserve_stake)) if table.game_format != 'legacy' else str(table.fee_per_player if table.is_friend_game else table.amount),
+        "settlement": table.settlement,
+        "id": table.pk,
+        "code": table.code,
+        "mode": table.mode,
+        "host": table.host.username,
+        "guest": table.guest.username if table.guest_id else None,
+        "winner": table.winner.username if table.winner_id else None,
+        "amount": str(table.amount),
+        "fee_percent": str(table.fee_percent),
+        "fee_per_player": str(table.fee_per_player),
+        "target_points": table.target_points,
+        "time_control": table.time_control,
+        "doubling_enabled": table.doubling_enabled,
+        "status": table.status,
+        "is_quick_match": table.is_quick_match,
+        "quick_stakes": table.quick_stakes,
+        "external_room_id": table.external_room_id,
+        "created_at": table.created_at.isoformat(),
+    }
+
+
+def _new_table_code():
+    alphabet = string.ascii_uppercase + string.digits
+    for _ in range(20):
+        code = ''.join(secrets.choice(alphabet) for _ in range(6))
+        if not models.HeadToHeadTable.objects.filter(code=code).exists():
+            return code
+    raise RuntimeError("Could not allocate a table code")
+
+
+class FriendCodesUnavailable(Exception):
+    pass
+
+
+def _create_friend_table(**fields):
+    # Keep historical identifiers stable; never reuse a cancelled/completed code.
+    occupied = set(models.HeadToHeadTable.objects.values_list('code', flat=True))
+    available = [f'{number:04d}' for number in range(10000) if f'{number:04d}' not in occupied]
+    while available:
+        code = secrets.choice(available)
+        try:
+            # A concurrent creator can choose the same code. A savepoint keeps
+            # that uniqueness failure from aborting the enclosing transaction.
+            with transaction.atomic():
+                return models.HeadToHeadTable.objects.create(code=code, **fields)
+        except IntegrityError:
+            if not models.HeadToHeadTable.objects.filter(code=code).exists():
+                raise
+            available.remove(code)
+    raise FriendCodesUnavailable
+
+
+@require_http_methods(["GET", "POST"])
+def api_head_to_head_tables(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    settings_row = models.DirectPlaySettings.load()
+    if request.method == "GET":
+        tables = models.HeadToHeadTable.objects.filter(
+            mode=models.HeadToHeadTable.MODE_MATCH,
+            is_quick_match=False,
+            status=models.HeadToHeadTable.STATUS_OPEN,
+        ).select_related('host').order_by('-created_at', '-pk')
+        my_tables = models.HeadToHeadTable.objects.filter(
+            Q(host=request.user) | Q(guest=request.user),
+        ).exclude(status__in=(
+            models.HeadToHeadTable.STATUS_COMPLETED,
+            models.HeadToHeadTable.STATUS_CANCELLED,
+        )).select_related('host', 'guest')[:20]
+        return JsonResponse({
+            "enabled": settings_row.enabled,
+            "friend_game_fee": str(settings_row.friend_game_fee),
+            "match_fee_percent": str(settings_row.head_to_head_fee_percent),
+            "stake_amounts": settings_row.stake_amounts,
+            "game_rules": settings_row.game_rules,
+            "format_profiles": settings_row.format_profiles,
+            "tables": [_serialize_head_to_head(table) for table in tables],
+            "my_tables": [_serialize_head_to_head(table) for table in my_tables],
+        })
+    if not settings_row.enabled:
+        return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
+    try:
+        data = json.loads(request.body or "{}")
+        if not isinstance(data, dict):
+            raise ValidationError('Expected a game settings object.')
+        mode = data.get("mode")
+        if 'game_format' in data:
+            from .game_formats import create_or_match
+            return create_or_match(request)
+        legacy_profile = settings_row.format_profiles['match']
+        if not legacy_profile['enabled'] or not legacy_profile['private' if mode == 'friend' else 'public']:
+            return JsonResponse({'detail': 'This game format or access method is disabled.'}, status=412)
+        if mode not in (models.HeadToHeadTable.MODE_MATCH, models.HeadToHeadTable.MODE_FRIEND):
+            raise ValidationError("Unknown game mode.")
+        if not settings_row.mode_enabled(mode):
+            return JsonResponse({"detail": "This game mode is currently disabled."}, status=412)
+        target_points = int(data.get("target_points", 1))
+        if target_points < 1 or target_points > 25:
+            raise ValidationError("target_points must be between 1 and 25.")
+        if mode == models.HeadToHeadTable.MODE_FRIEND and target_points not in (1, 3, 5, 7, 9):
+            raise ValidationError("Friend games support 1, 3, 5, 7, or 9 points.")
+        time_control = data.get("time_control", "normal")
+        if time_control not in {choice[0] for choice in models.Tournament.TIME_CHOICES}:
+            raise ValidationError("Invalid time control.")
+        amount = settings_row.friend_fee_for(target_points) if mode == models.HeadToHeadTable.MODE_FRIEND else _parse_money(data.get("amount"), "amount")
+        if amount <= 0:
+            raise ValidationError("amount must be greater than zero.")
+        if mode == models.HeadToHeadTable.MODE_MATCH and amount not in settings_row.stake_amounts:
+            raise ValidationError("This stake is no longer available. Please select an available amount.")
+        doubling_enabled = _parse_bool(data.get("doubling_enabled"), True)
+        settings_row.validate_new_game(mode, target_points, time_control, doubling_enabled)
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
+        messages = getattr(error, 'messages', [str(error)])
+        return JsonResponse({"detail": "; ".join(messages)}, status=400)
+    fee_percent = Decimal("0.00") if mode == models.HeadToHeadTable.MODE_FRIEND else settings_row.head_to_head_fee_percent
+    balance = models.WalletTransaction.balance_for_user(request.user)
+    if balance < amount:
+        return JsonResponse({
+            "detail": "Insufficient coins to open this table.",
+            "code": "insufficient_coins", "required": str(amount),
+            "balance": str(balance), "shortfall": str(amount - balance),
+        }, status=412)
+    fee_per_player = amount if mode == models.HeadToHeadTable.MODE_FRIEND else (amount * fee_percent / Decimal("100")).quantize(Decimal("0.01"))
+    fields = dict(
+        mode=mode, host=request.user, amount=amount,
+        fee_percent=fee_percent, fee_per_player=fee_per_player,
+        target_points=target_points, time_control=time_control, doubling_enabled=doubling_enabled,
+    )
+    if mode == models.HeadToHeadTable.MODE_FRIEND:
+        try:
+            table = _create_friend_table(**fields)
+        except FriendCodesUnavailable:
+            return JsonResponse({
+                "code": "friend_codes_unavailable",
+                "detail": "לא ניתן ליצור כרגע קוד חדש למשחק נגד חבר.",
+            }, status=503)
+    else:
+        table = models.HeadToHeadTable.objects.create(code=_new_table_code(), **fields)
+    return JsonResponse(_serialize_head_to_head(table), status=201)
+
+
+@require_http_methods(["GET"])
+def api_head_to_head_table(request, code):
+    """Preview every table rule before the player commits coins."""
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    table = get_object_or_404(
+        models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner'),
+        code=code.upper(),
+    )
+    if table.status != models.HeadToHeadTable.STATUS_OPEN or table.guest_id:
+        return JsonResponse({"detail": "This table is no longer available."}, status=409)
+    return JsonResponse(_serialize_head_to_head(table))
+
+
+@require_http_methods(["POST"])
+def api_head_to_head_quick_match(request):
+    """Join a compatible random opponent, or wait in the queue.
+
+    Match at a stake selected by both players, with the same game rules.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    settings_row = models.DirectPlaySettings.load()
+    try:
+        if 'game_format' in json.loads(request.body or '{}'):
+            from .game_formats import create_or_match
+            return create_or_match(request, quick=True)
+    except (ValueError, TypeError):
+        return JsonResponse({'detail': 'Invalid game request.'}, status=400)
+    if not settings_row.mode_enabled('quick'):
+        return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
+    if not settings_row.format_profiles['match']['enabled'] or not settings_row.format_profiles['match']['quick']:
+        return JsonResponse({'detail': 'This game format or access method is disabled.'}, status=412)
+    try:
+        data = json.loads(request.body or "{}")
+        target_points = int(data.get("target_points", 5))
+        raw_stakes = data.get("amounts", [data.get("amount", "100")])
+        if not isinstance(raw_stakes, list) or not raw_stakes or len(raw_stakes) > len(settings_row.stake_amounts):
+            raise ValidationError("Select at least one available stake.")
+        stakes = sorted(set(_parse_money(value, "amount") for value in raw_stakes))
+        if any(value < Decimal("100.00") or value not in settings_row.stake_amounts for value in stakes):
+            raise ValidationError("This stake is no longer available. Please select an available amount.")
+        stake = max(stakes)
+        stored_stakes = [str(value) for value in stakes]
+        if target_points < 1 or target_points > 25:
+            raise ValidationError("target_points must be between 1 and 25.")
+        doubling_enabled = _parse_bool(data.get("doubling_enabled"), True)
+        time_control = data.get("time_control", "normal")
+        if time_control not in {choice[0] for choice in models.Tournament.TIME_CHOICES}:
+            raise ValidationError("Invalid time control.")
+        settings_row.validate_new_game('quick', target_points, time_control, doubling_enabled)
+    except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
+        messages = getattr(error, 'messages', [str(error)])
+        return JsonResponse({"detail": "; ".join(messages)}, status=400)
+
+    with transaction.atomic():
+        User.objects.select_for_update().get(pk=request.user.pk)
+        own_balance = models.WalletTransaction.balance_for_user(request.user)
+        if own_balance < stake:
+            return JsonResponse({
+                "detail": "Insufficient coins for the selected Quick Match amount.",
+                "code": "insufficient_coins", "required": str(stake),
+                "balance": str(own_balance), "shortfall": str(stake - own_balance),
+            }, status=412)
+        existing = models.HeadToHeadTable.objects.select_for_update().filter(
+            game_format='legacy',
+            host=request.user,
+            mode=models.HeadToHeadTable.MODE_MATCH,
+            is_quick_match=True,
+            status=models.HeadToHeadTable.STATUS_OPEN,
+            target_points=target_points,
+            time_control=time_control,
+            doubling_enabled=doubling_enabled,
+        )
+        existing = next((table for table in existing if sorted(Decimal(value) for value in (table.quick_stakes or [table.amount])) == stakes), None)
+        if existing:
+            payload = _serialize_head_to_head(existing)
+            payload["matched"] = False
+            return JsonResponse(payload)
+
+        candidates = models.HeadToHeadTable.objects.select_for_update().select_related('host').filter(
+            game_format='legacy',
+            mode=models.HeadToHeadTable.MODE_MATCH,
+            is_quick_match=True,
+            status=models.HeadToHeadTable.STATUS_OPEN,
+            guest__isnull=True,
+            target_points=target_points,
+            time_control=time_control,
+            doubling_enabled=doubling_enabled,
+        ).exclude(host=request.user).order_by('created_at')
+
+        for candidate in candidates:
+            common_stakes = sorted(set(stakes).intersection(Decimal(value) for value in (candidate.quick_stakes or [candidate.amount])))
+            if not common_stakes:
+                continue
+            list(User.objects.select_for_update().filter(
+                pk__in=sorted((candidate.host_id, request.user.id)),
+            ).order_by('pk'))
+            host_balance = models.WalletTransaction.balance_for_user(candidate.host)
+            affordable = [value for value in common_stakes if value <= host_balance]
+            if affordable:
+                stake = affordable[0]
+                candidate.amount = stake
+                fee = (stake * settings_row.head_to_head_fee_percent / Decimal("100")).quantize(Decimal("0.01"))
+                candidate.fee_percent = settings_row.head_to_head_fee_percent
+                candidate.fee_per_player = fee
+                for player in (candidate.host, request.user):
+                    models.WalletTransaction.create_entry(
+                        user=player,
+                        amount=-stake,
+                        kind=models.WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY,
+                        head_to_head_table=candidate,
+                        note=f"Quick Match table {candidate.code}",
+                    )
+                candidate.guest = request.user
+                candidate.status = models.HeadToHeadTable.STATUS_READY
+                candidate.save(update_fields=[
+                    'amount', 'fee_percent', 'fee_per_player', 'guest', 'status', 'updated_at',
+                ])
+                payload = _serialize_head_to_head(candidate)
+                payload["matched"] = True
+                return JsonResponse(payload)
+            if not any(Decimal(value) <= host_balance for value in (candidate.quick_stakes or [candidate.amount])):
+                candidate.status = models.HeadToHeadTable.STATUS_CANCELLED
+                candidate.save(update_fields=['status', 'updated_at'])
+
+        table = models.HeadToHeadTable.objects.create(
+            code=_new_table_code(),
+            mode=models.HeadToHeadTable.MODE_MATCH,
+            host=request.user,
+            amount=min(stakes),
+            quick_stakes=stored_stakes,
+            fee_percent=settings_row.head_to_head_fee_percent,
+            fee_per_player=(min(stakes) * settings_row.head_to_head_fee_percent / Decimal("100")).quantize(Decimal("0.01")),
+            target_points=target_points,
+            time_control=time_control,
+            doubling_enabled=doubling_enabled,
+            is_quick_match=True,
+        )
+        payload = _serialize_head_to_head(table)
+        payload["matched"] = False
+        return JsonResponse(payload, status=201)
+
+
+def _recurring_bonus_payload(user, settings_row):
+    latest = models.WalletTransaction.objects.filter(
+        user=user,
+        kind=models.WalletTransaction.KIND_RECURRING_BONUS,
+    ).order_by('-created_at').first()
+    next_available_at = (
+        latest.created_at + timedelta(hours=settings_row.coin_grant_interval_hours)
+        if latest else timezone.now()
+    )
+    return {
+        "enabled": settings_row.coin_grant_enabled,
+        "amount": str(settings_row.coin_grant_amount),
+        "interval_hours": settings_row.coin_grant_interval_hours,
+        "available": settings_row.coin_grant_enabled and next_available_at <= timezone.now(),
+        "next_available_at": next_available_at.isoformat(),
+        "balance": str(models.WalletTransaction.balance_for_user(user)),
+    }
+
+
+@require_http_methods(["GET", "POST"])
+def api_recurring_coin_bonus(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    settings_row = models.DirectPlaySettings.load()
+    if request.method == "GET":
+        return JsonResponse(_recurring_bonus_payload(request.user, settings_row))
+    with transaction.atomic():
+        locked_user = User.objects.select_for_update().get(pk=request.user.pk)
+        payload = _recurring_bonus_payload(locked_user, settings_row)
+        if not payload["enabled"]:
+            return JsonResponse({"detail": "The recurring coin bonus is disabled."}, status=412)
+        if not payload["available"]:
+            return JsonResponse({
+                "detail": "The recurring coin bonus is not available yet.",
+                "next_available_at": payload["next_available_at"],
+            }, status=409)
+        models.WalletTransaction.create_entry(
+            user=locked_user,
+            amount=settings_row.coin_grant_amount,
+            kind=models.WalletTransaction.KIND_RECURRING_BONUS,
+            note=f"Recurring {settings_row.coin_grant_interval_hours}-hour coin bonus",
+        )
+        return JsonResponse(_recurring_bonus_payload(locked_user, settings_row))
+
+
+@require_http_methods(["POST"])
+def api_head_to_head_join(request, code):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    settings_row = models.DirectPlaySettings.load()
+    if not settings_row.enabled:
+        return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
+    try:
+        with transaction.atomic():
+            table = models.HeadToHeadTable.objects.select_for_update().select_related('host').get(code=code.upper())
+            if table.game_format == 'legacy' and not settings_row.mode_enabled('quick' if table.is_quick_match else table.mode):
+                return JsonResponse({"detail": "This game mode is currently disabled."}, status=412)
+            if table.game_format == 'legacy':
+                legacy_profile = settings_row.format_profiles['match']
+                access = 'quick' if table.is_quick_match else 'private' if table.mode == 'friend' else 'public'
+                if not legacy_profile['enabled'] or not legacy_profile[access]:
+                    return JsonResponse({'detail': 'This game format or access method is disabled.'}, status=412)
+            if table.status != models.HeadToHeadTable.STATUS_OPEN or table.guest_id:
+                return JsonResponse({"detail": "This table is no longer available."}, status=409)
+            if table.is_quick_match:
+                return JsonResponse({"detail": "Quick Match tables can only be joined through matchmaking."}, status=409)
+            if table.host_id == request.user.id:
+                return JsonResponse({"detail": "You cannot join your own table."}, status=400)
+            if table.game_format != 'legacy':
+                from .game_formats import join_table
+                try:
+                    join_table(table, request.user, settings_row)
+                except ValidationError as error:
+                    return JsonResponse({'detail': '; '.join(error.messages)}, status=400)
+                return JsonResponse(_serialize_head_to_head(table))
+            # Lock both balances in a stable order before charging either player.
+            list(User.objects.select_for_update().filter(pk__in=sorted([table.host_id, request.user.id])).order_by('pk'))
+            charge = table.fee_per_player if table.is_friend_game else table.amount
+            kind = models.WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else models.WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
+            guest_balance = models.WalletTransaction.balance_for_user(request.user)
+            if guest_balance < charge:
+                return JsonResponse({"detail": "Insufficient coins to join this table.", "code": "insufficient_coins", "required": str(charge), "balance": str(guest_balance), "shortfall": str(charge - guest_balance)}, status=412)
+            if models.WalletTransaction.balance_for_user(table.host) < charge:
+                return JsonResponse({"detail": "The host no longer has enough coins for this table.", "code": "opponent_insufficient_coins"}, status=412)
+            for player in (table.host, request.user):
+                models.WalletTransaction.create_entry(
+                    user=player, amount=-charge, kind=kind, head_to_head_table=table,
+                    note=f"{table.get_mode_display()} table {table.code}",
+                )
+            table.guest = request.user
+            table.status = models.HeadToHeadTable.STATUS_READY
+            table.save(update_fields=['guest', 'status', 'updated_at'])
+    except models.HeadToHeadTable.DoesNotExist:
+        return JsonResponse({"detail": "Table not found."}, status=404)
+    return JsonResponse(_serialize_head_to_head(table))
+
+
+def _refund_head_to_head(table, actor=None):
+    charges = table.wallet_transactions.filter(amount__lt=0).select_related('user')
+    for charge in charges:
+        already_refunded = table.wallet_transactions.filter(
+            user=charge.user, kind=models.WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+        ).exists()
+        if not already_refunded:
+            models.WalletTransaction.create_entry(
+                user=charge.user, amount=-charge.amount,
+                kind=models.WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+                head_to_head_table=table, actor=actor,
+                note=f"Refund for cancelled table {table.code}",
+            )
+
+
+@require_http_methods(["POST"])
+def api_head_to_head_cancel(request, code):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    with transaction.atomic():
+        table = get_object_or_404(models.HeadToHeadTable.objects.select_for_update(), code=code.upper())
+        if table.host_id != request.user.id:
+            return JsonResponse({"detail": "Only the table owner can cancel it."}, status=403)
+        if table.status not in (models.HeadToHeadTable.STATUS_OPEN, models.HeadToHeadTable.STATUS_READY):
+            return JsonResponse({"detail": "This table can no longer be cancelled."}, status=409)
+        _refund_head_to_head(table)
+        table.status = models.HeadToHeadTable.STATUS_CANCELLED
+        table.save(update_fields=['status', 'updated_at'])
+    return JsonResponse(_serialize_head_to_head(table))
+
+
+@require_http_methods(["GET", "PUT"])
+def api_admin_direct_play_settings(request):
+    err = _require_staff(request)
+    if err:
+        return err
+    row = models.DirectPlaySettings.load()
+    if request.method == "PUT":
+        try:
+            data = json.loads(request.body or "{}")
+            row.enabled = _parse_bool(data.get("enabled"), row.enabled)
+            if 'format_profiles' in data:
+                models.validate_format_profiles(data['format_profiles'])
+                row.format_profiles = data['format_profiles']
+            if "game_rules" in data:
+                models.validate_game_rules(data["game_rules"])
+                row.game_rules = data["game_rules"]
+                for rule in row.game_rules.values():
+                    rule['target_points'].sort()
+            if "stake_amounts" in data:
+                models.validate_stake_amounts(data["stake_amounts"])
+                row.stake_amounts = sorted(data["stake_amounts"])
+            row.friend_game_fee = _parse_money(data.get("friend_game_fee", row.friend_game_fee), "friend_game_fee")
+            row.head_to_head_fee_percent = _parse_money(data.get("head_to_head_fee_percent", row.head_to_head_fee_percent), "head_to_head_fee_percent")
+            row.tournament_fee_percent = _parse_money(data.get("tournament_fee_percent", row.tournament_fee_percent), "tournament_fee_percent")
+            row.coin_grant_enabled = _parse_bool(data.get("coin_grant_enabled"), row.coin_grant_enabled)
+            row.coin_grant_amount = _parse_money(data.get("coin_grant_amount", row.coin_grant_amount), "coin_grant_amount")
+            row.coin_grant_interval_hours = int(data.get("coin_grant_interval_hours", row.coin_grant_interval_hours))
+            if row.head_to_head_fee_percent > 100:
+                raise ValidationError("The Match Play fee cannot exceed 100%.")
+            if not Decimal("8") <= row.tournament_fee_percent <= Decimal("10"):
+                raise ValidationError("The tournament fee must be between 8% and 10%.")
+            row.full_clean()
+            row.save()
+        except (json.JSONDecodeError, ValueError, ValidationError) as error:
+            messages = getattr(error, 'messages', [str(error)])
+            return JsonResponse({"detail": "; ".join(messages)}, status=400)
+    return JsonResponse({
+        "enabled": row.enabled,
+        "friend_game_fee": str(row.friend_game_fee),
+        "stake_amounts": row.stake_amounts,
+        "game_rules": row.game_rules,
+        "format_profiles": row.format_profiles,
+        "head_to_head_fee_percent": str(row.head_to_head_fee_percent),
+        "tournament_fee_percent": str(row.tournament_fee_percent),
+        "coin_grant_enabled": row.coin_grant_enabled,
+        "coin_grant_amount": str(row.coin_grant_amount),
+        "coin_grant_interval_hours": row.coin_grant_interval_hours,
+        "updated_at": row.updated_at.isoformat(),
+    })
+
+
+@require_http_methods(["GET"])
+def api_admin_head_to_head_tables(request):
+    err = _require_staff(request)
+    if err:
+        return err
+    tables = models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner')
+    status_filter = request.GET.get('status')
+    if status_filter:
+        tables = tables.filter(status=status_filter)
+    # Never let recent history hide a player who is still waiting or playing.
+    closed = (models.HeadToHeadTable.STATUS_COMPLETED, models.HeadToHeadTable.STATUS_CANCELLED)
+    active = list(tables.exclude(status__in=closed))
+    history = tables.filter(status__in=closed)
+    return JsonResponse({
+        "tables": [_serialize_admin_direct_play(table) for table in active + list(history[:250])],
+        "history_total": history.count(),
+        "history_limit": 250,
+    })
+
+
+def _serialize_admin_direct_play(table):
+    return {
+        **_serialize_head_to_head(table),
+        "host_id": table.host_id,
+        "guest_id": table.guest_id,
+        "winner_id": table.winner_id,
+        "updated_at": table.updated_at.isoformat(),
+        "completed_at": table.completed_at.isoformat() if table.completed_at else None,
+    }
+
+
+@require_http_methods(["POST"])
+def api_admin_head_to_head_cancel(request, pk):
+    err = _require_staff(request)
+    if err:
+        return err
+    with transaction.atomic():
+        table = get_object_or_404(models.HeadToHeadTable.objects.select_for_update(), pk=pk)
+        if table.status in (models.HeadToHeadTable.STATUS_COMPLETED, models.HeadToHeadTable.STATUS_CANCELLED):
+            return JsonResponse({"detail": "This table is already closed."}, status=409)
+        _refund_head_to_head(table, actor=request.user)
+        table.status = models.HeadToHeadTable.STATUS_CANCELLED
+        table.save(update_fields=['status', 'updated_at'])
+    return JsonResponse(_serialize_admin_direct_play(table))
 
 
 # --- Admin API (staff only) ---
@@ -1734,7 +2269,7 @@ def _admin_finance_payload(days=30):
     return {
         "updated_at": now.isoformat(),
         "range_days": days,
-        "currency": "USD",
+        "currency": "COINS",
         "summary": {
             "revenue": str(revenue),
             "refunds": str(refunds),

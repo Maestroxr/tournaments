@@ -32,6 +32,8 @@ describe('TransfersWorkspaceLayout', () => {
     expect(links.map(link => link.attributes('data-to'))).toEqual([
       '/transfers',
       '/transfers/finance',
+      '/transfers/payments',
+      '/transfers/catalog',
     ])
     expect(links[1]?.classes()).toContain('is-selected')
     expect(links[1]?.attributes('aria-current')).toBe('page')

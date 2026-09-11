@@ -18,6 +18,7 @@ const breadcrumbTranslationKeys: Record<string, string> = {
   Users: 'nav.users',
   Create: 'common.create',
   Transfers: 'nav.transfers',
+  'Direct Play': 'nav.directPlay',
 }
 
 onMounted(() => {

@@ -28,7 +28,7 @@ async function handleLogout() {
 
       <div class="admin-account">
         <template v-if="auth.isLoggedIn">
-          <AdminNotificationCenter />
+          <AdminNotificationCenter v-if="auth.isAdmin" />
           <div class="admin-account-meta">
             <span class="admin-account-name"><i class="bi bi-person" aria-hidden="true"></i> {{ auth.user?.username }}</span>
             <span class="admin-balance">{{ Number(auth.user?.balance || 0).toFixed(2) }}</span>

@@ -382,10 +382,8 @@ function formatUpdatedAt(value: string) {
 function formatMoney(value?: string) {
   const amount = Number(value ?? 0)
   return new Intl.NumberFormat(localeTag.value, {
-    style: 'currency',
-    currency: 'USD',
     maximumFractionDigits: 2,
-  }).format(Math.abs(amount))
+  }).format(Math.abs(amount)) + (locale.value === 'he' ? ' קויינס' : ' coins')
 }
 
 function registrationPercent(tournament: TournamentSummary) {

@@ -128,6 +128,17 @@ const router = createRouter({
       },
     },
     {
+      path: '/direct-play',
+      name: 'direct-play',
+      component: () => import('@/pages/DirectPlayView.vue'),
+      meta: {
+        breadcrumb: [
+          { label: 'Dashboard', to: '/dashboard' },
+          { label: 'Direct Play' },
+        ] satisfies BreadcrumbItem[],
+      },
+    },
+    {
       path: '/transfers',
       component: () => import('@/layouts/TransfersWorkspaceLayout.vue'),
       meta: {
@@ -146,6 +157,16 @@ const router = createRouter({
           path: 'finance',
           name: 'transfers-finance',
           component: () => import('@/pages/FinancialOverviewView.vue'),
+        },
+        {
+          path: 'payments',
+          name: 'transfers-payments',
+          component: () => import('@/pages/PaymentsView.vue'),
+        },
+        {
+          path: 'catalog',
+          name: 'transfers-catalog',
+          component: () => import('@/pages/CatalogView.vue'),
         },
       ],
     },

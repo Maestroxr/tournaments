@@ -1,11 +1,19 @@
 from django.urls import path
+from billing.admin_checkout import admin_checkouts
+from billing.catalog import admin_catalog
+from billing.tranzila_setup import admin_readiness
+from billing.tranzila_flow import checkout_session, reconcile
 from . import api
 from . import accounts
+from . import google_auth
 from . import push
 from .operations import health
 from .admin_matches import admin_match
 
 urlpatterns = [
+    path('auth/google/config', google_auth.config, name='api-google-config'),
+    path('auth/google', google_auth.authenticate, name='api-google-auth'),
+    path('auth/google/complete', google_auth.complete, name='api-google-complete'),
     path('push/config', push.config, name='api-push-config'),
     path('push/subscription', push.subscription, name='api-push-subscription'),
     path('health/', health, name='api-health'),
@@ -26,11 +34,26 @@ urlpatterns = [
     path('tournaments/<int:pk>/join', api.api_join, name='api-join'),
     path('tournaments/<int:pk>/withdraw',
          api.api_withdraw, name='api-withdraw'),
+    path('head-to-head/tables', api.api_head_to_head_tables, name='api-head-to-head-tables'),
+    path('head-to-head/quick-match', api.api_head_to_head_quick_match, name='api-head-to-head-quick-match'),
+    path('head-to-head/tables/<str:code>', api.api_head_to_head_table, name='api-head-to-head-table'),
+    path('head-to-head/tables/<str:code>/join', api.api_head_to_head_join, name='api-head-to-head-join'),
+    path('head-to-head/tables/<str:code>/cancel', api.api_head_to_head_cancel, name='api-head-to-head-cancel'),
+    path('wallet/recurring-bonus', api.api_recurring_coin_bonus, name='api-recurring-coin-bonus'),
     # Admin (staff only)
     path('admin/tournaments/<int:pk>/matches/<int:fixture_id>', admin_match, name='api-admin-match'),
     path('admin/dashboard', api.api_admin_dashboard, name='api-admin-dashboard'),
+    path('admin/direct-play/settings', api.api_admin_direct_play_settings, name='api-admin-direct-play-settings'),
+    path('admin/direct-play/tables', api.api_admin_head_to_head_tables, name='api-admin-head-to-head-tables'),
+    path('admin/direct-play/tables/<int:pk>/cancel', api.api_admin_head_to_head_cancel, name='api-admin-head-to-head-cancel'),
     path('admin/notifications', api.api_admin_notifications, name='api-admin-notifications'),
     path('admin/finance', api.api_admin_finance, name='api-admin-finance'),
+    path('admin/checkouts', admin_checkouts, name='api-admin-checkouts'),
+    path('admin/store-catalog', admin_catalog, name='api-admin-store-catalog'),
+    path('admin/tranzila-readiness', admin_readiness, name='api-admin-tranzila-readiness'),
+    path('admin/checkouts/<uuid:identifier>/session', checkout_session, name='api-admin-tranzila-session'),
+    path('admin/checkouts/<uuid:identifier>/reconcile', reconcile, name='api-admin-tranzila-reconcile'),
+    path('admin/store-catalog/<int:pk>', admin_catalog, name='api-admin-store-product'),
     path('admin/tournaments', api.api_admin_tournaments, name='api-admin-tournaments'),
     path('admin/tournaments/<int:pk>', api.api_admin_tournament_detail, name='api-admin-tournament-detail'),
     path('admin/tournaments/<int:pk>/publish', api.api_admin_tournament_publish, name='api-admin-tournament-publish'),

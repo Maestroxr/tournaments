@@ -32,8 +32,8 @@ describe('TournamentFixtureCard', () => {
 
     expect(users).toHaveLength(2)
     expect(users.map((user) => user.props())).toEqual([
-      { userId: 101, username: 'Dana Cohen' },
-      { userId: 102, username: 'Ben Levi' },
+      expect.objectContaining({ userId: 101, username: 'Dana Cohen' }),
+      expect.objectContaining({ userId: 102, username: 'Ben Levi' }),
     ])
     expect(wrapper.text()).toContain('@dana')
     expect(wrapper.text()).toContain('@ben')

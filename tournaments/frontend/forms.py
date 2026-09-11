@@ -107,6 +107,7 @@ class SignupForm(UserCreationForm):
         username = self.cleaned_data.get('username', '')
         self.cleaned_data['username'] = username[:1].upper() + username[1:]
         ret = super(SignupForm, self).clean_username()
+        validate_admin_username(ret)
         if ret and re.match(r'^testuser-[0-9]+$', ret, re.IGNORECASE):
             raise ValidationError('This username is reserved.')
         return ret

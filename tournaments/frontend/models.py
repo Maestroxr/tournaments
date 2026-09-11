@@ -9,6 +9,11 @@ class AccountEmail(models.Model):
     last_sent_at = models.DateTimeField(null=True, blank=True)
 
 
+class GoogleIdentity(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='google_identity')
+    subject = models.CharField(max_length=255, unique=True)
+
+
 class PushSubscription(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='push_subscriptions')
     endpoint_hash = models.CharField(max_length=64, unique=True)

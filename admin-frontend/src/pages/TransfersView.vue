@@ -121,10 +121,10 @@ onMounted(load)
       <Column :header="t('transfers.tournament')">
         <template #body="{ data }">{{ data.tournament_name || '-' }}</template>
       </Column>
-      <Column :header="t('common.amount')" sortable sort-field="amount" body-class="text-right">
+      <Column :header="t('common.amount') + (locale === 'he' ? ' (קויינס)' : ' (coins)')" sortable sort-field="amount" body-class="text-right">
         <template #body="{ data }"><span :class="['font-semibold', Number(data.amount) >= 0 ? 'text-emerald-700' : 'text-red-700']">{{ Number(data.amount).toFixed(2) }}</span></template>
       </Column>
-      <Column :header="t('users.balance')" sortable sort-field="balance_after" body-class="text-right">
+      <Column :header="t('users.balance') + (locale === 'he' ? ' (קויינס)' : ' (coins)')" sortable sort-field="balance_after" body-class="text-right">
         <template #body="{ data }">{{ Number(data.balance_after).toFixed(2) }}</template>
       </Column>
       <Column :header="t('common.actor')">

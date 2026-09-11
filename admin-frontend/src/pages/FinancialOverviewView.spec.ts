@@ -14,7 +14,7 @@ const api = vi.mocked(apiFetch)
 const response = {
   updated_at: '2026-09-07T12:00:00Z',
   range_days: 30,
-  currency: 'USD',
+  currency: 'COINS',
   summary: {
     revenue: '1000.00', refunds: '100.00', prizes: '300.00', expenses: '400.00',
     net: '600.00', outstanding: '150.00', outstanding_count: 3,
@@ -53,9 +53,9 @@ describe('FinancialOverviewView', () => {
 
     expect(api).toHaveBeenCalledWith('/api/admin/finance?days=30')
     expect(wrapper.text()).toContain('Entry-fee revenue')
-    expect(wrapper.text()).toContain('$1,000.00')
+    expect(wrapper.text()).toContain('1,000 coins')
     expect(wrapper.text()).toContain('Tournament net')
-    expect(wrapper.text()).toContain('$600.00')
+    expect(wrapper.text()).toContain('600 coins')
     expect(wrapper.text()).toContain('3 unpaid registrations, as of now')
     expect(wrapper.findAll('.finance-chart__line')).toHaveLength(3)
     expect(wrapper.text()).toContain('Open Tel Aviv')
