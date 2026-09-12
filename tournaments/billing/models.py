@@ -103,6 +103,7 @@ class CheckoutRequest(models.Model):
     provider_reference = models.CharField(max_length=100, null=True, blank=True, unique=True)
     provider_terminal = models.CharField(max_length=100, blank=True)
     provider_transaction_index = models.CharField(max_length=32, blank=True)
+    last_reconciled_at = models.DateTimeField(null=True, blank=True)
     checkout_session = models.JSONField(default=dict, blank=True)
     session_expires_at = models.DateTimeField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
@@ -124,6 +125,70 @@ class CheckoutEvent(models.Model):
     kind = models.CharField(max_length=32)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True)
     created_at = models.DateTimeField(default=timezone.now)
+
+
+class CheckoutRefund(models.Model):
+    """Staff-confirmed external refund, not a request to charge/refund a card.
+
+    Fulfillment adjustments are tracked separately and remain a reviewed
+    operational action, particularly for spent coins and chained memberships.
+    """
+    checkout = models.ForeignKey(CheckoutRequest, on_delete=models.PROTECT, related_name='refund_records')
+    idempotency_key = models.UUIDField(unique=True)
+    provider_reference = models.CharField(max_length=100)
+    provider_terminal = models.CharField(max_length=100)
+    environment = models.CharField(max_length=10)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    created_at = models.DateTimeField(default=timezone.now)
+    adjustment_reference = models.CharField(max_length=100, blank=True)
+    adjusted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, related_name='+')
+    adjusted_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(amount__gt=0), name='checkout_refund_positive'),
+            models.UniqueConstraint(fields=['provider_terminal', 'environment', 'provider_reference'],
+                                    name='checkout_refund_provider_unique'),
+        ]
+
+
+class TranzilaRun(models.Model):
+    kind = models.CharField(max_length=16)
+    terminal = models.CharField(max_length=100)
+    environment = models.CharField(max_length=10)
+    status = models.CharField(max_length=16, default='running')
+    started_at = models.DateTimeField(default=timezone.now)
+    finished_at = models.DateTimeField(null=True)
+    date_from = models.DateField(null=True)
+    date_to = models.DateField(null=True)
+    checked = models.PositiveIntegerField(default=0)
+    recovered = models.PositiveIntegerField(default=0)
+    issues = models.PositiveIntegerField(default=0)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True)
+
+    class Meta:
+        permissions = [('manage_payments', 'Manage payment reconciliation and refund tracking')]
+        constraints = [models.UniqueConstraint(fields=['terminal', 'environment', 'kind'],
+            condition=models.Q(status='running'), name='tranzila_one_running_operation')]
+
+
+class TranzilaIssue(models.Model):
+    """Only allowlisted identifiers and diagnostic codes, never raw reports."""
+    terminal = models.CharField(max_length=100)
+    environment = models.CharField(max_length=10)
+    transaction_index = models.CharField(max_length=32)
+    code = models.CharField(max_length=32)
+    checkout = models.ForeignKey(CheckoutRequest, on_delete=models.PROTECT, null=True)
+    first_seen_at = models.DateTimeField(default=timezone.now)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True)
+    resolved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True)
+    resolution_reference = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['terminal', 'environment', 'transaction_index', 'code'],
+                                               name='tranzila_issue_unique')]
 
 
 class StoreProduct(models.Model):

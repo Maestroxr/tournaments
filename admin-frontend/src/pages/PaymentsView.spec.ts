@@ -22,7 +22,7 @@ const catalog = { items: [
   { id: 3, name: 'Inactive package', kind: 'coins', price: '5.00', active: false },
   { id: 4, name: 'Free tier', kind: 'subscription', price: '0.00', active: true },
 ] }
-function render() { return mount(PaymentsView, { global: { plugins: [PrimeVue], stubs: { TranzilaReadiness: true, TranzilaCheckoutAction: true, RouterLink: { template: '<a><slot /></a>' } } } }) }
+function render() { return mount(PaymentsView, { global: { plugins: [PrimeVue], stubs: { TranzilaReadiness: true, TranzilaCheckoutAction: true, TranzilaOperations: true, TranzilaPaymentReview: true, RouterLink: { template: '<a><slot /></a>' } } } }) }
 describe('PaymentsView', () => {
   beforeEach(() => {
     api.mockReset()

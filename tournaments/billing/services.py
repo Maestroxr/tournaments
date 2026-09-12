@@ -1,4 +1,4 @@
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, Value, When
 from django.utils import timezone
 
 from .models import Payment, TIER_CHOICES
@@ -89,16 +89,21 @@ def tranzila_access(user):
 
 
 def entitlement_for(user):
-    """Resolve access from one payment and that payment's subscription only.
+    """Highest active paid tier wins; lower tiers keep their original expiry.
 
-    The longest remaining paid period wins. Equal periods are resolved by most
-    recent payment time, then primary key, so the result is deterministic.
-    Legacy subscriptions without a tier retain their paid membership status but
-    receive only the effective FREE catalog.
+    Within a tier choose the longest period, then latest payment and PK.
+    Unknown legacy tiers retain membership but only FREE capabilities.
     """
-    access = paid_access(user).select_related('subscription').order_by('-period_end', '-paid_at', '-pk').first()
-    direct = tranzila_access(user).order_by('-valid_until', '-paid_at', '-pk').first()
-    if direct and (not access or direct.valid_until > access.period_end):
+    ranks = {'FREE': 0, 'GOLD': 1, 'PREMIUM': 2, 'VIP': 3}
+    def rank(field):
+        return Case(*(When(**{field: tier}, then=Value(value)) for tier, value in ranks.items()),
+                    default=Value(0), output_field=IntegerField())
+    access = paid_access(user).select_related('subscription').annotate(
+        tier_rank=rank('subscription__tier')).order_by('-tier_rank', '-period_end', '-paid_at', '-pk').first()
+    direct = tranzila_access(user).annotate(tier_rank=rank('tier')).order_by(
+        '-tier_rank', '-valid_until', '-paid_at', '-pk').first()
+    if direct and (not access or (direct.tier_rank, direct.valid_until, direct.paid_at) >
+                  (access.tier_rank, access.period_end, access.paid_at)):
         return {'membership': True, 'tier': direct.tier, 'valid_until': direct.valid_until,
                 'capabilities': capabilities_for(direct.tier)}
     tier = access.subscription.tier if access and access.subscription.tier in KNOWN_TIERS else 'FREE'

@@ -6,6 +6,7 @@ import logging
 from django import forms
 from django.conf import settings
 from django.contrib.auth import login
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.models import User
 from django.db import IntegrityError, transaction
 from django.http import JsonResponse
@@ -105,6 +106,7 @@ def authenticate(request):
 
 class ProfileForm(forms.ModelForm):
     phone_number = forms.CharField(max_length=24)
+    password = forms.CharField(strip=False, widget=forms.PasswordInput)
 
     class Meta:
         model = User
@@ -123,6 +125,15 @@ class ProfileForm(forms.ModelForm):
     def clean_phone_number(self):
         return require_phone_number(self.cleaned_data['phone_number'])
 
+    def _post_clean(self):
+        super()._post_clean()
+        password = self.cleaned_data.get('password')
+        if password:
+            try:
+                validate_password(password, self.instance)
+            except forms.ValidationError as error:
+                self.add_error('password', error)
+
 
 @never_cache
 @require_POST
@@ -133,7 +144,7 @@ def complete(request):
     if not pending or time.time() - pending['issued'] > TTL:
         request.session.pop('google_pending', None)
         return failure('expired')
-    form = ProfileForm(body(request))
+    form = ProfileForm(body(request), instance=User(email=pending['email']))
     if not form.is_valid():
         return JsonResponse({'errors': form.errors}, status=400)
     try:
@@ -143,7 +154,7 @@ def complete(request):
             user = form.save(commit=False)
             user.email = pending['email']
             user.is_active = pending['verified']
-            user.set_unusable_password()
+            user.set_password(form.cleaned_data['password'])
             user.save()
             account = AccountEmail.objects.create(user=user, email=user.email, verified_at=timezone.now() if pending['verified'] else None)
             GoogleIdentity.objects.create(user=user, subject=pending['subject'])

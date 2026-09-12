@@ -3,6 +3,7 @@ from billing.admin_checkout import admin_checkouts
 from billing.catalog import admin_catalog
 from billing.tranzila_setup import admin_readiness
 from billing.tranzila_flow import checkout_session, reconcile
+from billing import operations as payment_operations
 from . import api
 from . import accounts
 from . import google_auth
@@ -53,6 +54,11 @@ urlpatterns = [
     path('admin/tranzila-readiness', admin_readiness, name='api-admin-tranzila-readiness'),
     path('admin/checkouts/<uuid:identifier>/session', checkout_session, name='api-admin-tranzila-session'),
     path('admin/checkouts/<uuid:identifier>/reconcile', reconcile, name='api-admin-tranzila-reconcile'),
+    path('admin/tranzila-operations', payment_operations.operations_status, name='api-admin-tranzila-operations'),
+    path('admin/tranzila-health', payment_operations.health_check, name='api-admin-tranzila-health'),
+    path('admin/tranzila-issues/<int:identifier>/resolve', payment_operations.resolve_issue, name='api-admin-tranzila-resolve'),
+    path('admin/checkouts/<uuid:identifier>/refunds', payment_operations.record_refund, name='api-admin-tranzila-refund'),
+    path('admin/checkouts/<uuid:identifier>/refunds/<int:refund_id>/adjustment', payment_operations.complete_adjustment, name='api-admin-tranzila-adjustment'),
     path('admin/store-catalog/<int:pk>', admin_catalog, name='api-admin-store-product'),
     path('admin/tournaments', api.api_admin_tournaments, name='api-admin-tournaments'),
     path('admin/tournaments/<int:pk>', api.api_admin_tournament_detail, name='api-admin-tournament-detail'),

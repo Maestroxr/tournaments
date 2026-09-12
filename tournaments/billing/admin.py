@@ -27,3 +27,5 @@ class PaymentAdmin(BillingAuditAdmin):
 admin.site.register((Receipt, Refund, WebhookEvent), BillingAuditAdmin)
 admin.site.register((CheckoutRequest, CheckoutEvent), BillingAuditAdmin)
 admin.site.register((StoreProduct, StoreProductAudit), BillingAuditAdmin)
+from .models import CheckoutRefund, TranzilaRun, TranzilaIssue
+admin.site.register((CheckoutRefund, TranzilaRun, TranzilaIssue), BillingAuditAdmin)

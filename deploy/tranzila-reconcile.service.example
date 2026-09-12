@@ -1,0 +1,15 @@
+[Unit]
+Description=Reconcile Tranzila reports and recover verified purchases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=backgammon
+WorkingDirectory=/srv/backgammon/backgammon-tournaments-backend/tournaments
+EnvironmentFile=/etc/backgammon/tranzila.env
+ExecStart=/srv/backgammon/backgammon-tournaments-backend/.venv/bin/python manage.py reconcile_tranzila
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

@@ -16,7 +16,7 @@ from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, UserContact
+from tournaments.models import Fixture, HeadToHeadTable, Knockout, Participant, Participation, Tournament, UserContact
 
 from gamelink import checks
 from gamelink.housekeeping import minimum_nonce_retention, purge_expired
@@ -1142,6 +1142,96 @@ class LiveSnapshotCallbackViewTest(ResultCallbackTestBase):
         self.game_link.refresh_from_db()
         self.assertEqual(self.game_link.live_snapshot['sequence'], 5)
         self.assertEqual(self.game_link.live_snapshot['state']['turn'], 'white')
+
+
+@gamelink_settings
+class DirectPlayLiveSnapshotTest(ResultCallbackTestBase):
+    def setUp(self):
+        super().setUp()
+        self.table = HeadToHeadTable.objects.create(
+            code='LIVE11', mode='match', host=self.user1, guest=self.user2,
+            amount=10, fee_percent=0, fee_per_player=0, status='ready',
+        )
+
+    def live_body(self, **overrides):
+        return super().live_body(**{
+            'tournament_id': 0, 'fixture_id': -self.table.pk, **overrides,
+        })
+
+    def test_signed_snapshot_is_saved_for_each_direct_play_format(self):
+        for game_format in ('legacy', 'match', 'money'):
+            with self.subTest(game_format=game_format):
+                self.table.game_format = game_format
+                self.table.live_snapshot = None
+                self.table.save()
+                self.assertEqual(self.deliver_live().status_code, 200)
+                self.table.refresh_from_db()
+                self.assertEqual(self.table.live_snapshot, self.live_body())
+                self.assertEqual(self.table.external_room_id, self.ROOM_ID)
+                self.assertEqual(self.table.status, 'playing')
+                self.assertIsNotNone(self.table.live_updated_at)
+                self.assertNothingRecorded()
+
+    def test_old_and_duplicate_sequences_do_not_replace_snapshot(self):
+        self.assertEqual(self.deliver_live(self.live_body(sequence=5)).status_code, 200)
+        self.table.refresh_from_db()
+        updated_at = self.table.live_updated_at
+        for sequence in (4, 5):
+            self.assertEqual(self.deliver_live(self.live_body(sequence=sequence, state={})).status_code, 200)
+            self.table.refresh_from_db()
+            self.assertEqual(self.table.live_snapshot, self.live_body(sequence=5))
+            self.assertEqual(self.table.live_updated_at, updated_at)
+
+    def test_wrong_room_cannot_overwrite_snapshot(self):
+        self.deliver_live()
+        response = self.deliver_live(self.live_body(room_id='another-room', sequence=6))
+        self.assertEqual(response.status_code, 409)
+        self.table.refresh_from_db()
+        self.assertEqual(self.table.live_snapshot, self.live_body())
+
+    def test_finished_tables_are_not_reopened_by_late_snapshots(self):
+        self.deliver_live()
+        for status in ('completed', 'cancelled'):
+            self.table.refresh_from_db()
+            self.table.status = status
+            self.table.save(update_fields=['status'])
+            self.assertEqual(self.deliver_live(self.live_body(sequence=6)).status_code, 200)
+            self.table.refresh_from_db()
+            self.assertEqual(self.table.status, status)
+            self.assertEqual(self.table.live_snapshot, self.live_body())
+
+    def test_invalid_signature_and_replayed_nonce_are_rejected(self):
+        self.assertEqual(self.deliver_live(signature='invalid').status_code, 401)
+        self.table.refresh_from_db()
+        self.assertIsNone(self.table.live_snapshot)
+        nonce = uuid.uuid4().hex
+        self.assertEqual(self.deliver_live(nonce=nonce).status_code, 200)
+        self.assertEqual(self.deliver_live(self.live_body(sequence=6), nonce=nonce).status_code, 401)
+        self.table.refresh_from_db()
+        self.assertEqual(self.table.live_snapshot, self.live_body())
+
+    def test_missing_table_and_incorrect_tournament_are_rejected(self):
+        self.assertEqual(self.deliver_live(self.live_body(fixture_id=-999999)).status_code, 404)
+        self.assertEqual(self.deliver_live(self.live_body(tournament_id=self.tournament.pk)).status_code, 404)
+        self.table.refresh_from_db()
+        self.assertIsNone(self.table.live_snapshot)
+
+    def test_open_or_unpaired_table_cannot_be_started_by_snapshot(self):
+        self.table.status = 'open'
+        self.table.save(update_fields=['status'])
+        self.assertEqual(self.deliver_live().status_code, 409)
+        self.table.status = 'ready'
+        self.table.guest = None
+        self.table.save(update_fields=['status', 'guest'])
+        self.assertEqual(self.deliver_live().status_code, 409)
+        self.table.refresh_from_db()
+        self.assertIsNone(self.table.live_snapshot)
+
+    def test_invalid_room_and_sequence_are_rejected(self):
+        for overrides in ({'room_id': ''}, {'room_id': 'x' * 65}, {'sequence': -1}):
+            self.assertEqual(self.deliver_live(self.live_body(**overrides)).status_code, 400)
+        self.table.refresh_from_db()
+        self.assertIsNone(self.table.live_snapshot)
 
 
 @gamelink_settings

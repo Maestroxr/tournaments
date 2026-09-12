@@ -27,6 +27,8 @@ class TranzilaFlowTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user('buyer')
         self.staff = get_user_model().objects.create_user('operator', is_staff=True)
+        from django.contrib.auth.models import Permission
+        self.staff.user_permissions.add(Permission.objects.get(content_type__app_label='billing', codename='manage_payments'))
         self.product = StoreProduct.objects.create(name='Coins', kind='coins', tier='', price='10.00',
                                                   coin_quantity=500, period_months=0, active=True)
         self.row = self.order()

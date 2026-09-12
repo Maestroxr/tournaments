@@ -701,6 +701,8 @@ class LiveSnapshotCallbackView(View):
                 SeenNonce.objects.create(nonce=nonce)
                 # Use the same tournament -> fixture -> link lock order as final results
                 # and organizer rulings, so an in-flight snapshot cannot follow a ruling.
+                if tournament_id == 0 and fixture_id < 0:
+                    return self._record_direct_play(request, -fixture_id, body)
                 actual_tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
                 Tournament.objects.select_for_update().get(pk=actual_tournament_id)
                 Fixture.objects.select_for_update().get(pk=fixture_id)
@@ -723,6 +725,33 @@ class LiveSnapshotCallbackView(View):
             return _reject(request, 401, 'nonce has been seen before')
         except (GameLink.DoesNotExist, Fixture.DoesNotExist):
             return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
+        return JsonResponse({'status': 'recorded'})
+
+
+    def _record_direct_play(self, request, table_id, body):
+        """Called inside the authenticated snapshot transaction, including nonce storage."""
+        try:
+            table = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+        except HeadToHeadTable.DoesNotExist:
+            return _reject(request, 404, 'no direct-play table for this snapshot', fixture_id=-table_id)
+        if not body['room_id'] or len(body['room_id']) > 64 or body['sequence'] < 0:
+            return _reject(request, 400, 'invalid direct-play live snapshot', fixture_id=-table_id)
+        if table.external_room_id not in ('', body['room_id']):
+            return _reject(request, 409, 'room mismatch for direct-play table', fixture_id=-table_id)
+        # A delayed snapshot must never reopen a settled table or replace its last live state.
+        if table.status in (HeadToHeadTable.STATUS_COMPLETED, HeadToHeadTable.STATUS_CANCELLED):
+            return JsonResponse({'status': 'already_recorded'})
+        if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING) or not table.guest_id:
+            return _reject(request, 409, 'direct-play table is not ready', fixture_id=-table_id)
+        previous = (table.live_snapshot or {}).get('sequence', -1)
+        if body['sequence'] > previous:
+            table.live_snapshot = body
+            table.live_updated_at = timezone.now()
+            table.external_room_id = body['room_id']
+            table.status = HeadToHeadTable.STATUS_PLAYING
+            table.save(update_fields=[
+                'live_snapshot', 'live_updated_at', 'external_room_id', 'status', 'updated_at',
+            ])
         return JsonResponse({'status': 'recorded'})
 
 

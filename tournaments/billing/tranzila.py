@@ -152,3 +152,27 @@ class Tranzila:
                 'transtatus': status,
                 'tranmode': record['tranmode'], 'txn_type': record['txn_type'],
                 'checkout_id': record['user_defined_1'], 'duplicate_key': record['user_defined_20']}
+
+    def report_page(self, date_from, date_to, page=1, page_size=100, checkout_id=None):
+        """Read one bounded page; callers must continue until total is covered."""
+        if date_from > date_to or not 1 <= page <= 1000 or not 1 <= page_size <= 1000:
+            raise ProviderError('Invalid report range.')
+        body = {
+            'terminal_name': self.terminal, 'transaction_start_date': date_from.isoformat(),
+            'transaction_end_date': date_to.isoformat(), 'page': page,
+            'page_results': page_size, 'order_direction': 'asc'}
+        if checkout_id is not None:
+            if not isinstance(checkout_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', checkout_id):
+                raise ProviderError('Invalid checkout identifier.')
+            body['ufields'] = [{'name': 'checkout_id', 'operator': 'equals', 'value': checkout_id}]
+        result = self._send(self.REPORT_URL, json.dumps(body))
+        records = result.get('transactions')
+        total = str(result.get('total', ''))
+        if (not isinstance(records, list) or len(records) > page_size
+                or any(not isinstance(row, dict) for row in records)
+                or not total.isascii() or not total.isdecimal() or len(total) > 9):
+            raise ProviderError('Invalid report response.')
+        if int(total) < len(records) or ('error_code' in result and
+                (type(result['error_code']) is not int or result['error_code'] != 0)):
+            raise ProviderError('Report request was not successful.')
+        return records, int(total)

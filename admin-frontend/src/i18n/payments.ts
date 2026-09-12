@@ -1,5 +1,9 @@
 export const paymentMessages = {
   he: {
+    dateFrom: 'מתאריך', dateTo: 'עד תאריך', provider: 'ספק', review: 'לטיפול', refundPending: 'החזר ממתין להתאמה', net: 'נטו לאחר החזרים מתועדים',
+    notification_received: 'התקבלה הודעה מהספק — טרם אומתה', notification_failed: 'לא ניתן לאמת הודעה',
+    reconciliation_started: 'התחיל בירור מול הספק', reconciliation_completed: 'בירור מול הספק הושלם', reconciliation_failed: 'בירור דורש טיפול',
+    external_refund_recorded: 'תועד החזר שבוצע אצל הספק', refund_adjustment_completed: 'תועדה השלמת התאמת החזר', review_resolved: 'חריגה סומנה כטופלה',
     title: 'תשלומים ורכישות', prep: 'Tranzila — ממתין לחיבור',
     note: 'שמירת טיוטה אינה מחייבת. פתיחת תשלום זמינה רק לאחר הגדרת החיבור. קויינס ומנויים מוענקים רק לאחר אימות תשלום בייצור מול Tranzila.',
     separation: 'כסף אמיתי מוצג לפי מטבע. קויינס הם יחידות משחק ומנוהלים בארנק בנפרד.',
@@ -19,6 +23,10 @@ export const paymentMessages = {
     legacyNote: 'תשלומי הבדיקות הקיימים מוצגים בנפרד. החיפוש לפי משתמש חל גם כאן; סינון סוג וסטטוס חל על בקשות Tranzila בלבד.',
   },
   en: {
+    dateFrom: 'From date', dateTo: 'To date', provider: 'Provider', review: 'Needs review', refundPending: 'Refund adjustment pending', net: 'Net after recorded refunds',
+    notification_received: 'Provider notification received — not yet verified', notification_failed: 'Notification could not be verified',
+    reconciliation_started: 'Provider reconciliation started', reconciliation_completed: 'Provider reconciliation completed', reconciliation_failed: 'Reconciliation needs review',
+    external_refund_recorded: 'External refund recorded', refund_adjustment_completed: 'Refund adjustment recorded', review_resolved: 'Issue marked reviewed',
     title: 'Payments & purchases', prep: 'Tranzila — awaiting connection',
     note: 'Saving a draft does not charge money. Payment is available only after connection setup. Coins and memberships are granted only after a live payment is verified with Tranzila.',
     separation: 'Real money is reported per currency. Coins are game units, managed in a separate wallet.',

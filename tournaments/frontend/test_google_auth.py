@@ -48,21 +48,36 @@ class GoogleAuthTests(TestCase):
             return self.post('', {'credential': 'signed-google-token'})
 
     def complete(self, **data):
-        return self.post('/complete', {'username': 'player', 'phone_number': '050-123-4567', **data})
+        return self.post('/complete', {'username': 'player', 'phone_number': '050-123-4567', 'password': 'River!Board942', **data})
 
-    def test_new_account_requires_profile_then_creates_verified_passwordless_account(self):
+    def test_new_account_requires_profile_then_creates_verified_account_with_password(self):
         response = self.authenticate()
         self.assertEqual(response.json()['status'], 'profile_required')
         self.assertFalse(User.objects.exists())
         self.assertEqual(self.complete().json()['status'], 'authenticated')
         user = User.objects.get(username='Player')
-        self.assertFalse(user.has_usable_password())
+        self.assertTrue(user.check_password('River!Board942'))
         self.assertTrue(user.is_active)
         self.assertIsNotNone(user.account_email.verified_at)
         self.assertEqual(user.google_identity.subject, 'google-subject-1')
         self.assertEqual(UserContact.objects.get(user=user).phone_number, '050-123-4567')
         self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
         self.assertEqual(self.complete().status_code, 400)
+        self.client.logout()
+        self.assertTrue(self.client.login(username='Player', password='River!Board942'))
+
+    def test_password_is_required_and_validated_before_account_creation(self):
+        self.authenticate()
+        for password in ['', 'short', '123456789', 'password', 'player@gmail.com']:
+            with self.subTest(password=password):
+                response = self.complete(password=password)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('password', response.json()['errors'])
+                self.assertFalse(User.objects.exists())
+        response = self.post('/complete', {'username': 'player', 'phone_number': '0501234567'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('password', response.json()['errors'])
+        self.assertEqual(self.complete().json()['status'], 'authenticated')
 
     def test_returning_user_is_identified_by_subject_even_when_email_changes(self):
         self.authenticate()

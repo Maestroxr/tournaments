@@ -138,7 +138,10 @@ def verify_payment(identifier, index):
                 raise ValueError('Missing saved subscription period')
             previous = CheckoutRequest.objects.filter(user=row.user, product='subscription', tier=row.tier,
                 environment='live', status='paid', valid_until__gt=row.paid_at).order_by('-valid_until').first()
-            anchor = previous.valid_until if previous else row.paid_at
+            from .services import paid_access
+            legacy = paid_access(row.user).filter(subscription__tier=row.tier).order_by('-period_end').first()
+            anchor = max(row.paid_at, previous.valid_until if previous else row.paid_at,
+                         legacy.period_end if legacy else row.paid_at)
             row.valid_until = add_months(anchor, months)
     row.checkout_session = {}
     row.save()
@@ -164,22 +167,31 @@ def notify(request):
     raw_index = str(data['index'])
     if not raw_index.isascii() or not raw_index.isdecimal() or not 0 < len(raw_index) <= 12:
         raise ValueError('Invalid transaction index')
-    row = verify_payment(identifier, int(raw_index))
+    existing = CheckoutRequest.objects.filter(pk=identifier).first()
+    if existing:
+        CheckoutEvent.objects.create(checkout=existing, kind='notification_received')
+    try:
+        row = verify_payment(identifier, int(raw_index))
+    except (ValueError, ProviderError, IntegrityError, OperationalError):
+        if existing:
+            CheckoutEvent.objects.create(checkout=existing, kind='notification_failed')
+        raise
     return JsonResponse({'status': row.status})
 
 
 @require_POST
 @response_errors
 def reconcile(request, identifier):
-    from frontend.api import _require_staff
-    error = _require_staff(request)
+    from .operations import require_finance
+    error = require_finance(request)
     if error:
         return error
     data = json.loads(request.body)
     index = data['transaction_index']
     if type(index) is not int or index <= 0 or index > 999999999999:
         raise ValueError('Invalid transaction index')
-    return JsonResponse({'status': verify_payment(identifier, index).status})
+    from .operations import reconcile_one
+    return JsonResponse({'status': reconcile_one(identifier, index, actor=request.user).status})
 
 
 @require_GET

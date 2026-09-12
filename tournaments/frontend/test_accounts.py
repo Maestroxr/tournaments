@@ -54,6 +54,45 @@ class AccountJourneyTests(TestCase):
         self.assertEqual(known.json(), unknown.json())
         self.assertEqual(len(mail.outbox), 1)
 
+    def prepare_reset(self):
+        user = self.signup()
+        self.assertEqual(self.post('verify/confirm', self.link()).status_code, 200)
+        AccountEmail.objects.update(last_sent_at=None)
+        self.assertEqual(self.post('reset/request', {'email': user.email}).status_code, 200)
+        return user, self.link()
+
+    def test_reset_rejects_expired_and_tampered_links_without_changing_password(self):
+        user, token = self.prepare_reset()
+        data = {**token, 'new_password1': 'Replacement-Secret-825!', 'new_password2': 'Replacement-Secret-825!'}
+        self.assertEqual(self.post('reset/confirm', {**data, 'token': token['token'] + 'x'}).status_code, 400)
+        with override_settings(PASSWORD_RESET_TIMEOUT=-1):
+            self.assertEqual(self.post('reset/confirm', data).status_code, 400)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('Another-Good-Secret-735!'))
+
+    def test_reset_validates_password_and_allows_retry_with_same_link(self):
+        user, token = self.prepare_reset()
+        for first, second in [('short', 'short'), ('123456789', '123456789'), ('Replacement-Secret-825!', 'Different-Secret-825!')]:
+            response = self.post('reset/confirm', {**token, 'new_password1': first, 'new_password2': second})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn('errors', response.json())
+        self.assertEqual(self.post('reset/confirm', {**token, 'new_password1': 'Replacement-Secret-825!', 'new_password2': 'Replacement-Secret-825!'}).status_code, 200)
+        self.assertEqual(self.post('login', {'username': user.username, 'password': 'Another-Good-Secret-735!'}).status_code, 401)
+        self.assertEqual(self.post('login', {'username': user.username, 'password': 'Replacement-Secret-825!'}).status_code, 200)
+
+    def test_reset_cooldown_and_inactive_account_do_not_send_mail(self):
+        user, _ = self.prepare_reset()
+        count = len(mail.outbox)
+        self.post('reset/request', {'email': user.email})
+        self.assertEqual(len(mail.outbox), count)
+        AccountEmail.objects.update(last_sent_at=timezone.now() - timedelta(seconds=61))
+        self.post('reset/request', {'email': user.email})
+        self.assertEqual(len(mail.outbox), count + 1)
+        AccountEmail.objects.update(last_sent_at=None)
+        User.objects.filter(pk=user.pk).update(is_active=False)
+        self.post('reset/request', {'email': user.email})
+        self.assertEqual(len(mail.outbox), count + 1)
+
     def test_signup_requires_a_phone_number(self):
         response = self.post('signup', {'username': 'NoPhone', 'email': 'no-phone@example.com',
             'password1': 'Another-Good-Secret-735!', 'password2': 'Another-Good-Secret-735!'})

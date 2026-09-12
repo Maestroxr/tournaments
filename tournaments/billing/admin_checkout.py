@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import get_user_model
@@ -83,7 +84,7 @@ def admin_checkouts(request):
     except ValueError:
         return JsonResponse({'detail': 'Invalid offset'}, status=400)
     query = request.GET.get('q', '').strip()[:100]
-    rows = CheckoutRequest.objects.select_related('user', 'actor').prefetch_related(
+    rows = CheckoutRequest.objects.select_related('user', 'actor').prefetch_related('refund_records__actor', 'refund_records__adjusted_by',
         Prefetch('events', queryset=CheckoutEvent.objects.select_related('actor').order_by('created_at', 'id')))
     if query:
         search = (Q(user__username__icontains=query) | Q(provider_reference__icontains=query)
@@ -102,8 +103,35 @@ def admin_checkouts(request):
             if value not in choices:
                 return JsonResponse({'detail': 'Invalid filter'}, status=400)
             rows = rows.filter(**{field: value})
-    totals = list(rows.filter(status='paid').values('currency', 'environment').annotate(amount=Sum('amount'), coins=Sum('coin_quantity')))
+    try:
+        date_from = date.fromisoformat(request.GET['date_from']) if request.GET.get('date_from') else None
+        date_to = date.fromisoformat(request.GET['date_to']) if request.GET.get('date_to') else None
+        if date_from and date_to and date_from > date_to:
+            raise ValueError()
+    except ValueError:
+        return JsonResponse({'detail': 'Invalid date range'}, status=400)
+    if date_from:
+        rows = rows.filter(created_at__date__gte=date_from)
+    if date_to:
+        rows = rows.filter(created_at__date__lte=date_to)
+    if request.GET.get('actor'):
+        rows = rows.filter(actor__username__icontains=request.GET['actor'][:100])
+    provider_filter = request.GET.get('provider', '')
+    if provider_filter not in ('', 'tranzila', 'paypal'):
+        return JsonResponse({'detail': 'Invalid provider'}, status=400)
+    if provider_filter == 'paypal':
+        rows = rows.none()
+    if request.GET.get('review') == 'refund':
+        rows = rows.filter(refund_records__adjusted_at__isnull=True, refund_records__isnull=False).distinct()
+    financial_rows = CheckoutRequest.objects.filter(pk__in=rows.values('pk'), status__in=['paid', 'refunded'])
+    totals = list(financial_rows.values('currency', 'environment').annotate(amount=Sum('amount'), coins=Sum('coin_quantity')))
+    from .models import CheckoutRefund
+    refunded_totals = {(r['checkout__currency'], r['checkout__environment']): r['total'] for r in
+        CheckoutRefund.objects.filter(checkout__in=financial_rows).values('checkout__currency', 'checkout__environment').annotate(total=Sum('amount'))}
     for total in totals:
+        refunded = refunded_totals.get((total['currency'], total['environment']), Decimal(0))
+        total['refunded'] = str(refunded)
+        total['net'] = str(total['amount'] - refunded)
         total['amount'] = str(total['amount'])
     items = []
     from .player_checkout import serialize_order
@@ -116,6 +144,12 @@ def admin_checkouts(request):
                           paid_at=row.paid_at.isoformat() if row.paid_at else None,
                           valid_until=row.valid_until.isoformat() if row.valid_until else None,
                           wallet_transaction_id=row.wallet_transaction_id,
+                          provider_transaction_index=row.provider_transaction_index,
+                          refund_records=[dict(id=r.pk, amount=str(r.amount), provider_reference=r.provider_reference,
+                              actor=r.actor.username, created_at=r.created_at.isoformat(),
+                              adjusted_at=r.adjusted_at.isoformat() if r.adjusted_at else None,
+                              adjustment_reference=r.adjustment_reference,
+                              adjusted_by=r.adjusted_by.username if r.adjusted_by else None) for r in row.refund_records.all()],
                           recovery_required=recovery,
                           can_prepare=bool(configured and row.catalog_product_id and row.status in ('draft', 'pending') and not recovery),
                           actor=row.actor.username, product=row.product, tier=row.tier,
@@ -128,14 +162,21 @@ def admin_checkouts(request):
     legacy = Payment.objects.select_related('subscription__user').order_by('-paid_at', '-id')
     if query:
         legacy = legacy.filter(subscription__user__username__icontains=query)
+    if date_from:
+        legacy = legacy.filter(paid_at__date__gte=date_from)
+    if date_to:
+        legacy = legacy.filter(paid_at__date__lte=date_to)
+    if provider_filter == 'tranzila' or request.GET.get('actor') or request.GET.get('review'):
+        legacy = legacy.none()
     legacy_items = [dict(id=p.id, username=p.subscription.user.username, amount=str(p.amount),
                          currency=p.currency, provider_reference=p.provider_id,
                          refunded_amount=str(p.refunded_amount), reversed=p.reversed,
                          created_at=p.paid_at.isoformat()) for p in legacy[offset:offset + 50]]
     counts = {key: 0 for key, _ in CheckoutRequest.STATUS_CHOICES}
-    counts.update({item['status']: item['count'] for item in rows.values('status').annotate(count=Count('id'))})
+    counts.update({item['status']: item['count'] for item in rows.values('status').annotate(count=Count('id', distinct=True))})
+    from .operations import can_manage
     response = JsonResponse(dict(provider={'name': 'tranzila', 'status': 'configured' if configured else 'not_connected', 'checkout_enabled': configured},
-                             status_counts=counts,
+                             status_counts=counts, can_manage=can_manage(request.user),
                              count=rows.count(), items=items, totals=totals,
                              legacy_payments=legacy_items, legacy_count=legacy.count(), wallet_unit='COINS'))
     response['Cache-Control'] = 'private, no-store'

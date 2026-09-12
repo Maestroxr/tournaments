@@ -659,6 +659,8 @@ class HeadToHeadTable(models.Model):
     doubling_enabled = models.BooleanField(default=True)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
     external_room_id = models.CharField(max_length=64, blank=True)
+    live_snapshot = models.JSONField(null=True, blank=True)
+    live_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)

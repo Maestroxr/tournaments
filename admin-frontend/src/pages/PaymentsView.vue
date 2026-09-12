@@ -8,6 +8,8 @@ import { useI18n } from '@/i18n'
 import { paymentMessages } from '@/i18n/payments'
 import TranzilaReadiness from '@/components/TranzilaReadiness.vue'
 import TranzilaCheckoutAction from '@/components/TranzilaCheckoutAction.vue'
+import TranzilaOperations from '@/components/TranzilaOperations.vue'
+import TranzilaPaymentReview from '@/components/TranzilaPaymentReview.vue'
 
 const { locale } = useI18n()
 const labels = computed(() => paymentMessages[locale.value])
@@ -25,13 +27,16 @@ interface Row {
   id: string; username: string; actor: string; product: 'coins' | 'subscription'; tier: string
   amount: string; currency: string; coin_quantity: number; status: Status; environment: 'sandbox' | 'live'
   provider_reference: string | null; created_at: string
+  provider_transaction_index?: string
+  refund_records?: { id: number; amount: string; provider_reference: string; actor: string; created_at: string; adjusted_at: string | null; adjustment_reference: string; adjusted_by: string | null }[]
   name: string; period_months: number | null; paid_at: string | null; valid_until: string | null
   wallet_transaction_id: number | null; recovery_required: boolean; can_prepare: boolean
   events: { kind: string; actor: string | null; created_at: string }[]
 }
 interface Data {
   provider?: { checkout_enabled: boolean }
-  count: number; items: Row[]; totals: { currency: string; environment: 'sandbox' | 'live'; amount: string; coins: number }[]
+  can_manage?: boolean
+  count: number; items: Row[]; totals: { currency: string; environment: 'sandbox' | 'live'; amount: string; coins: number; refunded?: string; net?: string }[]
   legacy_count: number
   status_counts?: Record<Status, number>
   legacy_payments: { id: number; username: string; amount: string; currency: string; provider_reference: string; refunded_amount: string; reversed: boolean; created_at: string }[]
@@ -43,6 +48,7 @@ interface CatalogProduct {
 }
 const data = ref<Data | null>(null)
 const error = ref(''), success = ref(''), busy = ref(false), saving = ref(false)
+const dateFrom = ref(''), dateTo = ref(''), actorFilter = ref(''), providerFilter = ref(''), reviewFilter = ref('')
 const query = ref(''), status = ref(''), product = ref(''), offset = ref(0)
 const selectedUser = ref<User | string | null>(null), users = ref<User[]>([])
 const catalog = ref<CatalogProduct[]>([]), catalogError = ref(''), catalogLoading = ref(false)
@@ -75,6 +81,9 @@ async function load(reset = false) {
   busy.value = true; error.value = ''
   try {
     const params = new URLSearchParams({ q: query.value, status: status.value, product: product.value, offset: String(offset.value) })
+    for (const [key, value] of Object.entries({ date_from: dateFrom.value, date_to: dateTo.value, actor: actorFilter.value, provider: providerFilter.value, review: reviewFilter.value })) {
+      if (value) params.set(key, value)
+    }
     const result = await apiFetch<Data>(`/api/admin/checkouts?${params}`)
     if (current === sequence) data.value = result
   } catch (e) { if (current === sequence) { data.value = null; error.value = formatApiError(e) } }
@@ -110,6 +119,7 @@ onUnmounted(() => { sequence++; searchSequence++; clearInterval(timer) })
     <p class="mt-2 text-sm">{{ labels.autoRefresh }}</p>
     <RouterLink to="/transfers/catalog" class="mt-3 inline-block text-sky-300 underline">{{ catalogLabels.manage }}</RouterLink>
     <TranzilaReadiness />
+    <TranzilaOperations />
     <aside v-if="data && !data.provider?.checkout_enabled" class="notice"><strong>{{ labels.prep }}</strong><p>{{ labels.note }}</p><p>{{ labels.separation }}</p></aside>
     <p v-if="error" role="alert" class="text-red-400">{{ error }}</p>
     <p v-if="success" role="status" class="text-emerald-400">{{ success }}</p>
@@ -144,6 +154,11 @@ onUnmounted(() => { sequence++; searchSequence++; clearInterval(timer) })
       <label>{{ labels.search }}<input v-model="query" type="search" /></label>
       <label>{{ labels.product }}<select v-model="product"><option value="">{{ labels.all }}</option><option value="coins">{{ labels.coins }}</option><option value="subscription">{{ labels.subscription }}</option></select></label>
       <label>{{ labels.status }}<select v-model="status"><option value="">{{ labels.all }}</option><option v-for="s in statuses" :key="s" :value="s">{{ labels[s] }}</option></select></label>
+      <label>{{ labels.dateFrom }}<input v-model="dateFrom" type="date" /></label>
+      <label>{{ labels.dateTo }}<input v-model="dateTo" type="date" /></label>
+      <label>{{ labels.actor }}<input v-model="actorFilter" type="search" /></label>
+      <label>{{ labels.provider }}<select v-model="providerFilter"><option value="">{{ labels.all }}</option><option value="tranzila">Tranzila</option><option value="paypal">PayPal</option></select></label>
+      <label>{{ labels.review }}<select v-model="reviewFilter"><option value="">{{ labels.all }}</option><option value="refund">{{ labels.refundPending }}</option></select></label>
       <Button type="submit" :label="labels.refresh" :loading="busy" />
     </form>
     <template v-if="data">
@@ -155,6 +170,8 @@ onUnmounted(() => { sequence++; searchSequence++; clearInterval(timer) })
         <div v-for="total in data.totals" :key="total.currency + total.environment" class="panel">
           <p>{{ labels.income }} · {{ labels[total.environment] }}</p><strong>{{ money(total.amount, total.currency) }}</strong>
           <p>{{ labels.coins }}: {{ total.coins }}</p>
+          <p v-if="total.refunded !== undefined">{{ labels.refunds }}: {{ money(total.refunded, total.currency) }}</p>
+          <p v-if="total.net !== undefined">{{ labels.net }}: {{ money(total.net, total.currency) }}</p>
         </div>
       </div>
       <div class="table-wrap">
@@ -163,7 +180,7 @@ onUnmounted(() => { sequence++; searchSequence++; clearInterval(timer) })
             <td>{{ date(row.created_at) }}</td><td>{{ row.username }}</td><td>{{ row.name || labels[row.product] }}<small>{{ row.tier }} <template v-if="row.period_months">· {{ row.period_months }} {{ labels.months }}</template></small></td>
             <td>{{ money(row.amount, row.currency) }}</td><td>{{ row.coin_quantity || '—' }}</td>
             <td>{{ labels[row.status] }}<small>{{ labels[row.environment] }}</small><small v-if="row.recovery_required" class="text-amber-300">{{ labels.recovery }}</small><TranzilaCheckoutAction v-if="row.can_prepare" :checkout-id="row.id" /></td><td>{{ row.actor }}</td>
-            <td><details><summary>{{ labels.history }}</summary><p>{{ row.id }}</p><p>{{ labels.reference }}: {{ row.provider_reference || '—' }}</p><p v-if="row.paid_at">{{ labels.paidAt }}: {{ date(row.paid_at) }}</p><p v-if="row.valid_until">{{ labels.validUntil }}: {{ date(row.valid_until) }}</p><p v-if="row.wallet_transaction_id">{{ labels.walletEntry }}: {{ row.wallet_transaction_id }}</p><p v-for="(event, index) in row.events" :key="index">{{ date(event.created_at) }} · {{ eventLabel(event.kind) }} · {{ event.actor || labels.system }}</p></details></td>
+            <td><details><summary>{{ labels.history }}</summary><p>{{ row.id }}</p><p>{{ labels.reference }}: {{ row.provider_reference || '—' }}</p><p v-if="row.paid_at">{{ labels.paidAt }}: {{ date(row.paid_at) }}</p><p v-if="row.valid_until">{{ labels.validUntil }}: {{ date(row.valid_until) }}</p><p v-if="row.wallet_transaction_id">{{ labels.walletEntry }}: {{ row.wallet_transaction_id }}</p><p v-for="(event, index) in row.events" :key="index">{{ date(event.created_at) }} · {{ eventLabel(event.kind) }} · {{ event.actor || labels.system }}</p></details><TranzilaPaymentReview :checkout-id="row.id" :status="row.status" :transaction-index="row.provider_transaction_index" :refunds="row.refund_records" :can-manage="!!data.can_manage" @changed="load()" /></td>
           </tr><tr v-if="!data.items.length"><td colspan="8">{{ labels.empty }}</td></tr></tbody>
         </table>
       </div>
