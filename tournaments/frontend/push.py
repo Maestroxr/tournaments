@@ -13,7 +13,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
-from .models import PushDelivery, PushSubscription
+from .models import PushDelivery, PushSubscription, TablePushDelivery
 
 
 def configured():
@@ -123,6 +123,38 @@ def discover_ready_matches():
     return created
 
 
+def queue_table_push(table, *, kind, recipient_id):
+    """Queue an opt-in notification for a direct-play table event."""
+    if not configured() or not table.guest_id:
+        return 0
+    created = 0
+    for device in PushSubscription.objects.filter(user_id=recipient_id):
+        _, new = TablePushDelivery.objects.get_or_create(
+            subscription=device,
+            table=table,
+            kind=kind,
+            defaults={'next_attempt_at': timezone.now()},
+        )
+        created += int(new)
+    return created
+
+
+def queue_guest_joined_push(table):
+    return queue_table_push(
+        table,
+        kind=TablePushDelivery.KIND_GUEST_JOINED,
+        recipient_id=table.host_id,
+    )
+
+
+def queue_host_entered_push(table):
+    return queue_table_push(
+        table,
+        kind=TablePushDelivery.KIND_HOST_ENTERED,
+        recipient_id=table.guest_id,
+    )
+
+
 def send_notification(device, payload):
     # Keep provider encryption/signing in the maintained Web Push library.
     import requests
@@ -184,5 +216,66 @@ def deliver_pending(limit=100):
             # Do not log endpoints, encryption keys or provider response bodies.
             continue
         PushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
+        sent += 1
+    return sent + deliver_pending_table_events(limit=limit)
+
+
+def deliver_pending_table_events(limit=100):
+    from tournaments.models import HeadToHeadTable
+
+    if not configured():
+        return 0
+    sent = 0
+    due = TablePushDelivery.objects.filter(
+        delivered_at=None,
+        discarded_at=None,
+        attempts__lt=5,
+        next_attempt_at__lte=timezone.now(),
+    ).order_by('pk')
+    for delivery_id in list(due.values_list('pk', flat=True)[:limit]):
+        now = timezone.now()
+        claimed = TablePushDelivery.objects.filter(
+            pk=delivery_id,
+            delivered_at=None,
+            discarded_at=None,
+            next_attempt_at__lte=now,
+            attempts__lt=5,
+        ).update(attempts=F('attempts') + 1, next_attempt_at=now + timedelta(seconds=60))
+        if not claimed:
+            continue
+        delivery = TablePushDelivery.objects.select_related('subscription__user', 'table__host', 'table__guest').filter(pk=delivery_id).first()
+        if not delivery:
+            continue
+        table = delivery.table
+        recipient_id = delivery.subscription.user_id
+        valid_status = table.status in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING)
+        expects_host = delivery.kind == TablePushDelivery.KIND_GUEST_JOINED
+        expected_recipient = table.host_id if expects_host else table.guest_id
+        if not valid_status or not table.guest_id or recipient_id != expected_recipient:
+            TablePushDelivery.objects.filter(pk=delivery_id).update(discarded_at=now)
+            continue
+        english = delivery.subscription.language == 'en'
+        if expects_host:
+            title = 'A player joined your table' if english else 'שחקן הצטרף לשולחן שלך'
+            body = f'Table {table.code} is ready — open your games to start.' if english else f'שולחן {table.code} מוכן — פתח את המשחקים כדי להתחיל.'
+            tag = f'table-guest-joined:{table.pk}'
+        else:
+            title = 'The host entered your game' if english else 'המארח נכנס למשחק שלך'
+            body = f'Table {table.code} is waiting for you — open your games to join.' if english else f'שולחן {table.code} מחכה לך — פתח את המשחקים כדי להצטרף.'
+            tag = f'table-host-entered:{table.pk}'
+        payload = {
+            'title': title,
+            'body': body,
+            'url': f'/tournaments/my-games?table={table.code}',
+            'tag': tag,
+        }
+        try:
+            send_notification(delivery.subscription, payload)
+        except Exception as error:
+            response = getattr(error, 'response', None)
+            if getattr(response, 'status_code', None) in (404, 410):
+                PushSubscription.objects.filter(pk=delivery.subscription_id).delete()
+            continue
+        TablePushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
         sent += 1
     return sent

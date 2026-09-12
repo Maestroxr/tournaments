@@ -6,9 +6,9 @@ from django.contrib.auth.models import User
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
-from tournaments.models import Fixture, Knockout, Participant, Tournament, UserContact
-from .models import PushDelivery, PushSubscription
-from .push import deliver_pending, discover_ready_matches, send_notification
+from tournaments.models import Fixture, HeadToHeadTable, Knockout, Participant, Tournament, UserContact
+from .models import PushDelivery, PushSubscription, TablePushDelivery
+from .push import deliver_pending, discover_ready_matches, queue_guest_joined_push, queue_host_entered_push, send_notification
 
 
 def b64(value):
@@ -34,6 +34,20 @@ class PushTests(TestCase):
         response = self.client.post('/api/push/subscription', self.info, content_type='application/json')
         self.assertEqual(response.status_code, 200, response.content)
         return PushSubscription.objects.get(user=self.user)
+
+    def ready_table(self):
+        return HeadToHeadTable.objects.create(
+            code='PUSH01',
+            mode=HeadToHeadTable.MODE_MATCH,
+            host=self.user,
+            guest=self.other,
+            amount='100.00',
+            fee_percent='5.00',
+            fee_per_player='5.00',
+            target_points=5,
+            time_control='normal',
+            status=HeadToHeadTable.STATUS_READY,
+        )
 
     def test_authentication_and_csrf_are_required(self):
         self.assertEqual(Client().get('/api/push/config').status_code, 401)
@@ -103,6 +117,41 @@ class PushTests(TestCase):
         with patch('frontend.push.send_notification', side_effect=Expired()):
             self.assertEqual(deliver_pending(), 0)
         self.assertFalse(PushSubscription.objects.exists())
+
+    @patch('frontend.push.send_notification')
+    def test_guest_joined_push_is_queued_once_for_the_host_and_opens_my_games(self, send):
+        table = self.ready_table()
+        self.subscribe()
+        self.assertEqual(queue_guest_joined_push(table), 1)
+        self.assertEqual(queue_guest_joined_push(table), 0)
+        self.assertEqual(deliver_pending(), 1)
+        self.assertEqual(deliver_pending(), 0)
+        payload = send.call_args.args[1]
+        self.assertEqual(payload['tag'], f'table-guest-joined:{table.pk}')
+        self.assertEqual(payload['url'], f'/tournaments/my-games?table={table.code}')
+
+    @patch('frontend.push.send_notification')
+    def test_host_entered_push_is_queued_once_for_the_guest(self, send):
+        table = self.ready_table()
+        self.client.force_login(self.other)
+        guest_info = {**self.info, 'endpoint': 'https://fcm.googleapis.com/fcm/send/guest-token'}
+        response = self.client.post('/api/push/subscription', guest_info, content_type='application/json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(queue_host_entered_push(table), 1)
+        self.assertEqual(queue_host_entered_push(table), 0)
+        self.assertEqual(deliver_pending(), 1)
+        payload = send.call_args.args[1]
+        self.assertEqual(payload['tag'], f'table-host-entered:{table.pk}')
+        self.assertEqual(payload['url'], f'/tournaments/my-games?table={table.code}')
+
+    def test_table_push_is_discarded_when_the_table_is_cancelled_before_delivery(self):
+        table = self.ready_table()
+        self.subscribe()
+        queue_guest_joined_push(table)
+        table.status = HeadToHeadTable.STATUS_CANCELLED
+        table.save(update_fields=['status'])
+        self.assertEqual(deliver_pending(), 0)
+        self.assertIsNotNone(TablePushDelivery.objects.get().discarded_at)
 
     def test_provider_encrypts_without_following_redirects(self):
         from cryptography.hazmat.primitives import serialization

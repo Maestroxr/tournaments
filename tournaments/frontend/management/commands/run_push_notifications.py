@@ -8,7 +8,7 @@ from frontend.push import configured, discover_ready_matches, deliver_pending
 
 
 class Command(BaseCommand):
-    help = 'Deliver opt-in match-ready phone notifications; run as a supervised worker.'
+    help = 'Deliver opt-in tournament and direct-play phone notifications; run as a supervised worker.'
 
     def add_arguments(self, parser):
         parser.add_argument('--once', action='store_true')

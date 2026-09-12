@@ -15,6 +15,7 @@ from tournaments.models import (
     DirectPlaySettings, HeadToHeadTable, Participant, Participation, Tournament,
     WalletTransaction,
 )
+from frontend.models import PushSubscription, TablePushDelivery
 
 
 class HeadToHeadApiTests(TestCase):
@@ -577,12 +578,22 @@ class HeadToHeadApiTests(TestCase):
         GAMELINK_ENABLED=True,
         GAMELINK_BACKGAMMON_URL="https://game.example/backgammon",
         GAMELINK_TICKET_SECRET="direct-play-ticket-secret-at-least-32-characters",
+        WEB_PUSH_PUBLIC_KEY='test-public',
+        WEB_PUSH_PRIVATE_KEY='test-private',
+        WEB_PUSH_SUBJECT='mailto:operator@example.com',
     )
     def test_funded_player_can_open_the_game_with_a_signed_ticket(self):
         self.create_table({"mode": "friend", "time_control": "none"})
         table = HeadToHeadTable.objects.get()
         self.client.force_login(self.guest)
         self.client.post(f"/api/head-to-head/tables/{table.code}/join")
+        PushSubscription.objects.create(
+            user=self.guest,
+            endpoint_hash='guest-push-device',
+            endpoint='https://fcm.googleapis.com/fcm/send/guest-push-device',
+            p256dh='test-key',
+            auth='test-auth',
+        )
         self.client.force_login(self.host)
         response = self.client.post(f"/t/head-to-head/{table.code}/play")
         self.assertEqual(response.status_code, 302)
@@ -594,6 +605,11 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(payload['tc'], 'none')
         table.refresh_from_db()
         self.assertEqual(table.status, HeadToHeadTable.STATUS_PLAYING)
+        self.assertTrue(TablePushDelivery.objects.filter(
+            table=table,
+            kind=TablePushDelivery.KIND_HOST_ENTERED,
+            subscription__user=self.guest,
+        ).exists())
 
 
 class DirectPlayAdminApiTests(TestCase):

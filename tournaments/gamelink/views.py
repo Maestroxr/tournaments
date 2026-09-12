@@ -67,6 +67,9 @@ class StartDirectPlayView(LoginRequiredMixin, View):
         if table.status == HeadToHeadTable.STATUS_READY:
             table.status = HeadToHeadTable.STATUS_PLAYING
             table.save(update_fields=['status', 'updated_at'])
+        if request.user.id == table.host_id:
+            from frontend.push import queue_host_entered_push
+            queue_host_entered_push(table)
         response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
         response['Referrer-Policy'] = 'no-referrer'
         response['Cache-Control'] = 'no-store'

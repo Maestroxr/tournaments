@@ -100,6 +100,8 @@ def create_or_match(request, *, quick=False):
                     candidate.guest = request.user
                     candidate.status = 'ready'
                     candidate.save(update_fields=['amount', 'fee_per_player', 'guest', 'status', 'updated_at'])
+                    from .push import queue_guest_joined_push
+                    queue_guest_joined_push(candidate)
                     return JsonResponse({**_serialize_head_to_head(candidate), 'matched': True})
             User.objects.select_for_update().get(pk=request.user.pk)
             fields.update(mode='match' if quick else data.get('mode', 'match'), host=request.user,
@@ -128,6 +130,8 @@ def join_table(table, user, settings):
     table.guest = user
     table.status = 'ready'
     table.save(update_fields=['guest', 'status', 'updated_at'])
+    from .push import queue_guest_joined_push
+    queue_guest_joined_push(table)
 
 
 def settle(table, body):

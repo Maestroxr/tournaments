@@ -34,3 +34,22 @@ class PushDelivery(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['subscription', 'fixture'], name='unique_match_push_per_device')]
+
+
+class TablePushDelivery(models.Model):
+    KIND_GUEST_JOINED = 'guest_joined'
+    KIND_HOST_ENTERED = 'host_entered'
+    KIND_CHOICES = [(KIND_GUEST_JOINED, 'Guest joined'), (KIND_HOST_ENTERED, 'Host entered')]
+
+    subscription = models.ForeignKey(PushSubscription, on_delete=models.CASCADE)
+    table = models.ForeignKey('tournaments.HeadToHeadTable', on_delete=models.CASCADE)
+    kind = models.CharField(max_length=20, choices=KIND_CHOICES)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField()
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    discarded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['subscription', 'table', 'kind'], name='unique_table_push_per_device_event',
+        )]

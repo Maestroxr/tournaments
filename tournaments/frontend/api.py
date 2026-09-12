@@ -966,6 +966,8 @@ def api_head_to_head_quick_match(request):
                 candidate.save(update_fields=[
                     'amount', 'fee_percent', 'fee_per_player', 'guest', 'status', 'updated_at',
                 ])
+                from .push import queue_guest_joined_push
+                queue_guest_joined_push(candidate)
                 payload = _serialize_head_to_head(candidate)
                 payload["matched"] = True
                 return JsonResponse(payload)
@@ -1083,6 +1085,8 @@ def api_head_to_head_join(request, code):
             table.guest = request.user
             table.status = models.HeadToHeadTable.STATUS_READY
             table.save(update_fields=['guest', 'status', 'updated_at'])
+            from .push import queue_guest_joined_push
+            queue_guest_joined_push(table)
     except models.HeadToHeadTable.DoesNotExist:
         return JsonResponse({"detail": "Table not found."}, status=404)
     return JsonResponse(_serialize_head_to_head(table))
