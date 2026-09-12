@@ -213,9 +213,7 @@ EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', '1') == '1'
 EMAIL_TIMEOUT = 10
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'accounts@localhost')
 
-# Sandbox subscriptions. No real-money endpoint is supported by this integration.
-BILLING_ENABLED = os.environ.get('BILLING_ENABLED', '0') == '1'
-# Tranzila preparation is independent of the legacy PayPal sandbox switch.
+# Tranzila hosted checkout stays disabled until terminal acceptance passes.
 # "test" identifies a merchant test terminal; it does not select a sandbox URL.
 TRANZILA_ENABLED = os.environ.get('TRANZILA_ENABLED', '0') == '1'
 TRANZILA_ENVIRONMENT = os.environ.get('TRANZILA_ENVIRONMENT', 'test')
@@ -226,14 +224,3 @@ TRANZILA_RETURN_URL = os.environ.get('TRANZILA_RETURN_URL', '')
 TRANZILA_NOTIFY_URL = os.environ.get('TRANZILA_NOTIFY_URL', '')
 TRANZILA_REPORT_MAPPING_CONFIRMED = os.environ.get('TRANZILA_REPORT_MAPPING_CONFIRMED', '0') == '1'
 TRANZILA_APPROVED_TRANSTATUS = os.environ.get('TRANZILA_APPROVED_TRANSTATUS', '')
-PAYPAL_ENVIRONMENT = os.environ.get('PAYPAL_ENVIRONMENT', 'sandbox')
-PAYPAL_CLIENT_ID = os.environ.get('PAYPAL_CLIENT_ID', '')
-PAYPAL_CLIENT_SECRET = os.environ.get('PAYPAL_CLIENT_SECRET', '')
-PAYPAL_WEBHOOK_ID = os.environ.get('PAYPAL_WEBHOOK_ID', '')
-PAYPAL_PLAN_ID = os.environ.get('PAYPAL_PLAN_ID', '')
-# Explicit sandbox provider-plan mapping. PAYPAL_PLAN_ID is an optional default
-# and must match one of these IDs; it never assigns a tier on its own.
-PAYPAL_GOLD_PLAN_ID = os.environ.get('PAYPAL_GOLD_PLAN_ID', '')
-PAYPAL_PREMIUM_PLAN_ID = os.environ.get('PAYPAL_PREMIUM_PLAN_ID', '')
-PAYPAL_VIP_PLAN_ID = os.environ.get('PAYPAL_VIP_PLAN_ID', '')
-BILLING_RETURN_URL = os.environ.get('BILLING_RETURN_URL', 'http://localhost:5173/tournaments/subscription')

@@ -186,31 +186,19 @@ Enable the **game server first**. It can only accept tickets that nobody is yet 
 that half is inert on its own. Then enable this side. Rolling back is `GAMELINK_ENABLED=0` here:
 the button disappears and manual scoring carries on untouched.
 
-### Sandbox membership plan selection
+### Payments and membership
 
-Map verified sandbox plans with `PAYPAL_GOLD_PLAN_ID`, `PAYPAL_PREMIUM_PLAN_ID`,
-and `PAYPAL_VIP_PLAN_ID`. Each configured ID must be valid and distinct. An empty
-tier cannot be purchased. Billing checks require at least one mapped plan when
-billing is enabled. `PAYPAL_PLAN_ID` is an optional default and, when set, must
-match one of these explicit mappings. It never assigns a tier by itself.
+New purchases use Tranzila hosted checkout for coin packages and fixed-duration
+memberships. Memberships are paid once and do not renew automatically. Prices,
+currencies, quantities, and durations come from the admin catalog.
 
-Authenticated API calls (relative to `/tournaments-api`):
+The retired PayPal plan, checkout, cancellation, refund, and webhook routes
+return HTTP 410 without contacting a provider or changing records. Old PayPal
+configuration is no longer used. Historical database records are preserved;
+authenticated owners can still read membership status and download their private
+payment records through `/api/billing/status` and `/api/billing/receipts/{uuid}`.
+Existing paid access retains its original expiry and refund/reversal rules.
 
-- `GET /billing/plan?tier=GOLD` returns the selected `tier`, provider `amount`,
-  `currency`, and monthly `interval`.
-- `POST /billing/checkout` with JSON `{"tier":"GOLD"}` starts that purchase.
-  `PREMIUM` and `VIP` use the same endpoints. The server chooses the provider
-  plan and price; client-supplied prices, plan IDs, and access flags are ignored.
-- Omitting the tier uses only the explicitly mapped default, for compatibility
-  with the existing single-plan UI. Malformed bodies and invalid tiers are rejected.
-
-The saved purchase fixes its tier, provider plan, price, and currency. A retry
-with different terms returns a conflict and does not replace the pending purchase.
-Only a verified completed payment activates paid entitlements; checkout and
-provider activation alone do not. Existing unmapped subscriptions stay unmapped.
-No upgrade or proration flow is added here.
-
-The three-tier selection is currently available in the backend API; the existing
-UI has no tier selector yet. Tests simulate provider responses in an isolated
-database (`python manage.py test billing`); they are not a completed PayPal
-sandbox transaction. Configure actual sandbox IDs before an interactive trial.
+Keep `TRANZILA_ENABLED=0` until terminal acceptance tests pass. See
+[Tranzila preparation](docs/TRANZILA_PREPARATION.he.md) for server configuration.
+Payment tests simulate provider responses; they do not establish terminal readiness.
