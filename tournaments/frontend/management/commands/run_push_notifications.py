@@ -1,10 +1,12 @@
 import time
+from functools import partial
 from importlib.util import find_spec
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 
 from frontend.push import configured, discover_ready_matches, deliver_pending
+from frontend.push_health import heartbeat
 
 
 class Command(BaseCommand):
@@ -23,8 +25,10 @@ class Command(BaseCommand):
             raise CommandError('The interval must be positive.')
         while True:
             close_old_connections()
+            report_alive = partial(heartbeat, options['interval'])
+            report_alive()
             queued = discover_ready_matches()
-            sent = deliver_pending()
+            sent = deliver_pending(heartbeat=report_alive)
             if queued or sent or options['once']:
                 self.stdout.write(f'Queued {queued}; delivered {sent}.')
             if options['once']:

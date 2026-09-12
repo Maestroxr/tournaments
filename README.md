@@ -207,3 +207,27 @@ Payment tests simulate provider responses; they do not establish terminal readin
 the provider connection. Use this switch to pause purchases while allowing
 in-flight payments to verify. See [operations and acceptance](docs/TRANZILA_OPERATIONS.he.md)
 for the player API, callback routes, reconciliation and manual refund procedures.
+
+### Phone notification monitoring
+
+The admin shell polls the staff-only `GET /api/admin/push-health` endpoint every
+30 seconds while visible. A warning appears for missing push settings or the
+`pywebpush` library, a missing/stale worker heartbeat, overdue delivery attempts,
+and exhausted deliveries in either the tournament or direct-play queue. Failed
+status requests show a monitoring warning instead of implying successful delivery.
+Only counts, setting names and timestamps are returned; no signing keys or device
+endpoints are exposed. These diagnostics do not confirm receipt on a phone.
+
+Deploy the backend and admin frontend, run `python manage.py migrate`, and restart
+the API and supervised `python manage.py run_push_notifications` worker. Migration
+`frontend.0005_push_worker_status` stores a shared database heartbeat, which works
+across API and worker processes. The worker is considered stale after the larger
+of 120 seconds or three configured polling intervals. A worker running older code
+does not report a heartbeat and will trigger a warning until restarted with this code.
+The `--once` command records only a single run and does not replace a supervised worker.
+
+For missing configuration, set `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` and
+`WEB_PUSH_SUBJECT` in the API and worker environments. For stalled or failed
+deliveries, inspect the worker process and provider connectivity. Exhausted
+deliveries remain reported while their records are unresolved; viewing the warning
+does not retry, remove, or mark deliveries successful.

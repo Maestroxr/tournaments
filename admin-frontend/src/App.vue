@@ -2,6 +2,7 @@
 import { RouterView, useRoute } from 'vue-router'
 import { computed, onMounted } from 'vue'
 import AppNavbar from '@/components/AppNavbar.vue'
+import PushHealthAlert from '@/components/PushHealthAlert.vue'
 import AppBreadcrumb, { type BreadcrumbItem } from '@/components/AppBreadcrumb.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useI18n } from '@/i18n'
@@ -46,6 +47,7 @@ const breadcrumbItems = computed<BreadcrumbItem[] | null>(() => {
     </div>
     <AppNavbar />
     <main class="admin-main flex-1 w-full">
+      <PushHealthAlert v-if="auth.isAdmin" />
       <RouterView />
     </main>
   </div>

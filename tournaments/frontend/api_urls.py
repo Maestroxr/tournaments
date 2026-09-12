@@ -8,6 +8,7 @@ from . import api
 from . import accounts
 from . import google_auth
 from . import push
+from .push_health import admin_push_health
 from .operations import health
 from .admin_matches import admin_match
 
@@ -42,6 +43,7 @@ urlpatterns = [
     path('head-to-head/tables/<str:code>/cancel', api.api_head_to_head_cancel, name='api-head-to-head-cancel'),
     path('wallet/recurring-bonus', api.api_recurring_coin_bonus, name='api-recurring-coin-bonus'),
     # Admin (staff only)
+    path('admin/push-health', admin_push_health, name='api-admin-push-health'),
     path('admin/tournaments/<int:pk>/matches/<int:fixture_id>', admin_match, name='api-admin-match'),
     path('admin/dashboard', api.api_admin_dashboard, name='api-admin-dashboard'),
     path('admin/direct-play/settings', api.api_admin_direct_play_settings, name='api-admin-direct-play-settings'),

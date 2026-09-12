@@ -177,7 +177,7 @@ def send_notification(device, payload):
             raise ValueError('Push service rejected delivery')
 
 
-def deliver_pending(limit=100):
+def deliver_pending(limit=100, heartbeat=None):
     from gamelink.views import playable_seat
     if not configured():
         return 0
@@ -185,6 +185,8 @@ def deliver_pending(limit=100):
     due = PushDelivery.objects.filter(delivered_at=None, discarded_at=None, attempts__lt=5,
                                      next_attempt_at__lte=timezone.now()).order_by('pk')
     for delivery_id in list(due.values_list('pk', flat=True)[:limit]):
+        if heartbeat:
+            heartbeat()
         now = timezone.now()
         # Atomic lease prevents two workers sending the same item concurrently.
         claimed = PushDelivery.objects.filter(pk=delivery_id, delivered_at=None, discarded_at=None,
@@ -217,10 +219,10 @@ def deliver_pending(limit=100):
             continue
         PushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
         sent += 1
-    return sent + deliver_pending_table_events(limit=limit)
+    return sent + deliver_pending_table_events(limit=limit, heartbeat=heartbeat)
 
 
-def deliver_pending_table_events(limit=100):
+def deliver_pending_table_events(limit=100, heartbeat=None):
     from tournaments.models import HeadToHeadTable
 
     if not configured():
@@ -233,6 +235,8 @@ def deliver_pending_table_events(limit=100):
         next_attempt_at__lte=timezone.now(),
     ).order_by('pk')
     for delivery_id in list(due.values_list('pk', flat=True)[:limit]):
+        if heartbeat:
+            heartbeat()
         now = timezone.now()
         claimed = TablePushDelivery.objects.filter(
             pk=delivery_id,

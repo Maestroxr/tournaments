@@ -14,6 +14,11 @@ class GoogleIdentity(models.Model):
     subject = models.CharField(max_length=255, unique=True)
 
 
+class PushWorkerStatus(models.Model):
+    last_seen_at = models.DateTimeField()
+    expected_by = models.DateTimeField()
+
+
 class PushSubscription(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='push_subscriptions')
     endpoint_hash = models.CharField(max_length=64, unique=True)
