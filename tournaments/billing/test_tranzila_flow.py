@@ -4,6 +4,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -15,7 +16,7 @@ from .tranzila import ProviderError
 from .tranzila_flow import prepare, verify_payment
 
 
-CONFIG = dict(TRANZILA_ENABLED=True, TRANZILA_ENVIRONMENT='live', TRANZILA_TERMINAL='merchanttest',
+CONFIG = dict(TRANZILA_ENABLED=True, TRANZILA_PURCHASES_ENABLED=True, TRANZILA_ENVIRONMENT='live', TRANZILA_TERMINAL='merchanttest',
               TRANZILA_APP_KEY='private-test-key', TRANZILA_APP_SECRET='private-test-secret',
               TRANZILA_RETURN_URL='https://example.test/return', TRANZILA_NOTIFY_URL='https://example.test/notify',
               TRANZILA_REPORT_MAPPING_CONFIRMED=True, TRANZILA_APPROVED_TRANSTATUS='fixture-active')
@@ -66,6 +67,39 @@ class TranzilaFlowTests(TestCase):
         self.assertEqual(CheckoutEvent.objects.filter(kind='payment_verified').count(), 1)
         self.row.refresh_from_db()
         self.assertEqual(self.row.checkout_session, {})
+
+    def test_failure_after_wallet_credit_rolls_back_the_entire_fulfillment(self):
+        prepare(self.row.pk, self.user)
+        with patch('billing.tranzila_flow.CheckoutEvent.objects.create', side_effect=IntegrityError('audit unavailable')):
+            with self.assertRaises(IntegrityError):
+                verify_payment(self.row.pk, 100)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.status, 'pending')
+        self.assertIsNone(self.row.provider_reference)
+        self.assertFalse(WalletTransaction.objects.exists())
+        verify_payment(self.row.pk, 100)
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), 500)
+
+    def test_same_provider_reference_cannot_pay_two_orders(self):
+        prepare(self.row.pk, self.user)
+        verify_payment(self.row.pk, 100)
+        other = self.order()
+        prepare(other.pk, self.user)
+        self.provider.lookup.return_value = self.record(checkout_id=str(other.pk), duplicate_key=str(other.pk))
+        with self.assertRaises(IntegrityError):
+            verify_payment(other.pk, 100)
+        self.assertEqual(WalletTransaction.objects.count(), 1)
+        other.refresh_from_db()
+        self.assertEqual(other.status, 'pending')
+
+    def test_duplicate_notifications_credit_once_and_invalid_json_shape_is_rejected(self):
+        prepare(self.row.pk, self.user)
+        url = reverse('tranzila-notify')
+        for _ in range(2):
+            response = self.client.post(url, {'checkout_id': str(self.row.pk), 'index': '100'})
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(WalletTransaction.objects.count(), 1)
+        self.assertEqual(self.client.post(url, ['not', 'an', 'object'], content_type='application/json').status_code, 400)
 
     def test_wrong_provider_values_never_grant(self):
         prepare(self.row.pk, self.user)

@@ -1,7 +1,7 @@
 export const paymentMessages = {
   he: {
     title: 'תשלומים ורכישות', prep: 'Tranzila — ממתין לחיבור',
-    note: 'בקשות הכנה בלבד. טרם נשלחות בקשות ל־Tranzila ואין חיוב או זיכוי קויינס. לאחר החיבור יופיע כאן מעקב התשלומים.',
+    note: 'שמירת טיוטה אינה מחייבת. פתיחת תשלום זמינה רק לאחר הגדרת החיבור. קויינס ומנויים מוענקים רק לאחר אימות תשלום בייצור מול Tranzila.',
     separation: 'כסף אמיתי מוצג לפי מטבע. קויינס הם יחידות משחק ומנוהלים בארנק בנפרד.',
     search: 'חיפוש משתמש או אסמכתה', all: 'הכול', coins: 'קויינס', subscription: 'מנוי',
     draft: 'טיוטה', pending: 'ממתין', paid: 'שולם', failed: 'נכשל', cancelled: 'בוטל', refunded: 'הוחזר',
@@ -15,7 +15,7 @@ export const paymentMessages = {
   },
   en: {
     title: 'Payments & purchases', prep: 'Tranzila — awaiting connection',
-    note: 'Preparation requests only. No requests are sent to Tranzila and no money is charged or coins credited. Payment tracking will appear here after integration.',
+    note: 'Saving a draft does not charge money. Payment is available only after connection setup. Coins and memberships are granted only after a live payment is verified with Tranzila.',
     separation: 'Real money is reported per currency. Coins are game units, managed in a separate wallet.',
     search: 'Search user or reference', all: 'All', coins: 'Coins', subscription: 'Subscription',
     draft: 'Draft', pending: 'Pending', paid: 'Paid', failed: 'Failed', cancelled: 'Cancelled', refunded: 'Refunded',

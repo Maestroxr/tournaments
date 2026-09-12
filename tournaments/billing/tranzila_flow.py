@@ -82,6 +82,8 @@ def prepare(identifier, user):
 def checkout_session(request, identifier):
     if not request.user.is_authenticated:
         return JsonResponse({'detail': 'Authentication required.'}, status=401)
+    if not settings.TRANZILA_PURCHASES_ENABLED and not (request.user.is_staff or request.user.is_superuser):
+        return JsonResponse({'detail': 'Purchases are currently unavailable.'}, status=503)
     response = JsonResponse(prepare(identifier, request.user))
     response['Cache-Control'] = 'private, no-store'
     return response
@@ -153,6 +155,8 @@ def notify(request):
     if len(request.body) > 16 * 1024:
         return JsonResponse({'detail': 'Notification too large.'}, status=413)
     data = json.loads(request.body) if request.content_type == 'application/json' else request.POST
+    if not hasattr(data, 'get'):
+        raise ValueError('Invalid notification')
     # Ignore every claimed result/amount/token in the public notification.
     # Only the identifier is used to fetch an authenticated provider report.
     import uuid
@@ -184,6 +188,7 @@ def order_status(request, identifier):
     if not request.user.is_authenticated:
         return JsonResponse({'detail': 'Authentication required.'}, status=401)
     row = CheckoutRequest.objects.get(pk=identifier, user=request.user)
-    return JsonResponse({'id': str(row.pk), 'status': row.status, 'environment': row.environment,
-                         'coin_quantity': row.coin_quantity, 'amount': str(row.amount), 'currency': row.currency,
-                         'valid_until': row.valid_until.isoformat() if row.valid_until else None})
+    from .player_checkout import serialize_order
+    response = JsonResponse(serialize_order(row))
+    response['Cache-Control'] = 'private, no-store'
+    return response

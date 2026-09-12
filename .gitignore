@@ -35,3 +35,4 @@ admin-frontend/.env
 docs/*
 !docs/TRANZILA_PREPARATION.he.md
 !docs/TRANZILA_INTEGRATION_GUIDE.he.md
+!docs/TRANZILA_OPERATIONS.he.md

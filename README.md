@@ -202,3 +202,8 @@ Existing paid access retains its original expiry and refund/reversal rules.
 Keep `TRANZILA_ENABLED=0` until terminal acceptance tests pass. See
 [Tranzila preparation](docs/TRANZILA_PREPARATION.he.md) for server configuration.
 Payment tests simulate provider responses; they do not establish terminal readiness.
+
+`TRANZILA_PURCHASES_ENABLED=0` keeps player purchases closed independently of
+the provider connection. Use this switch to pause purchases while allowing
+in-flight payments to verify. See [operations and acceptance](docs/TRANZILA_OPERATIONS.he.md)
+for the player API, callback routes, reconciliation and manual refund procedures.

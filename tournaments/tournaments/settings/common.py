@@ -216,6 +216,8 @@ DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'accounts@localhost')
 # Tranzila hosted checkout stays disabled until terminal acceptance passes.
 # "test" identifies a merchant test terminal; it does not select a sandbox URL.
 TRANZILA_ENABLED = os.environ.get('TRANZILA_ENABLED', '0') == '1'
+# Open player purchases only after acceptance; pausing them must not stop Notify.
+TRANZILA_PURCHASES_ENABLED = os.environ.get('TRANZILA_PURCHASES_ENABLED', '0') == '1'
 TRANZILA_ENVIRONMENT = os.environ.get('TRANZILA_ENVIRONMENT', 'test')
 TRANZILA_TERMINAL = os.environ.get('TRANZILA_TERMINAL', '')
 TRANZILA_APP_KEY = os.environ.get('TRANZILA_APP_KEY', '')

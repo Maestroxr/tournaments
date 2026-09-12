@@ -23,7 +23,7 @@ const labels = computed(() => locale.value === 'he' ? {
   configured: 'מוגדר', absent: 'חסר', environment: 'סביבת חיבור', test: 'בדיקות', live: 'ייצור',
   notice: 'הבדיקה מציגה הגדרות בלבד. נדרש אימות מול Tranzila ובדיקת תשלום מקצה לקצה לפני הפעלה בייצור.',
   fulfillment: 'זיכוי קויינס והפעלת מנוי אוטומטיים ממתינים להשלמת אימות תשלום מול Tranzila.',
-  recurring: 'חיובים חוזרים ממתינים להגדרת השירות ולאימות מול Tranzila.',
+  recurring: 'המנויים משולמים פעם אחת לתקופה קבועה, ללא חידוש אוטומטי.',
   checks: { enabled: 'הפעלת החיבור', terminal: 'מסוף', api_key: 'מפתח API', api_secret: 'סוד API', return_url: 'כתובת חזרה מהתשלום', notify_url: 'כתובת לקבלת הודעות תשלום', report_mapping: 'אישור מיפוי שדות דוח העסקאות', transaction_status: 'ערך סטטוס עסקה מאושר מול הספק' } as Record<string, string>,
 } : {
   title: 'Tranzila connection readiness', refresh: 'Refresh settings', loading: 'Checking connection settings…',
@@ -31,7 +31,7 @@ const labels = computed(() => locale.value === 'he' ? {
   configured: 'Configured', absent: 'Missing', environment: 'Connection environment', test: 'Test', live: 'Live',
   notice: 'This checks configuration only. Provider validation and an end-to-end payment test are required before production use.',
   fulfillment: 'Automatic coin credit and subscription activation await payment verification with Tranzila.',
-  recurring: 'Recurring payments await service setup and validation with Tranzila.',
+  recurring: 'Memberships are paid once for a fixed duration, without automatic renewal.',
   checks: { enabled: 'Connection enabled', terminal: 'Terminal', api_key: 'API key', api_secret: 'API secret', return_url: 'Payment return URL', notify_url: 'Payment notification URL', report_mapping: 'Transaction report field mapping confirmed', transaction_status: 'Provider-confirmed approved transaction status' } as Record<string, string>,
 })
 const status = computed(() => !data.value?.enabled ? labels.value.disabled : data.value.ready ? labels.value.ready : labels.value.missing)

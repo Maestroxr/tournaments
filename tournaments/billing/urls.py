@@ -1,8 +1,12 @@
 from django.urls import path
 from . import views
 from . import tranzila_flow
+from . import player_checkout
 
 urlpatterns = [
+    path('catalog', player_checkout.catalog, name='billing-catalog'),
+    path('tranzila/orders', player_checkout.orders, name='tranzila-orders'),
+    path('tranzila/orders/<uuid:identifier>/cancel', player_checkout.cancel_draft, name='tranzila-cancel-draft'),
     path('tranzila/notify', tranzila_flow.notify, name='tranzila-notify'),
     path('tranzila/orders/<uuid:identifier>', tranzila_flow.order_status, name='tranzila-order-status'),
     path('tranzila/orders/<uuid:identifier>/session', tranzila_flow.checkout_session, name='tranzila-session'),

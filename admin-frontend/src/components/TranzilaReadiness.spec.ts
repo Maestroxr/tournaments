@@ -44,7 +44,7 @@ describe('TranzilaReadiness', () => {
     expect(wrapper.text()).toContain('מוכן לבדיקת מסוף')
     expect(wrapper.text()).toContain('לפני הפעלה בייצור')
     expect(wrapper.text()).toContain('זיכוי קויינס והפעלת מנוי אוטומטיים ממתינים')
-    expect(wrapper.text()).toContain('חיובים חוזרים ממתינים')
+    expect(wrapper.text()).toContain('ללא חידוש אוטומטי')
     expect(wrapper.findAll('dd').every(item => item.text() === 'מוגדר')).toBe(true)
     expect(apiFetch).toHaveBeenCalledTimes(2)
   })
