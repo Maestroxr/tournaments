@@ -69,6 +69,20 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('1000'))
         self.assertEqual(self.create_table({'mode': 'friend'}).status_code, 201)
 
+    def test_lobby_separates_my_finished_games_into_history(self):
+        created = self.create_table({'mode': 'match', 'amount': 100})
+        table = HeadToHeadTable.objects.get(pk=created.json()['id'])
+        table.status = HeadToHeadTable.STATUS_COMPLETED
+        table.winner = self.host
+        table.save(update_fields=['status', 'winner'])
+
+        response = self.client.get('/api/head-to-head/tables')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['my_tables'], [])
+        self.assertEqual(response.json()['my_history'][0]['code'], table.code)
+        self.assertEqual(response.json()['my_history'][0]['winner'], self.host.username)
+
     def test_rule_changes_preserve_existing_table_terms(self):
         created = self.create_table({'mode': 'match', 'amount': 100, 'target_points': 5})
         row = DirectPlaySettings.load()

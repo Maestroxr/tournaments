@@ -765,12 +765,15 @@ def api_head_to_head_tables(request):
             is_quick_match=False,
             status=models.HeadToHeadTable.STATUS_OPEN,
         ).select_related('host').order_by('-created_at', '-pk')
-        my_tables = models.HeadToHeadTable.objects.filter(
+        my_game_tables = models.HeadToHeadTable.objects.filter(
             Q(host=request.user) | Q(guest=request.user),
-        ).exclude(status__in=(
+        ).select_related('host', 'guest', 'winner').order_by('-created_at', '-pk')
+        closed_statuses = (
             models.HeadToHeadTable.STATUS_COMPLETED,
             models.HeadToHeadTable.STATUS_CANCELLED,
-        )).select_related('host', 'guest')[:20]
+        )
+        my_tables = my_game_tables.exclude(status__in=closed_statuses)[:20]
+        my_history = my_game_tables.filter(status__in=closed_statuses)[:50]
         return JsonResponse({
             "enabled": settings_row.enabled,
             "friend_game_fee": str(settings_row.friend_game_fee),
@@ -780,6 +783,7 @@ def api_head_to_head_tables(request):
             "format_profiles": settings_row.format_profiles,
             "tables": [_serialize_head_to_head(table) for table in tables],
             "my_tables": [_serialize_head_to_head(table) for table in my_tables],
+            "my_history": [_serialize_head_to_head(table) for table in my_history],
         })
     if not settings_row.enabled:
         return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
