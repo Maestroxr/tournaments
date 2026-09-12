@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import Button from 'primevue/button'
 import { useI18n } from '@/i18n'
 import { apiFetch, formatApiError } from '@/services/api'
@@ -11,6 +11,8 @@ interface Readiness {
   checks: { key: string; configured: boolean }[]
   automatic_fulfillment: boolean
   recurring_enabled: boolean
+  purchases_enabled: boolean
+  last_verified_at: string | null
 }
 
 const { locale } = useI18n()
@@ -21,6 +23,9 @@ const labels = computed(() => locale.value === 'he' ? {
   title: 'מוכנות לחיבור Tranzila', refresh: 'רענון הגדרות', loading: 'בודק הגדרות חיבור…',
   disabled: 'החיבור כבוי', ready: 'מוכן לבדיקת מסוף', missing: 'חסרות הגדרות חיבור',
   configured: 'מוגדר', absent: 'חסר', environment: 'סביבת חיבור', test: 'בדיקות', live: 'ייצור',
+  purchases: 'רכישות שחקנים', open: 'פתוחות', closed: 'סגורות',
+  lastVerified: 'תשלום אחרון שאומת במסוף ובסביבה הנוכחיים', noVerified: 'טרם נרשם תשלום מאומת',
+  historyNote: 'זהו רישום של אימות קודם, ולא בדיקת זמינות חיה של הספק.',
   notice: 'הבדיקה מציגה הגדרות בלבד. נדרש אימות מול Tranzila ובדיקת תשלום מקצה לקצה לפני הפעלה בייצור.',
   fulfillment: 'זיכוי קויינס והפעלת מנוי אוטומטיים ממתינים להשלמת אימות תשלום מול Tranzila.',
   recurring: 'המנויים משולמים פעם אחת לתקופה קבועה, ללא חידוש אוטומטי.',
@@ -29,6 +34,9 @@ const labels = computed(() => locale.value === 'he' ? {
   title: 'Tranzila connection readiness', refresh: 'Refresh settings', loading: 'Checking connection settings…',
   disabled: 'Connection disabled', ready: 'Ready for terminal testing', missing: 'Connection settings missing',
   configured: 'Configured', absent: 'Missing', environment: 'Connection environment', test: 'Test', live: 'Live',
+  purchases: 'Player purchases', open: 'Open', closed: 'Closed',
+  lastVerified: 'Last verified payment for the current terminal and environment', noVerified: 'No verified payment recorded yet',
+  historyNote: 'This records a past verification, not a live provider availability check.',
   notice: 'This checks configuration only. Provider validation and an end-to-end payment test are required before production use.',
   fulfillment: 'Automatic coin credit and subscription activation await payment verification with Tranzila.',
   recurring: 'Memberships are paid once for a fixed duration, without automatic renewal.',
@@ -49,7 +57,12 @@ async function refresh() {
     busy.value = false
   }
 }
-onMounted(refresh)
+let timer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  void refresh()
+  timer = setInterval(() => { if (document.visibilityState !== 'hidden') void refresh() }, 30000)
+})
+onUnmounted(() => clearInterval(timer))
 </script>
 
 <template>
@@ -63,6 +76,9 @@ onMounted(refresh)
     <template v-if="data">
       <p role="status" class="mt-3 font-semibold">{{ status }}</p>
       <p class="mt-2">{{ labels.environment }}: {{ labels[data.environment] }}</p>
+      <p class="mt-2" data-testid="player-purchases">{{ labels.purchases }}: <strong>{{ data.purchases_enabled ? labels.open : labels.closed }}</strong></p>
+      <p class="mt-2">{{ labels.lastVerified }}: {{ data.last_verified_at ? new Date(data.last_verified_at).toLocaleString(locale) : labels.noVerified }}</p>
+      <p class="mt-2 text-sm">{{ labels.historyNote }}</p>
       <dl class="checks">
         <div v-for="check in data.checks" :key="check.key">
           <dt>{{ labels.checks[check.key] || check.key }}</dt>

@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Prefetch, Q, Sum
+from django.db.models import Count, Prefetch, Q, Sum
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 
@@ -86,7 +86,16 @@ def admin_checkouts(request):
     rows = CheckoutRequest.objects.select_related('user', 'actor').prefetch_related(
         Prefetch('events', queryset=CheckoutEvent.objects.select_related('actor').order_by('created_at', 'id')))
     if query:
-        rows = rows.filter(Q(user__username__icontains=query) | Q(provider_reference__icontains=query))
+        search = (Q(user__username__icontains=query) | Q(provider_reference__icontains=query)
+                  | Q(provider_transaction_index__icontains=query))
+        if '/' in query:
+            terminal, index = query.rsplit('/', 1)
+            search |= Q(provider_terminal__iexact=terminal, provider_transaction_index__iexact=index)
+        try:
+            search |= Q(pk=uuid.UUID(query))
+        except ValueError:
+            pass
+        rows = rows.filter(search)
     for field, choices in [('status', dict(CheckoutRequest.STATUS_CHOICES)), ('product', {'coins', 'subscription'})]:
         value = request.GET.get(field, '')
         if value:
@@ -97,8 +106,18 @@ def admin_checkouts(request):
     for total in totals:
         total['amount'] = str(total['amount'])
     items = []
+    from .player_checkout import serialize_order
+    from .tranzila_setup import readiness
+    configured = readiness()['ready']
     for row in rows.order_by('-created_at', '-id')[offset:offset + 50]:
+        recovery = serialize_order(row)['recovery_required']
         items.append(dict(id=str(row.pk), username=row.user.username, user_id=row.user_id,
+                          name=row.product_snapshot.get('name', ''), period_months=row.product_snapshot.get('period_months'),
+                          paid_at=row.paid_at.isoformat() if row.paid_at else None,
+                          valid_until=row.valid_until.isoformat() if row.valid_until else None,
+                          wallet_transaction_id=row.wallet_transaction_id,
+                          recovery_required=recovery,
+                          can_prepare=bool(configured and row.catalog_product_id and row.status in ('draft', 'pending') and not recovery),
                           actor=row.actor.username, product=row.product, tier=row.tier,
                           amount=str(row.amount), currency=row.currency, coin_quantity=row.coin_quantity,
                           status=row.status, environment=row.environment, provider=row.provider,
@@ -113,8 +132,11 @@ def admin_checkouts(request):
                          currency=p.currency, provider_reference=p.provider_id,
                          refunded_amount=str(p.refunded_amount), reversed=p.reversed,
                          created_at=p.paid_at.isoformat()) for p in legacy[offset:offset + 50]]
-    from .tranzila_setup import readiness
-    configured = readiness()['ready']
-    return JsonResponse(dict(provider={'name': 'tranzila', 'status': 'configured' if configured else 'not_connected', 'checkout_enabled': configured},
+    counts = {key: 0 for key, _ in CheckoutRequest.STATUS_CHOICES}
+    counts.update({item['status']: item['count'] for item in rows.values('status').annotate(count=Count('id'))})
+    response = JsonResponse(dict(provider={'name': 'tranzila', 'status': 'configured' if configured else 'not_connected', 'checkout_enabled': configured},
+                             status_counts=counts,
                              count=rows.count(), items=items, totals=totals,
                              legacy_payments=legacy_items, legacy_count=legacy.count(), wallet_unit='COINS'))
+    response['Cache-Control'] = 'private, no-store'
+    return response

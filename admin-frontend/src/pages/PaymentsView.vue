@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import Button from 'primevue/button'
 import AutoComplete, { type AutoCompleteCompleteEvent } from 'primevue/autocomplete'
 import { RouterLink } from 'vue-router'
@@ -25,12 +25,15 @@ interface Row {
   id: string; username: string; actor: string; product: 'coins' | 'subscription'; tier: string
   amount: string; currency: string; coin_quantity: number; status: Status; environment: 'sandbox' | 'live'
   provider_reference: string | null; created_at: string
+  name: string; period_months: number | null; paid_at: string | null; valid_until: string | null
+  wallet_transaction_id: number | null; recovery_required: boolean; can_prepare: boolean
   events: { kind: string; actor: string | null; created_at: string }[]
 }
 interface Data {
   provider?: { checkout_enabled: boolean }
   count: number; items: Row[]; totals: { currency: string; environment: 'sandbox' | 'live'; amount: string; coins: number }[]
   legacy_count: number
+  status_counts?: Record<Status, number>
   legacy_payments: { id: number; username: string; amount: string; currency: string; provider_reference: string; refunded_amount: string; reversed: boolean; created_at: string }[]
 }
 interface User { id: number; username: string }
@@ -74,7 +77,7 @@ async function load(reset = false) {
     const params = new URLSearchParams({ q: query.value, status: status.value, product: product.value, offset: String(offset.value) })
     const result = await apiFetch<Data>(`/api/admin/checkouts?${params}`)
     if (current === sequence) data.value = result
-  } catch (e) { if (current === sequence) error.value = formatApiError(e) }
+  } catch (e) { if (current === sequence) { data.value = null; error.value = formatApiError(e) } }
   finally { if (current === sequence) busy.value = false }
 }
 async function save() {
@@ -92,15 +95,22 @@ async function save() {
 function money(amount: string, currency: string) { return new Intl.NumberFormat(locale.value, { style: 'currency', currency }).format(Number(amount)) }
 function date(value: string) { return new Date(value).toLocaleString(locale.value) }
 function page(delta: number) { offset.value += delta * 50; void load() }
-onMounted(() => { void load(); void loadCatalog() })
+function eventLabel(kind: string) { return (labels.value as Record<string, string>)[kind] || kind }
+let timer: ReturnType<typeof setInterval> | undefined
+onMounted(() => {
+  void load(); void loadCatalog()
+  timer = setInterval(() => { if (!busy.value && document.visibilityState !== 'hidden') void load() }, 30000)
+})
+onUnmounted(() => { sequence++; searchSequence++; clearInterval(timer) })
 </script>
 
 <template>
   <section class="payments">
     <h2 class="text-xl font-semibold">{{ labels.title }}</h2>
+    <p class="mt-2 text-sm">{{ labels.autoRefresh }}</p>
     <RouterLink to="/transfers/catalog" class="mt-3 inline-block text-sky-300 underline">{{ catalogLabels.manage }}</RouterLink>
     <TranzilaReadiness />
-    <aside v-if="!data?.provider?.checkout_enabled" class="notice"><strong>{{ labels.prep }}</strong><p>{{ labels.note }}</p><p>{{ labels.separation }}</p></aside>
+    <aside v-if="data && !data.provider?.checkout_enabled" class="notice"><strong>{{ labels.prep }}</strong><p>{{ labels.note }}</p><p>{{ labels.separation }}</p></aside>
     <p v-if="error" role="alert" class="text-red-400">{{ error }}</p>
     <p v-if="success" role="status" class="text-emerald-400">{{ success }}</p>
     <details class="panel">
@@ -137,6 +147,10 @@ onMounted(() => { void load(); void loadCatalog() })
       <Button type="submit" :label="labels.refresh" :loading="busy" />
     </form>
     <template v-if="data">
+      <div v-if="data.status_counts" class="panel" data-testid="purchase-counts">
+        <h3>{{ labels.filtered }}: {{ data.count }}</h3>
+        <div class="fields mt-3"><span v-for="s in statuses" :key="s">{{ labels[s] }}: <strong>{{ data.status_counts[s] ?? 0 }}</strong></span></div>
+      </div>
       <div class="fields" :aria-busy="busy">
         <div v-for="total in data.totals" :key="total.currency + total.environment" class="panel">
           <p>{{ labels.income }} · {{ labels[total.environment] }}</p><strong>{{ money(total.amount, total.currency) }}</strong>
@@ -146,10 +160,10 @@ onMounted(() => { void load(); void loadCatalog() })
       <div class="table-wrap">
         <table><thead><tr><th>{{ labels.date }}</th><th>{{ labels.user }}</th><th>{{ labels.product }}</th><th>{{ labels.amount }}</th><th>{{ labels.quantity }}</th><th>{{ labels.status }}</th><th>{{ labels.actor }}</th><th>{{ labels.history }}</th></tr></thead>
           <tbody><tr v-for="row in data.items" :key="row.id">
-            <td>{{ date(row.created_at) }}</td><td>{{ row.username }}</td><td>{{ labels[row.product] }} {{ row.tier }}</td>
+            <td>{{ date(row.created_at) }}</td><td>{{ row.username }}</td><td>{{ row.name || labels[row.product] }}<small>{{ row.tier }} <template v-if="row.period_months">· {{ row.period_months }} {{ labels.months }}</template></small></td>
             <td>{{ money(row.amount, row.currency) }}</td><td>{{ row.coin_quantity || '—' }}</td>
-            <td>{{ labels[row.status] }}<small>{{ labels[row.environment] }}</small><TranzilaCheckoutAction v-if="data.provider?.checkout_enabled && (row.status === 'draft' || row.status === 'pending')" :checkout-id="row.id" /></td><td>{{ row.actor }}</td>
-            <td><details><summary>{{ labels.history }}</summary><p>{{ row.id }}</p><p>{{ labels.reference }}: {{ row.provider_reference || '—' }}</p><p v-for="(event, index) in row.events" :key="index">{{ date(event.created_at) }} · {{ event.kind === 'draft_created' ? labels.draft_created : event.kind }} · {{ event.actor || '—' }}</p></details></td>
+            <td>{{ labels[row.status] }}<small>{{ labels[row.environment] }}</small><small v-if="row.recovery_required" class="text-amber-300">{{ labels.recovery }}</small><TranzilaCheckoutAction v-if="row.can_prepare" :checkout-id="row.id" /></td><td>{{ row.actor }}</td>
+            <td><details><summary>{{ labels.history }}</summary><p>{{ row.id }}</p><p>{{ labels.reference }}: {{ row.provider_reference || '—' }}</p><p v-if="row.paid_at">{{ labels.paidAt }}: {{ date(row.paid_at) }}</p><p v-if="row.valid_until">{{ labels.validUntil }}: {{ date(row.valid_until) }}</p><p v-if="row.wallet_transaction_id">{{ labels.walletEntry }}: {{ row.wallet_transaction_id }}</p><p v-for="(event, index) in row.events" :key="index">{{ date(event.created_at) }} · {{ eventLabel(event.kind) }} · {{ event.actor || labels.system }}</p></details></td>
           </tr><tr v-if="!data.items.length"><td colspan="8">{{ labels.empty }}</td></tr></tbody>
         </table>
       </div>

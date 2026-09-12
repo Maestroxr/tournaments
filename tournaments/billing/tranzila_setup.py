@@ -28,6 +28,7 @@ def readiness():
     }
     valid_environment = settings.TRANZILA_ENVIRONMENT in ('test', 'live')
     return {'ready': all(checks.values()) and valid_environment,
+            'purchases_enabled': bool(settings.TRANZILA_PURCHASES_ENABLED and all(checks.values()) and valid_environment),
             'enabled': checks['enabled'], 'environment': settings.TRANZILA_ENVIRONMENT,
             'checks': [{'key': key, 'configured': value} for key, value in checks.items()],
             'automatic_fulfillment': all(checks.values()) and valid_environment, 'recurring_enabled': False}
@@ -39,6 +40,12 @@ def admin_readiness(request):
     error = _require_staff(request)
     if error:
         return error
-    response = JsonResponse(readiness())
+    state = readiness()
+    from .models import CheckoutRequest
+    environment = 'live' if settings.TRANZILA_ENVIRONMENT == 'live' else 'sandbox'
+    last = CheckoutRequest.objects.filter(provider_terminal=settings.TRANZILA_TERMINAL,
+        environment=environment, paid_at__isnull=False).order_by('-paid_at').first()
+    state['last_verified_at'] = last.paid_at.isoformat() if last else None
+    response = JsonResponse(state)
     response['Cache-Control'] = 'private, no-store'
     return response

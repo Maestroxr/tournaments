@@ -1,8 +1,9 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from '@/services/api'
 import { useI18n } from '@/i18n'
 import TranzilaReadiness from './TranzilaReadiness.vue'
+enableAutoUnmount(afterEach)
 
 vi.mock('@/services/api', () => ({
   apiFetch: vi.fn(),
@@ -18,6 +19,19 @@ const render = () => mount(TranzilaReadiness, { global: { stubs: {
 } } })
 
 describe('TranzilaReadiness', () => {
+  it('shows player purchases paused separately from valid connection settings', async () => {
+    useI18n().locale.value = 'en'
+    vi.mocked(apiFetch).mockResolvedValue({ ...response(true), purchases_enabled: false, last_verified_at: null })
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.get('[data-testid="player-purchases"]').text()).toContain('Closed')
+    expect(wrapper.text()).toContain('Ready for terminal testing')
+    expect(wrapper.text()).toContain('No verified payment recorded yet')
+    expect(wrapper.text()).toContain('not a live provider availability check')
+    vi.mocked(apiFetch).mockResolvedValue({ ...response(true), purchases_enabled: true, last_verified_at: '2026-09-12T12:00:00Z' })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="player-purchases"]').text()).toContain('Open')
+    expect(wrapper.text()).not.toContain('No verified payment recorded yet')
+  })
   beforeEach(() => {
     vi.mocked(apiFetch).mockReset()
     useI18n().locale.value = 'he'

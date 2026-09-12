@@ -1,11 +1,13 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PrimeVue from 'primevue/config'
 import AutoComplete from 'primevue/autocomplete'
 import PaymentsView from './PaymentsView.vue'
 import { useI18n } from '@/i18n'
 
 const api = vi.hoisted(() => vi.fn())
+enableAutoUnmount(afterEach)
+afterEach(() => vi.useRealTimers())
 vi.mock('@/services/api', () => ({ apiFetch: api, formatApiError: (e: unknown) => String(e) }))
 const result = {
   count: 1, legacy_count: 0, legacy_payments: [], totals: [],
@@ -82,5 +84,40 @@ describe('PaymentsView', () => {
     expect(wrapper.text()).not.toContain('Catalog offline')
     expect(wrapper.text()).toContain('No active paid products')
     expect(wrapper.find('a').attributes('to')).toBe('/transfers/catalog')
+  })
+
+  it('shows verified membership details, zero counts and translated system events', async () => {
+    const data = { ...result, count: 1, status_counts: { draft: 0, pending: 0, paid: 1, failed: 0, cancelled: 0, refunded: 0 },
+      items: [{ ...result.items[0], name: 'Quarterly Gold', product: 'subscription', tier: 'GOLD', period_months: 3,
+        status: 'paid', paid_at: '2026-09-12T12:00:00Z', valid_until: '2026-12-12T12:00:00Z',
+        events: [{ kind: 'payment_verified', actor: null, created_at: '2026-09-12T12:00:00Z' }] }] }
+    api.mockImplementation((url: string) => Promise.resolve(url === '/api/admin/store-catalog' ? catalog : data))
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.get('[data-testid="purchase-counts"]').text()).toContain('Paid: 1')
+    expect(wrapper.text()).toContain('Pending: 0')
+    expect(wrapper.text()).toContain('Quarterly Gold')
+    expect(wrapper.text()).toContain('3 months')
+    expect(wrapper.text()).toContain('Membership valid until')
+    expect(wrapper.text()).toContain('Payment verified and purchase granted')
+    expect(wrapper.text()).toContain('System')
+  })
+
+  it('refreshes empty purchases automatically and clears stale data on failure', async () => {
+    vi.useFakeTimers()
+    let data = { ...result, count: 0, items: [] as typeof result.items }
+    api.mockImplementation((url: string) => Promise.resolve(url === '/api/admin/store-catalog' ? catalog : data))
+    const wrapper = render(); await flushPromises()
+    expect(wrapper.text()).not.toContain('dana')
+    data = result
+    await vi.advanceTimersByTimeAsync(30000); await flushPromises()
+    expect(wrapper.text()).toContain('dana')
+    api.mockRejectedValue(new Error('Offline'))
+    await vi.advanceTimersByTimeAsync(30000); await flushPromises()
+    expect(wrapper.text()).not.toContain('dana')
+    expect(wrapper.get('[role="alert"]').text()).toContain('Offline')
+    wrapper.unmount()
+    api.mockClear()
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(api).not.toHaveBeenCalled()
   })
 })
