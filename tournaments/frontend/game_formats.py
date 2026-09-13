@@ -36,7 +36,7 @@ def reserve(table, user, amount):
                                    head_to_head_table=table, note=f'Reserved for {table.game_format} table {table.code}')
 
 
-def quote(settings, data, quick):
+def quote(settings, data, quick, match_search=False):
     name = data.get('game_format')
     if name not in ('match', 'money'):
         raise ValidationError('Unknown game format.')
@@ -44,11 +44,21 @@ def quote(settings, data, quick):
     access = 'quick' if quick else 'private' if data.get('mode') == 'friend' else 'public'
     if data.get('mode', 'match') not in ('match', 'friend'):
         raise ValidationError('Unknown table access.')
+    expected_format = 'money' if quick and not match_search else 'match'
+    if name != expected_format:
+        raise ValidationError('Quick games use money format; public, friend and match-search games use match format.')
     if not settings.enabled or not profile['enabled'] or not profile[access]:
         raise ValidationError('This game format or access method is disabled.')
-    points = data.get('target_points', 1 if name == 'money' else 5)
-    clock = data.get('time_control', 'normal')
-    doubling = data.get('doubling_enabled', True)
+    if quick and name == 'money':
+        # Money-game players choose stakes only. Preserve the UI's preferred
+        # defaults, with the configured first option as fallback, for every client.
+        points = 1
+        clock = 'normal' if 'normal' in profile['time_controls'] else profile['time_controls'][0]
+        doubling = True if True in profile['doubling_options'] else profile['doubling_options'][0]
+    else:
+        points = data.get('target_points', 5)
+        clock = data.get('time_control', 'normal')
+        doubling = data.get('doubling_enabled', True)
     if (type(points) is not int or points not in profile['target_points']
             or clock not in profile['time_controls'] or type(doubling) is not bool
             or doubling not in profile['doubling_options']):
@@ -67,19 +77,28 @@ def quote(settings, data, quick):
     return name, copy.deepcopy(profile), sorted(set(stakes)), points, clock, doubling
 
 
-def create_or_match(request, *, quick=False):
+def create_or_match(request, *, quick=False, match_search=False):
     from .api import _serialize_head_to_head, _new_table_code, _create_friend_table, FriendCodesUnavailable
     try:
         data = json.loads(request.body or '{}')
         if not isinstance(data, dict):
             raise ValidationError('Expected a game settings object.')
+        if 'game_format' not in data:
+            return JsonResponse({
+                'code': 'game_format_required',
+                'detail': 'Refresh the game screen to review the current rules before creating a game.',
+            }, status=400)
+        # Finish upgrade cleanup before taking matchmaking's user locks. Keeping
+        # cleanup locks while acquiring a different pair can invert wallet order.
+        from .search_lifecycle import reconcile_searches_locked
+        reconcile_searches_locked()
         with transaction.atomic():
             settings = DirectPlaySettings.objects.select_for_update().get(pk=1)
-            name, profile, stakes, points, clock, doubling = quote(settings, data, quick)
+            name, profile, stakes, points, clock, doubling = quote(settings, data, quick, match_search)
             fields = dict(game_format=name, rules_snapshot=profile, target_points=points,
                           time_control=clock, doubling_enabled=doubling, is_quick_match=quick)
             if quick:
-                queue = HeadToHeadTable.objects.select_for_update().filter(
+                queue = HeadToHeadTable.objects.select_for_update(of=('self',)).filter(
                     game_format=name, target_points=points, time_control=clock, doubling_enabled=doubling,
                     is_quick_match=True, status='open', guest__isnull=True).select_related('host').order_by('created_at', 'pk')
                 for existing in queue.filter(host=request.user):

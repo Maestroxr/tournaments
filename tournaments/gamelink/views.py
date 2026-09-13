@@ -22,6 +22,7 @@ from urllib.parse import quote
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.models import User
 from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -542,9 +543,15 @@ class ResultCallbackView(View):
                 try:
                     with transaction.atomic():
                         settle(table, body)
+                        from gamelink.ratings import rate_table
+                        rate_table(table, body)
                 except ValidationError as error:
                     return _reject(request, 409, '; '.join(error.messages), fixture_id=-table_id)
                 return _accepted('recorded')
+            # Rating and wallet settlement share these identities. Lock both in
+            # the same order before crediting a winner or refunding either seat.
+            list(User.objects.select_for_update().filter(
+                pk__in=[table.host_id, table.guest_id]).order_by('pk'))
             if table.external_room_id and table.external_room_id != body['room_id']:
                 return _reject(request, 409, 'room mismatch for direct-play table', fixture_id=-table_id)
             if body['status'] != STATUS_CANCELLED:
@@ -588,6 +595,8 @@ class ResultCallbackView(View):
             table.status = HeadToHeadTable.STATUS_COMPLETED
             table.completed_at = timezone.now()
             table.save(update_fields=['external_room_id', 'winner', 'status', 'completed_at', 'updated_at'])
+            from gamelink.ratings import rate_table
+            rate_table(table, body)
             return _accepted('recorded')
 
     def _record_cancellation(self, game_link, body):
@@ -611,6 +620,12 @@ class ResultCallbackView(View):
         """
         Write a reported score onto its fixture and let the tournament move on.
         """
+        # Completing a group can award a champion outside this fixture. Acquire
+        # every potential payout/rating identity in one order before either step.
+        participant_ids = list(fixture.mode.tournament.participations.values_list(
+            'participant__user_id', flat=True))
+        participant_ids.extend(player.user_id for player in (fixture.player1, fixture.player2) if player)
+        list(User.objects.select_for_update().filter(pk__in=participant_ids).order_by('pk'))
         # Seats, not colours: the sender has already mapped the score onto `p1`/`p2`, which are
         # this side's `player1` and `player2` because that is how the ticket assigned them.
         previous_score = [fixture.score1, fixture.score2]
@@ -642,6 +657,8 @@ class ResultCallbackView(View):
         game_link.external_room_id = body['room_id']
         game_link.raw_result       = body
         game_link.save(update_fields = ['status', 'completed_at', 'external_room_id', 'raw_result'])
+        from gamelink.ratings import rate_fixture
+        rate_fixture(fixture, body)
         FixtureAudit.objects.create(fixture=fixture, action='game_result',
             before={'score': previous_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': True})
 

@@ -23,14 +23,19 @@ class GameFormatTests(TestCase):
         payload = dict(game_format='money', mode='match', amount=100, target_points=1,
                        time_control='normal', doubling_enabled=True)
         payload.update(changes)
-        return self.client.post('/api/head-to-head/tables', json.dumps(payload), content_type='application/json')
+        path = '/api/head-to-head/quick-match' if payload['game_format'] == 'money' else '/api/head-to-head/tables'
+        return self.client.post(path, json.dumps(payload), content_type='application/json')
 
     def funded(self, **changes):
         response = self.create(**changes)
         self.assertEqual(response.status_code, 201, response.content)
         table = HeadToHeadTable.objects.get(pk=response.json()['id'])
         self.client.force_login(self.guest)
-        joined = self.client.post(f'/api/head-to-head/tables/{table.code}/join')
+        if table.is_quick_match:
+            joined = self.client.post('/api/head-to-head/quick-match',
+                json.dumps(dict(game_format='money', amounts=table.quick_stakes)), content_type='application/json')
+        else:
+            joined = self.client.post(f'/api/head-to-head/tables/{table.code}/join')
         self.assertEqual(joined.status_code, 200, joined.content)
         table.refresh_from_db()
         return table
@@ -75,9 +80,9 @@ class GameFormatTests(TestCase):
                 self.assertEqual(self.balance(self.host), before + Decimal(expected) * Decimal('.95'))
 
     def test_private_has_same_financial_contract_and_cancellation_refunds(self):
-        table = self.funded(mode='friend')
+        table = self.funded(mode='friend', game_format='match', target_points=5)
         self.assertEqual(len(table.code), 4)
-        self.assertEqual(self.balance(self.host), 9200)
+        self.assertEqual(self.balance(self.host), 9900)
         self.client.force_login(self.host)
         self.assertEqual(self.client.post(f'/api/head-to-head/tables/{table.code}/cancel').status_code, 200)
         self.assertEqual(self.balance(self.host), 10000)
@@ -91,7 +96,8 @@ class GameFormatTests(TestCase):
         created = self.create()
         WalletTransaction.create_entry(user=self.guest, amount=-9500, kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY)
         self.client.force_login(self.guest)
-        result = self.client.post(f"/api/head-to-head/tables/{created.json()['code']}/join")
+        result = self.client.post('/api/head-to-head/quick-match',
+            json.dumps(dict(game_format='money', amounts=[100])), content_type='application/json')
         self.assertEqual(result.status_code, 400)
         self.assertEqual(self.balance(self.guest), 500)
         self.assertIsNone(HeadToHeadTable.objects.get().guest_id)
@@ -106,6 +112,10 @@ class GameFormatTests(TestCase):
     def test_snapshot_is_immutable_but_disabled_format_blocks_join(self):
         response = self.create()
         table = HeadToHeadTable.objects.get(pk=response.json()['id'])
+        # Reproduce a public money table created before mode enforcement. Existing
+        # funded contracts must remain joinable and settle on their saved rules.
+        table.is_quick_match = False
+        table.save(update_fields=['is_quick_match'])
         self.settings.format_profiles['money'].update(loss_limit_multiplier=16, fee_percent=10, enabled=False)
         self.settings.save()
         self.client.force_login(self.guest)

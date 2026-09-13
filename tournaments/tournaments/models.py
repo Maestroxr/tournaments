@@ -13,6 +13,40 @@ from django.dispatch import receiver
 from polymorphic.models import PolymorphicModel
 
 
+class PlayerRating(models.Model):
+    """Canonical public rating; game-server Player.rating is a legacy field."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='competitive_rating')
+    value = models.IntegerField(default=1000)
+    games_played = models.PositiveIntegerField(default=0)
+
+
+class RatingResult(models.Model):
+    """Immutable explanation of a single rated fixture or direct-play table."""
+
+    fixture = models.OneToOneField('Fixture', null=True, blank=True, on_delete=models.PROTECT, related_name='rating_result')
+    table = models.OneToOneField('HeadToHeadTable', null=True, blank=True, on_delete=models.PROTECT, related_name='rating_result')
+    player1 = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_results_as_p1')
+    player2 = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_results_as_p2')
+    winner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_wins')
+    player1_before = models.IntegerField()
+    player1_after = models.IntegerField()
+    player2_before = models.IntegerField()
+    player2_after = models.IntegerField()
+    source = models.CharField(max_length=32)
+    reason = models.CharField(max_length=32)
+    algorithm = models.CharField(max_length=16, default='elo-v1')
+    played_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-played_at', '-pk']
+        constraints = [
+            models.CheckConstraint(check=(Q(fixture__isnull=False, table__isnull=True) | Q(fixture__isnull=True, table__isnull=False)), name='rating_exactly_one_source'),
+            models.CheckConstraint(check=~Q(player1=models.F('player2')), name='rating_distinct_players'),
+            models.CheckConstraint(check=Q(winner=models.F('player1')) | Q(winner=models.F('player2')), name='rating_winner_is_player'),
+        ]
+
+
 class Tournament(models.Model):
 
     TIME_CHOICES = [
@@ -610,7 +644,15 @@ class DirectPlaySettings(models.Model):
 
     def save(self, *args, **kwargs):
         self.pk = 1
-        return super().save(*args, **kwargs)
+        # Serialize profile publication with matchmaking. Retire incompatible
+        # unmatched searches and release their reserves in the same transaction.
+        with transaction.atomic():
+            type(self).objects.select_for_update().filter(pk=1).first()
+            result = super().save(*args, **kwargs)
+            from frontend.search_lifecycle import reconcile_searches
+            effective = type(self).objects.get(pk=1)
+            reconcile_searches(effective)
+            return result
 
     def delete(self, *args, **kwargs):
         return None
