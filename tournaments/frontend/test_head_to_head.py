@@ -172,26 +172,99 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(self.create_table({'mode': 'friend'}).json()['code'], 'game_format_required')
 
     def test_public_table_listing_includes_all_open_manual_tables(self):
-        fields = dict(host=self.host, mode=HeadToHeadTable.MODE_MATCH,
+        match_fields = dict(host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
                       amount=Decimal('100.00'), fee_percent=Decimal('5.00'),
                       fee_per_player=Decimal('5.00'))
         public_tables = HeadToHeadTable.objects.bulk_create([
-            HeadToHeadTable(code=f'M{number:05d}', **fields) for number in range(105)
+            HeadToHeadTable(code=f'M{number:05d}', **match_fields) for number in range(105)
         ])
-        HeadToHeadTable.objects.create(code='QUICK1', is_quick_match=True, **fields)
-        HeadToHeadTable.objects.create(code='FRIEND', **{**fields, 'mode': HeadToHeadTable.MODE_FRIEND})
-        HeadToHeadTable.objects.create(code='CLOSE1', status=HeadToHeadTable.STATUS_CANCELLED, **fields)
+        money_fields = dict(host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='money',
+                      amount=Decimal('100.00'), fee_percent=Decimal('5.00'),
+                      fee_per_player=Decimal('5.00'))
+        HeadToHeadTable.objects.create(code='QUICK1', is_quick_match=True, **money_fields)
+        HeadToHeadTable.objects.create(code='FRIEND', **{**match_fields, 'mode': HeadToHeadTable.MODE_FRIEND})
+        HeadToHeadTable.objects.create(code='CLOSE1', status=HeadToHeadTable.STATUS_CANCELLED, **match_fields)
         self.client.force_login(self.guest)
 
         response = self.client.get('/api/head-to-head/tables')
 
         self.assertEqual(response.status_code, 200)
         listed = response.json()['tables']
-        self.assertEqual(len(listed), 105)
+        # Both Match and Money/Doubling open tables are visible in Open Games
+        self.assertEqual(len(listed), 106)
         self.assertEqual([table['code'] for table in listed],
-                         [table.code for table in reversed(public_tables)])
-        self.assertTrue(all(table['mode'] == 'match' and not table['is_quick_match']
-                            and table['status'] == 'open' for table in listed))
+                         [table.code for table in reversed(public_tables + [HeadToHeadTable.objects.get(code='QUICK1')])])
+        self.assertTrue(all(table['mode'] == 'match' and table['game_format'] in ('match', 'money')
+                             and table['status'] == 'open' and table['guest'] is None for table in listed))
+
+    def test_match_search_visible_in_public_tables(self):
+        table = HeadToHeadTable.objects.create(
+            code='SEARCH1', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
+            is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
+        )
+        self.client.force_login(self.guest)
+        response = self.client.get('/api/head-to-head/tables')
+        self.assertEqual(response.status_code, 200)
+        codes = [t['code'] for t in response.json()['tables']]
+        self.assertIn(table.code, codes)
+        entry = next(t for t in response.json()['tables'] if t['code'] == table.code)
+        self.assertEqual(entry['game_format'], 'match')
+        self.assertTrue(entry['is_quick_match'])
+
+    def test_match_search_joinable_by_other_player(self):
+        table = HeadToHeadTable.objects.create(
+            code='SEARCH2', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
+            rules_snapshot=self._profile('match'),
+            is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
+        )
+        # Simulate the reservation that search-generated Match tables hold.
+        WalletTransaction.create_entry(user=self.host, amount=Decimal('-100.00'), kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table, note='test reserve')
+        self.client.force_login(self.guest)
+        response = self.client.post(f'/api/head-to-head/tables/{table.code}/join')
+        self.assertEqual(response.status_code, 200)
+        table.refresh_from_db()
+        self.assertEqual(table.guest_id, self.guest.id)
+        self.assertEqual(table.status, HeadToHeadTable.STATUS_READY)
+
+    def _profile(self, name):
+        from tournaments.models import DirectPlaySettings
+        return DirectPlaySettings.load().format_profiles[name]
+
+    def test_match_search_self_join_rejected(self):
+        table = HeadToHeadTable.objects.create(
+            code='SEARCH3', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
+            rules_snapshot=self._profile('match'),
+            is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
+        )
+        self.client.force_login(self.host)
+        response = self.client.post(f'/api/head-to-head/tables/{table.code}/join')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('own table', response.json()['detail'].lower())
+
+    def test_money_quick_visible_in_open_games_but_direct_join_blocked(self):
+        table = HeadToHeadTable.objects.create(
+            code='MONEY1', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='money',
+            amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
+            rules_snapshot=self._profile('money'),
+            is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN, quick_stakes=['100'],
+        )
+        self.client.force_login(self.guest)
+        response = self.client.get('/api/head-to-head/tables')
+        self.assertEqual(response.status_code, 200)
+        codes = [t['code'] for t in response.json()['tables']]
+        # Money/Doubling games are now visible in Open Games together with Match games
+        self.assertIn(table.code, codes)
+        entry = next(t for t in response.json()['tables'] if t['code'] == table.code)
+        self.assertEqual(entry['game_format'], 'money')
+        join = self.client.post(f'/api/head-to-head/tables/{table.code}/join')
+        self.assertEqual(join.status_code, 409)
+        self.assertEqual(join.json()['detail'], 'Quick Match tables can only be joined through matchmaking.')
+        table.refresh_from_db()
+        self.assertIsNone(table.guest_id)
+        self.assertEqual(table.status, HeadToHeadTable.STATUS_OPEN)
 
     def test_admin_monitor_requires_staff(self):
         self.client.force_login(self.host)

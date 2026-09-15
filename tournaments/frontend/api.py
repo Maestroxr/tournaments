@@ -767,8 +767,9 @@ def api_head_to_head_tables(request):
         settings_row.refresh_from_db()
         tables = models.HeadToHeadTable.objects.filter(
             mode=models.HeadToHeadTable.MODE_MATCH,
-            is_quick_match=False,
+            game_format__in=['match', 'money'],
             status=models.HeadToHeadTable.STATUS_OPEN,
+            guest__isnull=True,
         ).select_related('host').order_by('-created_at', '-pk')
         my_game_tables = models.HeadToHeadTable.objects.filter(
             Q(host=request.user) | Q(guest=request.user),
@@ -891,7 +892,7 @@ def api_head_to_head_join(request, code):
                     return JsonResponse({'detail': 'This game format or access method is disabled.'}, status=412)
             if table.status != models.HeadToHeadTable.STATUS_OPEN or table.guest_id:
                 return JsonResponse({"detail": "This table is no longer available."}, status=409)
-            if table.is_quick_match:
+            if table.game_format == 'money' or (table.game_format == 'legacy' and table.is_quick_match):
                 return JsonResponse({"detail": "Quick Match tables can only be joined through matchmaking."}, status=409)
             if table.host_id == request.user.id:
                 return JsonResponse({"detail": "You cannot join your own table."}, status=400)
