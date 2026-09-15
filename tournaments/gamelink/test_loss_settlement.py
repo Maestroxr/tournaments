@@ -7,6 +7,7 @@ the game-server suite. No board data is trusted by this receiver.
 import uuid
 from decimal import Decimal
 
+from django.db import transaction
 from django.test import TestCase
 
 from frontend import test_game_formats as format_tests
@@ -73,11 +74,27 @@ class LossSettlementCallbackTests(TestCase):
 
     def test_money_player_loss_reasons_obey_same_multipliers_jacoby_and_cap(self):
         for reason in ('give_up', 'leave', 'time', 'disconnect'):
-            for cube, win_type, transfer in ((1, 'backgammon', 100), (2, 'single', 200),
-                                             (2, 'gammon', 400), (2, 'backgammon', 600),
-                                             (8, 'backgammon', 800)):
-                with self.subTest(reason=reason, cube=cube, win_type=win_type):
-                    self.assert_settlement(reason=reason, cube=cube, win_type=win_type, transfer=transfer)
+            for cube, win_type, transfer in (
+                (1, 'backgammon', 100),
+                (2, 'single', 200),
+                (2, 'gammon', 400),
+                (2, 'backgammon', 600),
+                (8, 'backgammon', 2400),
+                (32, 'backgammon', 6400),
+            ):
+                with self.subTest(
+                    reason=reason,
+                    cube=cube,
+                    win_type=win_type,
+                ):
+                    with transaction.atomic():
+                        self.assert_settlement(
+                            reason=reason,
+                            cube=cube,
+                            win_type=win_type,
+                            transfer=transfer,
+                        )
+                        transaction.set_rollback(True)
 
     def test_jacoby_disabled_contract_preserves_backgammon_multiplier(self):
         settings = DirectPlaySettings.load()

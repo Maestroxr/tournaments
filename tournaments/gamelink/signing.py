@@ -95,6 +95,30 @@ def issue_direct_play_ticket(user, table, seat):
     opponent = table.guest if seat == 'p1' else table.host
     issued_at = int(time.time())
     jti = uuid.uuid4()
+    format_claims = {}
+    if table.game_format != 'legacy':
+        dynamic_cube = (table.settlement or {}).get('dynamic_max_cube')
+        dynamic_exposure = (table.settlement or {}).get('dynamic_max_exposure')
+        if table.game_format == 'money' and dynamic_exposure is not None:
+            loss_limit_value = str(dynamic_exposure)
+        else:
+            loss_limit_value = str(
+                table.amount * table.rules_snapshot['loss_limit_multiplier']
+                if table.game_format == 'money'
+                else table.amount
+            )
+        cube_max_value = (
+            dynamic_cube
+            if dynamic_cube is not None
+            else table.rules_snapshot['max_cube']
+        )
+        format_claims = {
+            'format': table.game_format,
+            'cube_max': cube_max_value,
+            'jacoby': table.rules_snapshot['jacoby'],
+            'stake': str(table.amount),
+            'loss_limit': loss_limit_value,
+        }
     payload = {
         'v': TICKET_VERSION, 'iss': settings.GAMELINK_ISSUER,
         'aud': settings.GAMELINK_AUDIENCE, 'jti': str(jti),
@@ -104,9 +128,7 @@ def issue_direct_play_ticket(user, table, seat):
         'trn': 0, 'fix': -table.pk, 'seat': seat,
         'opp': opponent.username if opponent else '', 'tp': table.target_points,
         'dbl': table.doubling_enabled, 'tc': table.time_control,
-        **({'format': table.game_format, 'cube_max': table.rules_snapshot['max_cube'],
-            'jacoby': table.rules_snapshot['jacoby'], 'stake': str(table.amount),
-            'loss_limit': str(table.amount * table.rules_snapshot['loss_limit_multiplier'] if table.game_format == 'money' else table.amount)} if table.game_format != 'legacy' else {}),
+        **format_claims,
     }
     token = signing.dumps(payload, key=_ticket_secret(), salt=TICKET_SALT, compress=False)
     return token, jti

@@ -1,5 +1,6 @@
 """Rules for new versioned direct games; existing contracts stay immutable."""
 import json
+from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -43,7 +44,7 @@ class ModeRuleTests(TestCase):
         self.assertEqual(old_table.status, 'cancelled')
         self.assertEqual(old_table.rules_snapshot, old_snapshot)
         self.assertEqual(old_table.settlement['reason'], 'rules_changed')
-        self.assertEqual(old_table.settlement['refund'], '1600.00')
+        self.assertEqual(old_table.settlement['refund'], '6400.00')
         self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
         lobby = self.client.get('/api/head-to-head/tables').json()
         self.assertEqual(lobby['my_tables'], [])
@@ -52,7 +53,7 @@ class ModeRuleTests(TestCase):
         self.assertEqual(restarted.status_code, 201, restarted.content)
         self.assertNotEqual(restarted.json()['id'], old_table.pk)
         self.assertEqual(restarted.json()['fee_percent'], '10.00')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('3600'))
         self.assertEqual(old_table.wallet_transactions.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 1)
 
     def test_invalid_admin_settings_leave_waiting_search_and_reserve_intact(self):
@@ -66,7 +67,7 @@ class ModeRuleTests(TestCase):
                 self.assertEqual(response.status_code, 400, response.content)
         table = HeadToHeadTable.objects.get(pk=created.json()['id'])
         self.assertEqual(table.status, 'open')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('3600'))
 
     def test_lobby_retires_only_own_legacy_search_and_explains_closure(self):
         own = HeadToHeadTable.objects.create(code='LEG001', host=self.host, mode='match',

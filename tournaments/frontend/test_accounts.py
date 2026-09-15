@@ -21,6 +21,10 @@ class AccountJourneyTests(TestCase):
             'phone_number': '050-123-4567',
             'password1': 'Another-Good-Secret-735!', 'password2': 'Another-Good-Secret-735!'})
         self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload['detail'], 'Account created successfully.')
+        self.assertTrue(payload['authenticated'])
+        self.assertFalse(payload['email_verified'])
         return User.objects.get(username='Alice')
 
     def link(self):
@@ -29,14 +33,15 @@ class AccountJourneyTests(TestCase):
 
     def test_signup_verify_reset_and_session_revocation(self):
         user = self.signup()
-        self.assertFalse(user.is_active)
-        self.assertEqual(self.post('login', {'username': 'Alice', 'password': 'Another-Good-Secret-735!'}).status_code, 401)
+        self.assertTrue(user.is_active)
+        self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
         verify = self.link()
         self.assertEqual(self.post('verify/confirm', verify).status_code, 200)
         self.assertEqual(self.post('verify/confirm', verify).status_code, 400)
         user.refresh_from_db()
         self.assertTrue(user.is_active)
-        self.assertEqual(self.post('login', {'username': 'Alice', 'password': 'Another-Good-Secret-735!'}).status_code, 200)
+        account = AccountEmail.objects.get(user=user)
+        self.assertIsNotNone(account.verified_at)
         AccountEmail.objects.update(last_sent_at=timezone.now() - timedelta(minutes=2))
         self.assertEqual(self.post('reset/request', {'email': 'ALICE@example.com'}).status_code, 200)
         reset = self.link()

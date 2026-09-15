@@ -71,6 +71,19 @@ class Tournament(models.Model):
     doubling_enabled = models.BooleanField(default=True)
     entry_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     prize_money = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    prize_type = models.CharField(
+        max_length=8,
+        choices=[
+            ('coins', 'Coins'),
+            ('text', 'Text'),
+        ],
+        default='coins',
+    )
+    prize_text = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+    )
     platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
     registration_closed_at = models.DateTimeField(null=True, blank=True)
     registration_closed_reason = models.CharField(max_length=20, blank=True, default='')

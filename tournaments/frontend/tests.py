@@ -38,7 +38,9 @@ class SignupApiTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         self.assertTrue(models.User.objects.filter(username='USer1').exists())
-        self.assertFalse(response.wsgi_request.user.is_authenticated)
+        self.assertTrue(response.wsgi_request.user.is_authenticated)
+        self.assertTrue(response.json()['authenticated'])
+        self.assertFalse(response.json()['email_verified'])
 
     def test_signup_checks_duplicates_after_capitalization(self):
         models.User.objects.create_user(username='User1', password=password1)

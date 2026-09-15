@@ -91,15 +91,27 @@ def signup(request):
         with transaction.atomic():
             user = form.save(commit=False)
             user.email = form.cleaned_data['email']
-            user.is_active = False
+            # Allow immediate account access.
+            user.is_active = True
             user.save()
             account = AccountEmail.objects.create(user=user, email=user.email)
             from tournaments import models
             models.UserContact.objects.create(user=user, phone_number=form.cleaned_data['phone_number'])
     except IntegrityError:
         return JsonResponse({'detail': 'This account already exists.'}, status=400)
+    from django.contrib.auth import login
+    # Log the user in immediately.
+    login(request, user)
+    # Verification remains available, but does not block access.
     send_link(account, 'verify')
-    return JsonResponse(SENT, status=201)
+    return JsonResponse(
+        {
+            'detail': 'Account created successfully.',
+            'authenticated': True,
+            'email_verified': False,
+        },
+        status=201,
+    )
 
 
 @require_POST

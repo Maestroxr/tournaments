@@ -2,8 +2,13 @@ import datetime
 import hashlib
 import json
 import logging
+import os
+import subprocess
+import sys
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from unittest import skip
 from io import StringIO
 from urllib.parse import unquote
@@ -472,13 +477,71 @@ class SettingsTest(TestCase):
     def test_the_feature_is_off_and_unconfigured_by_default(self):
         # Nothing committed may enable the link or carry a secret (plan §8, and the project rules
         # in PROGRESS.md).
-        from django.conf import settings
+        env = os.environ.copy()
+        for key in (
+            'GAMELINK_ENABLED',
+            'GAMELINK_BACKGAMMON_URL',
+            'GAMELINK_TICKET_SECRET',
+            'GAMELINK_RESULT_SECRETS',
+            'GAMELINK_COMMAND_SECRET',
+        ):
+            env.pop(key, None)
 
-        self.assertFalse(settings.GAMELINK_ENABLED)
-        self.assertEqual(settings.GAMELINK_TICKET_SECRET, '')
-        self.assertEqual(settings.GAMELINK_RESULT_SECRETS, list())
-        self.assertEqual(settings.GAMELINK_COMMAND_SECRET, '')
-        self.assertEqual(settings.GAMELINK_BACKGAMMON_URL, '')
+        settings_path = (
+            Path(__file__).resolve().parents[1]
+            / 'tournaments'
+            / 'settings'
+            / 'common.py'
+        )
+        # Fallback for alternate layout where gamelink is deeper
+        if not settings_path.exists():
+            for parent in Path(__file__).resolve().parents:
+                candidate = parent / 'tournaments' / 'settings' / 'common.py'
+                if candidate.exists():
+                    settings_path = candidate
+                    break
+
+        source = settings_path.read_text(encoding='utf-8')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create fake filesystem mirroring the relevant structure where
+            # BASE_DIR.parent / '.env' (load_local_env) finds no file.
+            fake_repo = Path(tmp) / 'repo'
+            fake_settings_dir = fake_repo / 'tournaments' / 'settings'
+            fake_settings_dir.mkdir(parents=True, exist_ok=True)
+            # Minimal package markers so import works
+            (fake_repo / 'tournaments' / '__init__.py').write_text('', encoding='utf-8')
+            (fake_repo / 'tournaments' / 'settings' / '__init__.py').write_text('', encoding='utf-8')
+            (fake_settings_dir / 'common.py').write_text(source, encoding='utf-8')
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    '-c',
+                    (
+                        'import json, tournaments.settings.common as common;'
+                        'print(json.dumps({'
+                        "'enabled': common.GAMELINK_ENABLED,"
+                        "'ticket_secret': common.GAMELINK_TICKET_SECRET,"
+                        "'result_secrets': common.GAMELINK_RESULT_SECRETS,"
+                        "'command_secret': common.GAMELINK_COMMAND_SECRET,"
+                        "'backgammon_url': common.GAMELINK_BACKGAMMON_URL"
+                        '}))'
+                    ),
+                ],
+                env=env,
+                cwd=str(fake_repo),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            config = json.loads(result.stdout)
+
+        self.assertFalse(config['enabled'])
+        self.assertEqual(config['ticket_secret'], '')
+        self.assertEqual(config['result_secrets'], [])
+        self.assertEqual(config['command_secret'], '')
+        self.assertEqual(config['backgammon_url'], '')
 
 
 # Session 2 — the "Go to game" button and ticket issuance
