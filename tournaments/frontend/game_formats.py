@@ -485,6 +485,88 @@ def join_table(table, user, settings):
     queue_guest_joined_push(table)
 
 
+@transaction.atomic
+def create_rematch_table(source):
+    from django.contrib.auth.models import User
+    import copy
+    # lock users in order
+    if not source.guest_id:
+        raise ValidationError('Rematch requires two players')
+    user_ids = sorted([source.host_id, source.guest_id])
+    list(User.objects.select_for_update().filter(pk__in=user_ids).order_by('pk'))
+    # reject if either already has active table
+    active_statuses = [HeadToHeadTable.STATUS_OPEN, HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING]
+    for uid in user_ids:
+        if HeadToHeadTable.objects.filter(
+            host_id=uid, status__in=active_statuses
+        ).exclude(pk=source.pk).exists() or HeadToHeadTable.objects.filter(
+            guest_id=uid, status__in=active_statuses
+        ).exclude(pk=source.pk).exists():
+            raise ValidationError('Player already in active game')
+    # copy contract settings
+    from .api import _new_table_code
+    new_code = _new_table_code()
+    # friend check via is_friend_game property would need instance, use mode
+    is_friend = source.mode == HeadToHeadTable.MODE_FRIEND
+    new_table = HeadToHeadTable(
+        code=new_code,
+        host=source.host,
+        guest=source.guest,
+        mode=source.mode,
+        game_format=source.game_format,
+        target_points=source.target_points,
+        time_control=source.time_control,
+        doubling_enabled=source.doubling_enabled,
+        rules_snapshot=copy.deepcopy(source.rules_snapshot),
+        amount=source.amount,
+        fee_percent=source.fee_percent,
+        fee_per_player=source.fee_per_player,
+        is_quick_match=source.is_quick_match,
+        status=HeadToHeadTable.STATUS_READY,
+    )
+    if source.game_format == 'money':
+        host_bal = WalletTransaction.balance_for_user(source.host)
+        guest_bal = WalletTransaction.balance_for_user(source.guest)
+        host_params = calculate_dynamic_params(host_bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+        guest_params = calculate_dynamic_params(guest_bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+        if not host_params['can_join'] or not guest_params['can_join']:
+            raise ValidationError('Insufficient funds for rematch')
+        shared_max_cube = min(host_params['max_cube'], guest_params['max_cube'])
+        shared_reserve_multiplier = 2 * shared_max_cube
+        shared_max_exposure = money(source.amount * shared_reserve_multiplier)
+        new_table.settlement = {
+            'dynamic_max_cube': shared_max_cube,
+            'dynamic_reserve_multiplier': shared_reserve_multiplier,
+            'dynamic_max_exposure': str(shared_max_exposure),
+        }
+        new_table.save()
+        reserve(new_table, source.host, shared_max_exposure)
+        reserve(new_table, source.guest, shared_max_exposure)
+        return new_table
+    elif source.game_format == 'match' and not is_friend:
+        required = money(source.amount)
+        host_bal = WalletTransaction.balance_for_user(source.host)
+        guest_bal = WalletTransaction.balance_for_user(source.guest)
+        if host_bal < required or guest_bal < required:
+            raise ValidationError('Insufficient funds for rematch')
+        new_table.settlement = {}
+        new_table.save()
+        reserve(new_table, source.host, required)
+        reserve(new_table, source.guest, required)
+        return new_table
+    else:  # friend
+        required = money(source.fee_per_player)
+        host_bal = WalletTransaction.balance_for_user(source.host)
+        guest_bal = WalletTransaction.balance_for_user(source.guest)
+        if host_bal < required or guest_bal < required:
+            raise ValidationError('Insufficient funds for rematch')
+        new_table.settlement = {}
+        new_table.save()
+        reserve(new_table, source.host, required)
+        reserve(new_table, source.guest, required)
+        return new_table
+
+
 def settle(table, body):
     """Called only for an authenticated result, under the table row lock."""
     if table.external_room_id and table.external_room_id != body['room_id']:

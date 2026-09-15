@@ -366,6 +366,7 @@ _NONCE_PATTERN = re.compile(r'\A[A-Za-z0-9._:-]{1,64}\Z')
 _ERRORS = {
     400: 'bad_request',
     401: 'unauthorized',
+    403: 'forbidden',
     404: 'not_found',
     409: 'conflict',
     413: 'payload_too_large',
@@ -887,6 +888,239 @@ def _broadcast_live_snapshot(tournament_id, fixture_id, snapshot):
             },
         },
     )
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class RematchCallbackView(View):
+    http_method_names = ['post']
+
+    def post(self, request):
+        if not settings.GAMELINK_ENABLED:
+            return _reject(request, 404, 'the game link is disabled')
+        if _declared_length(request) > settings.GAMELINK_MAX_BODY:
+            return _reject(request, 413, 'declared body length exceeds GAMELINK_MAX_BODY')
+        try:
+            raw = request.body
+        except RequestDataTooBig:
+            return _reject(request, 413, 'body exceeds DATA_UPLOAD_MAX_MEMORY_SIZE')
+        if len(raw) > settings.GAMELINK_MAX_BODY:
+            return _reject(request, 413, 'body exceeds GAMELINK_MAX_BODY')
+        timestamp = request.headers.get('X-Gamelink-Timestamp', '')
+        nonce = request.headers.get('X-Gamelink-Nonce', '')
+        signature = request.headers.get('X-Gamelink-Signature', '')
+        if not _TIMESTAMP_PATTERN.match(timestamp):
+            return _reject(request, 401, 'missing or malformed X-Gamelink-Timestamp')
+        if not _NONCE_PATTERN.match(nonce):
+            return _reject(request, 401, 'missing or malformed X-Gamelink-Nonce')
+        if not signature:
+            return _reject(request, 401, 'missing X-Gamelink-Signature')
+        if abs(int(time.time()) - int(timestamp)) > settings.GAMELINK_CLOCK_SKEW:
+            return _reject(request, 401, 'timestamp is outside GAMELINK_CLOCK_SKEW')
+        if not verify_result_signature(raw, timestamp, nonce, signature):
+            return _reject(request, 401, 'signature does not verify')
+        try:
+            with transaction.atomic():
+                SeenNonce.objects.create(nonce=nonce)
+        except IntegrityError:
+            return _reject(request, 401, 'nonce has been seen before')
+        try:
+            body = json.loads(raw.decode('utf-8'))
+        except (UnicodeDecodeError, ValueError):
+            return _reject(request, 400, 'body is not valid JSON')
+        # validate
+        if not isinstance(body, dict) or body.get('v') != 1:
+            return _reject(request, 400, 'unsupported version')
+        action = body.get('action')
+        if action not in ('request', 'accept', 'decline', 'cancel', 'disconnect'):
+            return _reject(request, 400, 'invalid action')
+        source_table_id = body.get('source_table_id')
+        room_id = body.get('room_id')
+        actor_seat = body.get('actor_seat')
+        if not isinstance(source_table_id, int) or type(source_table_id) is bool or source_table_id <= 0 or not isinstance(room_id, str) or actor_seat not in ('p1', 'p2'):
+            return _reject(request, 400, 'invalid rematch payload')
+        table_id = source_table_id
+        # Process
+        try:
+            if action == 'request':
+                return self._handle_request(request, body, table_id, room_id, actor_seat)
+            elif action == 'accept':
+                return self._handle_accept(request, body, table_id, room_id, actor_seat)
+            elif action == 'decline':
+                return self._handle_decline(request, body, table_id, room_id, actor_seat)
+            elif action == 'cancel':
+                return self._handle_cancel(request, body, table_id, room_id, actor_seat)
+            elif action == 'disconnect':
+                return self._handle_disconnect(request, body, table_id, room_id, actor_seat)
+        except ValidationError as e:
+            return _reject(request, 409, '; '.join(e.messages))
+        except DirectPlayRematch.DoesNotExist:
+            return _reject(request, 404, 'rematch not found')
+        except Exception as e:
+            logger.exception('rematch error')
+            return _reject(request, 400, str(e))
+        return _reject(request, 400, 'unhandled')
+
+    def _load_source(self, table_id):
+        from django.db.models import Q
+        try:
+            return HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+        except HeadToHeadTable.DoesNotExist:
+            raise
+
+    def _handle_request(self, request, body, table_id, room_id, actor_seat):
+        from tournaments.models import HeadToHeadTable as H
+        from .models import DirectPlayRematch
+        from frontend.game_formats import calculate_dynamic_params
+        with transaction.atomic():
+            source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+            if source.status != HeadToHeadTable.STATUS_COMPLETED or not source.guest_id or source.external_room_id != room_id:
+                return _reject(request, 409, 'source not completed or room mismatch')
+            p1 = source.host
+            p2 = source.guest
+            actor = p1 if actor_seat == 'p1' else p2
+            other = p2 if actor == p1 else p1
+            # check if already pending
+            existing = DirectPlayRematch.objects.select_for_update().filter(source_table=source).first()
+            if existing:
+                if existing.status == 'pending':
+                    if existing.requester_id == actor.id:
+                        return JsonResponse({'status': 'pending'})
+                    else:
+                        # other player requests while pending -> treat as accept
+                        return self._handle_accept(request, body, table_id, room_id, actor_seat)
+                elif existing.status == 'created':
+                    if not existing.new_table:
+                        return _reject(request, 409, 'rematch created but no table')
+                    from .signing import issue_direct_play_ticket
+                    t1, _ = issue_direct_play_ticket(existing.new_table.host, existing.new_table, 'p1')
+                    t2, _ = issue_direct_play_ticket(existing.new_table.guest, existing.new_table, 'p2')
+                    return JsonResponse({'status': 'created', 'table_id': existing.new_table.pk, 'table_code': existing.new_table.code, 'tickets': {'p1': t1, 'p2': t2}})
+            # preflight eligibility: check can_join for both
+            # requester must afford now, responder preflight
+            for user, code in [(actor, 'requester_not_eligible'), (other, 'opponent_not_eligible')]:
+                bal = WalletTransaction.balance_for_user(user)
+                if source.game_format == 'money':
+                    params = calculate_dynamic_params(bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+                    if not params['can_join']:
+                        return JsonResponse({'code': code}, status=409)
+                elif source.is_friend_game:
+                    req = source.fee_per_player
+                    if bal < req:
+                        return JsonResponse({'code': code}, status=409)
+                else:
+                    req = source.amount
+                    if bal < req:
+                        return JsonResponse({'code': code}, status=409)
+            # create pending
+            if existing:
+                existing.requester = actor
+                existing.responder = other
+                existing.status = 'pending'
+                existing.save(update_fields=['requester', 'responder', 'status', 'updated_at'])
+                rem = existing
+            else:
+                rem = DirectPlayRematch.objects.create(source_table=source, requester=actor, responder=other, status='pending')
+            return JsonResponse({'status': 'pending'})
+
+    def _handle_accept(self, request, body, table_id, room_id, actor_seat):
+        from .models import DirectPlayRematch
+        from frontend.game_formats import create_rematch_table
+        from .signing import issue_direct_play_ticket
+        from tournaments.models import HeadToHeadTable as H
+        with transaction.atomic():
+            source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+            rem = DirectPlayRematch.objects.select_for_update().get(source_table=source)
+            if rem.status != 'pending':
+                return _reject(request, 409, 'no pending rematch')
+            # actor must be responder
+            p1 = source.host
+            p2 = source.guest
+            actor = p1 if actor_seat == 'p1' else p2
+            if rem.responder_id != actor.id:
+                return _reject(request, 403, 'only responder may accept')
+            # recheck balances and active games
+            if source.status != HeadToHeadTable.STATUS_COMPLETED or source.external_room_id != room_id:
+                return _reject(request, 409, 'source not completed')
+            # lock users
+            from django.contrib.auth.models import User
+            uids = sorted([p1.id, p2.id])
+            list(User.objects.select_for_update().filter(pk__in=uids).order_by('pk'))
+            active = [H.STATUS_OPEN, H.STATUS_READY, H.STATUS_PLAYING]
+            for uid in uids:
+                if H.objects.filter(host_id=uid, status__in=active).exists() or H.objects.filter(guest_id=uid, status__in=active).exists():
+                    return _reject(request, 409, 'active game exists')
+            # recheck funds — actor-relative codes
+            other = p2 if actor.id == p1.id else p1
+            from frontend.game_formats import calculate_dynamic_params
+            for user, code in ((actor, 'requester_not_eligible'), (other, 'opponent_not_eligible')):
+                bal = WalletTransaction.balance_for_user(user)
+                if source.game_format == 'money':
+                    params = calculate_dynamic_params(bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+                    if not params['can_join']:
+                        return JsonResponse({'code': code}, status=409)
+                elif source.is_friend_game:
+                    if bal < source.fee_per_player:
+                        return JsonResponse({'code': code}, status=409)
+                else:
+                    if bal < source.amount:
+                        return JsonResponse({'code': code}, status=409)
+            new_table = create_rematch_table(source)
+            rem.status = 'created'
+            rem.new_table = new_table
+            rem.save(update_fields=['status', 'new_table', 'updated_at'])
+            t1, _ = issue_direct_play_ticket(p1, new_table, 'p1')
+            t2, _ = issue_direct_play_ticket(p2, new_table, 'p2')
+            return JsonResponse({'status': 'created', 'table_id': new_table.pk, 'table_code': new_table.code, 'tickets': {'p1': t1, 'p2': t2}})
+
+    def _handle_decline(self, request, body, table_id, room_id, actor_seat):
+        from .models import DirectPlayRematch
+        with transaction.atomic():
+            source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+            rem = DirectPlayRematch.objects.select_for_update().get(source_table=source)
+            if rem.status != 'pending':
+                return _reject(request, 409, 'no pending')
+            p1 = source.host
+            p2 = source.guest
+            actor = p1 if actor_seat == 'p1' else p2
+            if rem.responder_id != actor.id:
+                return _reject(request, 403, 'only responder may decline')
+            rem.status = 'declined'
+            rem.save(update_fields=['status', 'updated_at'])
+            return JsonResponse({'status': 'declined'})
+
+    def _handle_cancel(self, request, body, table_id, room_id, actor_seat):
+        from .models import DirectPlayRematch
+        with transaction.atomic():
+            source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+            rem = DirectPlayRematch.objects.select_for_update().get(source_table=source)
+            if rem.status != 'pending':
+                return _reject(request, 409, 'no pending')
+            p1 = source.host
+            p2 = source.guest
+            actor = p1 if actor_seat == 'p1' else p2
+            if rem.requester_id != actor.id:
+                return _reject(request, 403, 'only requester may cancel')
+            rem.status = 'cancelled'
+            rem.save(update_fields=['status', 'updated_at'])
+            return JsonResponse({'status': 'cancelled'})
+
+    def _handle_disconnect(self, request, body, table_id, room_id, actor_seat):
+        from .models import DirectPlayRematch
+        with transaction.atomic():
+            try:
+                source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
+            except HeadToHeadTable.DoesNotExist:
+                return _reject(request, 404, 'source not found')
+            if source.status != HeadToHeadTable.STATUS_COMPLETED or source.external_room_id != room_id:
+                return _reject(request, 409, 'source not completed or room mismatch')
+            rem = DirectPlayRematch.objects.select_for_update().filter(source_table=source).first()
+            if not rem:
+                return JsonResponse({'status': 'no_pending'})
+            if rem.status != 'pending':
+                return JsonResponse({'status': rem.status})
+            rem.status = 'cancelled'
+            rem.save(update_fields=['status', 'updated_at'])
+            return JsonResponse({'status': 'cancelled'})
 
 
 def _reject(request, status, reason, fixture_id = None, *, code=None):

@@ -17,4 +17,5 @@ urlpatterns = [
          name='gamelink-direct-play-start'),
     path('api/gamelink/result/', views.ResultCallbackView.as_view(), name='gamelink-result'),
     path('api/gamelink/live/', views.LiveSnapshotCallbackView.as_view(), name='gamelink-live'),
+    path('api/gamelink/rematch/', views.RematchCallbackView.as_view(), name='gamelink-rematch'),
 ]

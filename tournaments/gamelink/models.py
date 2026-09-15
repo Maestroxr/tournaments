@@ -86,6 +86,39 @@ class SeenNonce(models.Model):
         return self.nonce
 
 
+class DirectPlayRematch(models.Model):
+    source_table = models.OneToOneField(
+        'tournaments.HeadToHeadTable',
+        on_delete=models.PROTECT,
+        related_name='rematch_request'
+    )
+    requester = models.ForeignKey(
+        'auth.User',
+        on_delete=models.PROTECT,
+        related_name='direct_play_rematches_requested'
+    )
+    responder = models.ForeignKey(
+        'auth.User',
+        on_delete=models.PROTECT,
+        related_name='direct_play_rematches_received'
+    )
+    status = models.CharField(max_length=16, choices=[
+        ('pending', 'Pending'),
+        ('declined', 'Declined'),
+        ('cancelled', 'Cancelled'),
+        ('created', 'Created'),
+    ])
+    new_table = models.OneToOneField(
+        'tournaments.HeadToHeadTable',
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='created_from_rematch'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class AdminGameCommand(models.Model):
     """Durable tournaments-to-game command; the UUID is the receiver's idempotency key."""
 
