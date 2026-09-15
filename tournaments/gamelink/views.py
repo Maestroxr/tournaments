@@ -32,7 +32,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
 from channels.layers import get_channel_layer
-from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, Tournament, UserContact, WalletTransaction
+from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, RatingResult, Tournament, UserContact, WalletTransaction
 
 from .models import GameLink, IssuedTicket, SeenNonce
 from .signing import SEATS, issue_direct_play_ticket, issue_ticket, redact, verify_result_signature
@@ -533,7 +533,7 @@ class ResultCallbackView(View):
             except HeadToHeadTable.DoesNotExist:
                 return _reject(request, 404, 'no direct-play table for this result', fixture_id=-table_id)
             if table.status == HeadToHeadTable.STATUS_COMPLETED:
-                return _accepted('already_recorded')
+                return _direct_play_response(table, 'already_recorded')
             if table.status == HeadToHeadTable.STATUS_CANCELLED:
                 return _accepted('already_recorded') if body['status'] == STATUS_CANCELLED else _reject(
                     request, 409, 'cancelled direct-play table cannot be completed', fixture_id=-table_id)
@@ -547,7 +547,7 @@ class ResultCallbackView(View):
                         rate_table(table, body)
                 except ValidationError as error:
                     return _reject(request, 409, '; '.join(error.messages), fixture_id=-table_id)
-                return _accepted('recorded')
+                return _direct_play_response(table, 'recorded')
             # Rating and wallet settlement share these identities. Lock both in
             # the same order before crediting a winner or refunding either seat.
             list(User.objects.select_for_update().filter(
@@ -824,6 +824,52 @@ def _declared_length(request):
 
 def _accepted(status):
     return JsonResponse({'status': status})
+
+
+def _direct_play_response(table, status):
+    """Authoritative direct-play response with persisted rating and ledger deltas."""
+    # Rating payload - p1 = host, p2 = guest
+    rating = None
+    try:
+        rr = RatingResult.objects.filter(table=table).first()
+    except Exception:
+        rr = None
+    if rr is not None:
+        rating = {
+            'p1': {
+                'before': rr.player1_before,
+                'after': rr.player1_after,
+                'change': rr.player1_after - rr.player1_before,
+            },
+            'p2': {
+                'before': rr.player2_before,
+                'after': rr.player2_after,
+                'change': rr.player2_after - rr.player2_before,
+            },
+        }
+    # Money payload - only for money format
+    money = None
+    if table.game_format == 'money':
+        from django.db.models import Sum
+        p1_total = table.wallet_transactions.filter(user_id=table.host_id).aggregate(total=Sum('amount'))['total']
+        p2_total = table.wallet_transactions.filter(user_id=table.guest_id).aggregate(total=Sum('amount'))['total'] if table.guest_id else None
+        if p1_total is None:
+            p1_total = Decimal('0')
+        if p2_total is None:
+            p2_total = Decimal('0')
+
+        def _to_number(d):
+            # Return JSON number: int when integral, else float
+            if d == int(d):
+                return int(d)
+            return float(d)
+
+        money = {
+            'stake': str(table.amount),
+            'p1Change': _to_number(p1_total),
+            'p2Change': _to_number(p2_total),
+        }
+    return JsonResponse({'status': status, 'rating': rating, 'money': money})
 
 
 def _broadcast_live_snapshot(tournament_id, fixture_id, snapshot):

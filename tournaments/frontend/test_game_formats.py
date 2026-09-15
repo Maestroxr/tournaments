@@ -82,7 +82,7 @@ class GameFormatTests(TestCase):
     def test_private_has_same_financial_contract_and_cancellation_refunds(self):
         table = self.funded(mode='friend', game_format='match', target_points=5)
         self.assertEqual(len(table.code), 4)
-        self.assertEqual(self.balance(self.host), 9900)
+        self.assertEqual(self.balance(self.host), 9750)
         self.client.force_login(self.host)
         self.assertEqual(self.client.post(f'/api/head-to-head/tables/{table.code}/cancel').status_code, 200)
         self.assertEqual(self.balance(self.host), 10000)

@@ -59,14 +59,40 @@ class LossSettlementCallbackTests(TestCase):
         self.assertEqual(Decimal(table.settlement['fee']), fee)
         expected_ratings = previous_ratings + (0 if mode == 'friend' else 1)
         self.assertEqual(RatingResult.objects.count(), expected_ratings)
+        data = response.json()
+        self.assertEqual(data['status'], 'recorded')
+        if mode == 'friend':
+            self.assertIsNone(data['rating'])
+        else:
+            self.assertIsNotNone(data['rating'])
+            rr = RatingResult.objects.get(table=table)
+            self.assertEqual(data['rating']['p1']['before'], rr.player1_before)
+            self.assertEqual(data['rating']['p1']['after'], rr.player1_after)
+            self.assertEqual(data['rating']['p1']['change'], rr.player1_after - rr.player1_before)
+            self.assertEqual(data['rating']['p2']['before'], rr.player2_before)
+            self.assertEqual(data['rating']['p2']['after'], rr.player2_after)
+            self.assertEqual(data['rating']['p2']['change'], rr.player2_after - rr.player2_before)
+        if game_format == 'money':
+            self.assertIsNotNone(data['money'])
+            self.assertEqual(data['money']['stake'], str(table.amount))
+            from django.db.models import Sum
+            p1_actual = WalletTransaction.objects.filter(head_to_head_table=table, user_id=table.host_id).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            p2_actual = WalletTransaction.objects.filter(head_to_head_table=table, user_id=table.guest_id).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            self.assertEqual(Decimal(str(data['money']['p1Change'])), p1_actual)
+            self.assertEqual(Decimal(str(data['money']['p2Change'])), p2_actual)
+        else:
+            self.assertIsNone(data['money'])
         balances = [self.balance(u) for u in (self.host, self.guest)]
         entries = WalletTransaction.objects.count()
         ratings = list(PlayerRating.objects.order_by('pk').values('value', 'games_played'))
         # A transport retry is signed with a fresh nonce; it must acknowledge
         # the same result without paying or rating either participant again.
-        response = self.deliver(body)
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['status'], 'already_recorded')
+        retry_response = self.deliver(body)
+        self.assertEqual(retry_response.status_code, 200, retry_response.content)
+        retry_data = retry_response.json()
+        self.assertEqual(retry_data['status'], 'already_recorded')
+        self.assertEqual(retry_data['rating'], data['rating'])
+        self.assertEqual(retry_data['money'], data['money'])
         self.assertEqual(WalletTransaction.objects.count(), entries)
         self.assertEqual([self.balance(u) for u in (self.host, self.guest)], balances)
         self.assertEqual(RatingResult.objects.count(), expected_ratings)
@@ -111,11 +137,26 @@ class LossSettlementCallbackTests(TestCase):
     def test_public_and_friend_series_final_results_use_fixed_stake(self):
         # Includes give_up only when that game completed the series. A
         # below-target game resignation must not emit this final callback.
-        for mode in ('match', 'friend'):
-            for reason in ('give_up', 'leave', 'time', 'disconnect'):
-                with self.subTest(mode=mode, reason=reason):
-                    self.assert_settlement(reason=reason, cube=64, win_type='backgammon',
-                                           transfer=100, game_format='match', mode=mode)
+        for reason in ('give_up', 'leave', 'time', 'disconnect'):
+            with self.subTest(mode='match', reason=reason):
+                self.assert_settlement(reason=reason, cube=64, win_type='backgammon',
+                                       transfer=100, game_format='match', mode='match')
+        for reason in ('give_up', 'leave', 'time', 'disconnect'):
+            with self.subTest(mode='friend', reason=reason):
+                before = {u.pk: self.balance(u) for u in (self.host, self.guest)}
+                table = self.funded(game_format='match', target_points=5, mode='friend')
+                body = self.body(table, reason, 64, 'backgammon')
+                response = self.deliver(body)
+                self.assertEqual(response.status_code, 200, response.content)
+                table.refresh_from_db()
+                self.assertEqual(table.status, 'completed')
+                self.assertEqual(table.winner_id, self.host.pk)
+                self.assertEqual(table.settlement['transfer'], "0.00")
+                self.assertEqual(table.settlement['fee'], "0.00")
+                self.assertFalse(WalletTransaction.objects.filter(head_to_head_table=table, kind=WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE).exists())
+                self.assertFalse(RatingResult.objects.filter(table=table).exists())
+                for user in (self.host, self.guest):
+                    self.assertEqual(self.balance(user), before[user.pk] - Decimal('250.00'))
 
     def test_tampered_or_invalid_results_leave_reservations_and_rating_untouched(self):
         table = self.funded()

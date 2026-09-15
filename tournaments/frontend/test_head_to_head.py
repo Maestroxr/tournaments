@@ -483,7 +483,7 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()['code'], '0001')
         self.assertEqual(HeadToHeadTable.objects.count(), 2)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('800.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('500.00'))
 
     def test_friend_code_exhaustion_returns_controlled_error(self):
         with patch('frontend.api.models.HeadToHeadTable.objects.values_list',
@@ -604,6 +604,127 @@ class HeadToHeadApiTests(TestCase):
             subscription__user=self.guest,
         ).exists())
 
+    def test_versioned_friend_one_point_cost_and_doubling_disabled(self):
+        self.client.force_login(self.host)
+        payload = {
+            'mode': 'friend',
+            'game_format': 'match',
+            'target_points': 1,
+            'time_control': 'normal',
+            'doubling_enabled': True,
+        }
+        response = self.client.post('/api/head-to-head/tables', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
+        data = response.json()
+        self.assertEqual(Decimal(data['amount']), Decimal('50.00'))
+        self.assertEqual(Decimal(data['fee_per_player']), Decimal('50.00'))
+        self.assertEqual(Decimal(data['fee_percent']), Decimal('0.00'))
+        self.assertFalse(data['doubling_enabled'])
+        table = HeadToHeadTable.objects.get(code=data['code'])
+        self.assertEqual(table.amount, Decimal('50.00'))
+        self.assertEqual(table.fee_per_player, Decimal('50.00'))
+        self.assertEqual(table.fee_percent, Decimal('0.00'))
+        self.assertEqual(table.target_points, 1)
+        self.assertFalse(table.doubling_enabled)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('950.00'))
+
+    def test_versioned_friend_five_point_cost(self):
+        self.client.force_login(self.host)
+        payload = {
+            'mode': 'friend',
+            'game_format': 'match',
+            'target_points': 5,
+            'time_control': 'normal',
+            'doubling_enabled': True,
+        }
+        response = self.client.post('/api/head-to-head/tables', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
+        data = response.json()
+        self.assertEqual(Decimal(data['amount']), Decimal('250.00'))
+        self.assertEqual(Decimal(data['fee_per_player']), Decimal('250.00'))
+        self.assertEqual(Decimal(data['fee_percent']), Decimal('0.00'))
+        self.assertTrue(data['doubling_enabled'])
+        table = HeadToHeadTable.objects.get(code=data['code'])
+        self.assertEqual(table.amount, Decimal('250.00'))
+        self.assertEqual(table.fee_per_player, Decimal('250.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+
+    def test_versioned_friend_join_reserves_correct_amount(self):
+        self.client.force_login(self.host)
+        payload = {
+            'mode': 'friend',
+            'game_format': 'match',
+            'target_points': 5,
+            'time_control': 'normal',
+            'doubling_enabled': True,
+        }
+        response = self.client.post('/api/head-to-head/tables', data=json.dumps(payload), content_type='application/json')
+        self.assertEqual(response.status_code, 201)
+        code = response.json()['code']
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+        self.client.force_login(self.guest)
+        joined = self.client.post(f'/api/head-to-head/tables/{code}/join')
+        self.assertEqual(joined.status_code, 200, joined.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('750.00'))
+        table = HeadToHeadTable.objects.get(code=code)
+        self.assertEqual(table.status, HeadToHeadTable.STATUS_READY)
+
+    def test_versioned_friend_completion_no_prize(self):
+        self.client.force_login(self.host)
+        payload = {
+            'mode': 'friend',
+            'game_format': 'match',
+            'target_points': 5,
+            'time_control': 'normal',
+            'doubling_enabled': True,
+        }
+        response = self.client.post('/api/head-to-head/tables', data=json.dumps(payload), content_type='application/json')
+        code = response.json()['code']
+        table = HeadToHeadTable.objects.get(code=code)
+        self.client.force_login(self.guest)
+        self.client.post(f'/api/head-to-head/tables/{code}/join')
+        table.refresh_from_db()
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('750.00'))
+        response = ResultCallbackView()._record_direct_play(
+            RequestFactory().post('/api/gamelink/result/'), table.pk,
+            {"status": "completed", "room_id": "room-friend-5", "winner_seat": "p1"},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        table.refresh_from_db()
+        self.assertEqual(table.winner, self.host)
+        self.assertEqual(table.status, HeadToHeadTable.STATUS_COMPLETED)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('750.00'))
+        self.assertFalse(table.wallet_transactions.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE).exists())
+        self.assertEqual(table.settlement.get('transfer'), "0.00")
+        self.assertEqual(table.settlement.get('fee'), "0.00")
+
+    def test_versioned_friend_cancellation_refunds(self):
+        self.client.force_login(self.host)
+        payload = {
+            'mode': 'friend',
+            'game_format': 'match',
+            'target_points': 5,
+            'time_control': 'normal',
+            'doubling_enabled': True,
+        }
+        response = self.client.post('/api/head-to-head/tables', data=json.dumps(payload), content_type='application/json')
+        code = response.json()['code']
+        self.client.force_login(self.guest)
+        self.client.post(f'/api/head-to-head/tables/{code}/join')
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('750.00'))
+        table = HeadToHeadTable.objects.get(code=code)
+        self.client.force_login(self.host)
+        cancelled = self.client.post(f'/api/head-to-head/tables/{code}/cancel')
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('1000.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal('1000.00'))
+        table.refresh_from_db()
+        self.assertEqual(table.status, HeadToHeadTable.STATUS_CANCELLED)
+
 
 class DirectPlayAdminApiTests(TestCase):
     def test_fixed_fee_migration_replaces_custom_old_rate_with_50(self):
@@ -630,5 +751,5 @@ class DirectPlayAdminApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         settings_row = DirectPlaySettings.load()
-        self.assertEqual(settings_row.friend_fee_for(5), Decimal("60.00"))
+        self.assertEqual(settings_row.friend_fee_for(5), Decimal("300.00"))
         self.assertEqual(settings_row.head_to_head_fee_percent, Decimal("4.50"))

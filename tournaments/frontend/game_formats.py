@@ -186,6 +186,7 @@ def held(table, user):
             user=user,
             kind__in=(
                 WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY,
+                WalletTransaction.KIND_FRIEND_GAME_FEE,
                 WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
             ),
         )
@@ -199,7 +200,12 @@ def reserve(table, user, amount):
     balance = money(WalletTransaction.balance_for_user(user))
     if balance < amount:
         raise ValidationError(f'Insufficient coins: {amount} required, {balance} available for reservation.')
-    WalletTransaction.create_entry(user=user, amount=-amount, kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY,
+    kind = (
+        WalletTransaction.KIND_FRIEND_GAME_FEE
+        if table.is_friend_game
+        else WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
+    )
+    WalletTransaction.create_entry(user=user, amount=-amount, kind=kind,
                                    head_to_head_table=table, note=f'Reserved for {table.game_format} table {table.code}')
 
 
@@ -208,8 +214,9 @@ def quote(settings, data, quick, match_search=False):
     if name not in ('match', 'money'):
         raise ValidationError('Unknown game format.')
     profile = settings.format_profiles[name]
-    access = 'quick' if quick else 'private' if data.get('mode') == 'friend' else 'public'
-    if data.get('mode', 'match') not in ('match', 'friend'):
+    mode = data.get('mode', 'match')
+    access = 'quick' if quick else 'private' if mode == 'friend' else 'public'
+    if mode not in ('match', 'friend'):
         raise ValidationError('Unknown table access.')
     expected_format = 'money' if quick and not match_search else 'match'
     if name != expected_format:
@@ -226,21 +233,32 @@ def quote(settings, data, quick, match_search=False):
         points = data.get('target_points', 5)
         clock = data.get('time_control', 'normal')
         doubling = data.get('doubling_enabled', True)
-    if (type(points) is not int or points not in profile['target_points']
-            or clock not in profile['time_controls'] or type(doubling) is not bool
-            or doubling not in profile['doubling_options']):
-        raise ValidationError('Select the available rules for this format.')
-    raw = data.get('amounts', [data.get('amount')]) if quick else [data.get('amount')]
-    if not isinstance(raw, list) or not raw or len(raw) > 100:
-        raise ValidationError('Select an available stake.')
-    stakes = []
-    for item in raw:
-        if isinstance(item, bool):
-            raise ValidationError('Invalid stake.')
-        value = Decimal(str(item))
-        if not value.is_finite() or value not in profile['stake_amounts']:
+        if mode == 'friend' and points == 1:
+            doubling = False
+    if mode == 'friend' and points == 1:
+        if type(points) is not int or points not in profile['target_points'] or clock not in profile['time_controls']:
+            raise ValidationError('Select the available rules for this format.')
+        if type(doubling) is not bool:
+            raise ValidationError('Select the available rules for this format.')
+    else:
+        if (type(points) is not int or points not in profile['target_points']
+                or clock not in profile['time_controls'] or type(doubling) is not bool
+                or doubling not in profile['doubling_options']):
+            raise ValidationError('Select the available rules for this format.')
+    if mode == 'friend':
+        stakes = [settings.friend_fee_for(points)]
+    else:
+        raw = data.get('amounts', [data.get('amount')]) if quick else [data.get('amount')]
+        if not isinstance(raw, list) or not raw or len(raw) > 100:
             raise ValidationError('Select an available stake.')
-        stakes.append(money(value))
+        stakes = []
+        for item in raw:
+            if isinstance(item, bool):
+                raise ValidationError('Invalid stake.')
+            value = Decimal(str(item))
+            if not value.is_finite() or value not in profile['stake_amounts']:
+                raise ValidationError('Select an available stake.')
+            stakes.append(money(value))
     return name, copy.deepcopy(profile), sorted(set(stakes)), points, clock, doubling
 
 
@@ -312,8 +330,17 @@ def create_or_match(request, *, quick=False, match_search=False):
                             candidate.rules_snapshot,
                             mars_enabled=True,
                         )
+                        print("=== DOUBLE DEBUG ===")
+                        print("stake:", stake)
+                        print("host_balance:", host_available)
+                        print("host_params:", host_params)
+                        print("guest_balance:", guest_balance)
+                        print("guest_params:", guest_params)
                         shared_max_cube = min(
-                            host_params['max_cube'], guest_params['max_cube'])
+                            host_params['max_cube'], guest_params['max_cube']
+                        )
+                        print("shared_max_cube:", shared_max_cube)
+                        print("====================")
                         shared_reserve_multiplier = 2 * shared_max_cube
                         shared_max_exposure = money(stake * shared_reserve_multiplier)
                         host_held = held(candidate, candidate.host)
@@ -391,13 +418,22 @@ def create_or_match(request, *, quick=False, match_search=False):
                     }, status=400)
             # Use pure profile for snapshot (do not pollute with dynamic)
             snapshot = copy.deepcopy(profile)
-            fields.update(mode='match' if quick else data.get('mode', 'match'), host=request.user,
-                          amount=stakes[0], quick_stakes=[
-                              str(x) for x in stakes] if quick else [],
-                          fee_percent=money(profile['fee_percent']),
-                          fee_per_player=money(
-                              stakes[0] * money(profile['fee_percent']) / 100),
-                          rules_snapshot=snapshot)
+            mode_val = data.get('mode', 'match') if not quick else 'match'
+            if mode_val == 'friend':
+                friend_cost = settings.friend_fee_for(points)
+                fields.update(mode='friend', host=request.user,
+                              amount=friend_cost, quick_stakes=[],
+                              fee_percent=money(Decimal('0')),
+                              fee_per_player=friend_cost,
+                              rules_snapshot=snapshot)
+            else:
+                fields.update(mode='match' if quick else data.get('mode', 'match'), host=request.user,
+                              amount=stakes[0], quick_stakes=[
+                                  str(x) for x in stakes] if quick else [],
+                              fee_percent=money(profile['fee_percent']),
+                              fee_per_player=money(
+                                  stakes[0] * money(profile['fee_percent']) / 100),
+                              rules_snapshot=snapshot)
             table = _create_friend_table(
                 **fields) if fields['mode'] == 'friend' else HeadToHeadTable.objects.create(code=_new_table_code(), **fields)
             # store dynamic values for later shared calc (in settlement, not snapshot)
@@ -487,15 +523,22 @@ def settle(table, body):
             if table.rules_snapshot['jacoby'] and cube == 1:
                 multiplier = 1
             transfer = min(required_reserve(table), money(table.amount * cube * multiplier))
-        fee = money(transfer * table.fee_percent / 100)
+        if table.is_friend_game:
+            transfer = money(0)
+            fee = money(0)
+        else:
+            fee = money(transfer * table.fee_percent / 100)
     for player in players:
-        # Returning the winner's own reservation is not winnings. Only the loser
-        # transfers the settled stake. Combined wallet change equals minus fee.
-        release = reserves[player.pk] if cancelled or player == winner else reserves[player.pk] - transfer
+        if cancelled:
+            release = reserves[player.pk]
+        elif table.is_friend_game:
+            release = Decimal('0')
+        else:
+            release = reserves[player.pk] if player == winner else reserves[player.pk] - transfer
         if release:
             WalletTransaction.create_entry(user=player, amount=release, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
                                            head_to_head_table=table, note='Unused game reservation released')
-    if winner and transfer > fee:
+    if winner and not table.is_friend_game and transfer > fee:
         WalletTransaction.create_entry(user=winner, amount=transfer - fee, kind=WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE,
                                        head_to_head_table=table, note=f'Game winnings; fee {fee}')
     table.external_room_id = body['room_id']

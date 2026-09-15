@@ -671,8 +671,10 @@ class DirectPlaySettings(models.Model):
         return None
 
     def friend_fee_for(self, target_points):
-        """Each player pays the same fixed fee, regardless of match length."""
-        return self.friend_game_fee.quantize(Decimal("0.01"))
+        """Per-player Friend cost: configured coin price per point × match length."""
+        return (
+            self.friend_game_fee * Decimal(str(target_points))
+        ).quantize(Decimal("0.01"))
 
     def mode_enabled(self, mode):
         return self.enabled and self.game_rules[mode]['enabled']
