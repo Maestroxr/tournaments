@@ -230,10 +230,27 @@ def quote(settings, data, quick, match_search=False):
         clock = 'normal' if 'normal' in profile['time_controls'] else profile['time_controls'][0]
         doubling = True if True in profile['doubling_options'] else profile['doubling_options'][0]
     else:
-        points = data.get('target_points', 5)
-        clock = data.get('time_control', 'normal')
-        doubling = data.get('doubling_enabled', True)
-        if mode == 'friend' and points == 1:
+        required_rules = (
+            'target_points',
+            'time_control',
+            'doubling_enabled',
+        )
+
+        if any(key not in data for key in required_rules):
+            raise ValidationError(
+                'Missing required game rules. Refresh the game screen and try again.'
+            )
+
+        points = data['target_points']
+        clock = data['time_control']
+        doubling = data['doubling_enabled']
+
+        if type(doubling) is not bool:
+            raise ValidationError('Select the available rules for this format.')
+
+        if name == 'match' and points == 1:
+            doubling = False
+        elif mode == 'friend' and points == 1:
             doubling = False
     if mode == 'friend' and points == 1:
         if type(points) is not int or points not in profile['target_points'] or clock not in profile['time_controls']:
@@ -243,7 +260,8 @@ def quote(settings, data, quick, match_search=False):
     else:
         if (type(points) is not int or points not in profile['target_points']
                 or clock not in profile['time_controls'] or type(doubling) is not bool
-                or doubling not in profile['doubling_options']):
+                or (doubling not in profile['doubling_options']
+                    and not (name == 'match' and points == 1))):
             raise ValidationError('Select the available rules for this format.')
     if mode == 'friend':
         stakes = [settings.friend_fee_for(points)]

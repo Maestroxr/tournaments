@@ -204,7 +204,10 @@ class ModeRuleTests(TestCase):
                                  ('match', 7, 'slow', False))
                 self.assertFalse(table.rules_snapshot['jacoby'])
                 self.assertEqual(table.rules_snapshot['max_cube'], 64)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9800)
+        self.assertEqual(
+            WalletTransaction.balance_for_user(self.host),
+            Decimal('9550'),
+        )
 
     def test_match_invalid_rule_is_not_silently_replaced(self):
         for override in (dict(target_points=2), dict(time_control='unknown'), dict(doubling_enabled='false')):
@@ -213,6 +216,75 @@ class ModeRuleTests(TestCase):
                                      **override)
                 self.assertEqual(response.status_code, 400, response.content)
         self.assertFalse(HeadToHeadTable.objects.exists())
+
+    def test_match_modes_require_explicit_rules_without_silent_defaults(self):
+        full = dict(target_points=7, time_control='slow', doubling_enabled=False)
+        cases = (
+            ('/api/head-to-head/match-search', dict(game_format='match', amounts=[100])),
+            ('/api/head-to-head/tables', dict(game_format='match', mode='match', amount=100)),
+            ('/api/head-to-head/tables', dict(game_format='match', mode='friend', amount=100)),
+        )
+        for path, base in cases:
+            for omitted in ('target_points', 'time_control', 'doubling_enabled'):
+                payload = {**base, **{k: v for k, v in full.items() if k != omitted}}
+                with self.subTest(path=path, mode=base.get('mode', 'match'), omitted=omitted):
+                    response = self.post(path, **payload)
+                    self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(HeadToHeadTable.objects.exists())
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
+        self.assertEqual(WalletTransaction.objects.count(), 2)
+
+    def test_quick_money_still_succeeds_without_explicit_rules(self):
+        response = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
+        self.assertEqual(response.status_code, 201, response.content)
+        table = HeadToHeadTable.objects.get()
+        self.assertEqual((table.game_format, table.target_points, table.time_control, table.doubling_enabled),
+                         ('money', 1, 'normal', True))
+
+    def test_one_point_match_forces_doubling_off(self):
+        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
+                             amount=100, target_points=1, time_control='normal', doubling_enabled=True)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIs(response.json()['doubling_enabled'], False)
+        table = HeadToHeadTable.objects.get(pk=response.json()['id'])
+        self.assertEqual(table.target_points, 1)
+        self.assertIs(table.doubling_enabled, False)
+
+    def test_one_point_match_allowed_when_profile_has_only_doubling_true(self):
+        self.settings.format_profiles['match']['target_points'] = [1, 3]
+        self.settings.format_profiles['match']['doubling_options'] = [True]
+        self.settings.save()
+        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
+                             amount=100, target_points=1, time_control='normal', doubling_enabled=True)
+        self.assertEqual(response.status_code, 201, response.content)
+        table = HeadToHeadTable.objects.get()
+        self.assertEqual(table.target_points, 1)
+        self.assertIs(table.doubling_enabled, False)
+
+    def test_longer_match_keeps_configured_doubling(self):
+        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
+                             amount=100, target_points=3, time_control='normal', doubling_enabled=True)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIs(HeadToHeadTable.objects.get().doubling_enabled, True)
+        self.settings.format_profiles['match']['doubling_options'] = [True]
+        self.settings.save()
+        bad = self.post('/api/head-to-head/tables', game_format='match', mode='match',
+                        amount=100, target_points=3, time_control='normal', doubling_enabled=False)
+        self.assertEqual(bad.status_code, 400, bad.content)
+        self.assertEqual(HeadToHeadTable.objects.count(), 1)
+
+    def test_one_point_match_rejects_non_boolean_doubling(self):
+        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
+                             amount=100, target_points=1, time_control='normal', doubling_enabled='false')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(HeadToHeadTable.objects.exists())
+
+    def test_quick_money_keeps_doubling_on_one_point(self):
+        response = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
+        self.assertEqual(response.status_code, 201, response.content)
+        table = HeadToHeadTable.objects.get()
+        self.assertEqual((table.game_format, table.target_points, table.doubling_enabled),
+                         ('money', 1, True))
 
     def test_changed_profile_does_not_rewrite_waiting_game_contract(self):
         created = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
