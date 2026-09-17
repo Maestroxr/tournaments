@@ -973,8 +973,12 @@ class RematchCallbackView(View):
         from frontend.game_formats import calculate_dynamic_params
         with transaction.atomic():
             source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
-            if source.status != HeadToHeadTable.STATUS_COMPLETED or not source.guest_id or source.external_room_id != room_id:
-                return _reject(request, 409, 'source not completed or room mismatch')
+            if source.external_room_id != room_id:
+                return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
+            if source.status != HeadToHeadTable.STATUS_COMPLETED:
+                return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
+            if not source.guest_id:
+                return JsonResponse({"ok": False, "code": "invalid_source"}, status=409)
             p1 = source.host
             p2 = source.guest
             actor = p1 if actor_seat == 'p1' else p2
@@ -1038,9 +1042,11 @@ class RematchCallbackView(View):
             actor = p1 if actor_seat == 'p1' else p2
             if rem.responder_id != actor.id:
                 return _reject(request, 403, 'only responder may accept')
-            # recheck balances and active games
-            if source.status != HeadToHeadTable.STATUS_COMPLETED or source.external_room_id != room_id:
-                return _reject(request, 409, 'source not completed')
+            # recheck settlement and room mismatch separately
+            if source.external_room_id != room_id:
+                return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
+            if source.status != HeadToHeadTable.STATUS_COMPLETED:
+                return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
             # lock users
             from django.contrib.auth.models import User
             uids = sorted([p1.id, p2.id])
@@ -1111,8 +1117,10 @@ class RematchCallbackView(View):
                 source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
             except HeadToHeadTable.DoesNotExist:
                 return _reject(request, 404, 'source not found')
-            if source.status != HeadToHeadTable.STATUS_COMPLETED or source.external_room_id != room_id:
-                return _reject(request, 409, 'source not completed or room mismatch')
+            if source.external_room_id != room_id:
+                return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
+            if source.status != HeadToHeadTable.STATUS_COMPLETED:
+                return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
             rem = DirectPlayRematch.objects.select_for_update().filter(source_table=source).first()
             if not rem:
                 return JsonResponse({'status': 'no_pending'})
