@@ -23,7 +23,8 @@ class SearchLifecycleTests(TestCase):
 
     def search(self, game_format='money', *, host=None, status='open', quick=True, mode='match', reserve=None):
         self.sequence += 1
-        profile = copy.deepcopy(self.settings.format_profiles.get(game_format, {}))
+        profile = copy.deepcopy(
+            self.settings.format_profiles.get(game_format, {}))
         table = HeadToHeadTable.objects.create(
             code=f'S{self.sequence:05}', host=host or self.host,
             guest=self.guest if status in ('ready', 'playing') else None,
@@ -33,13 +34,14 @@ class SearchLifecycleTests(TestCase):
             target_points=1 if game_format == 'money' else 5,
             time_control='normal', doubling_enabled=True,
         )
-        reserve = (800 if game_format == 'money' else 100) if reserve is None else reserve
+        reserve = (800 if game_format ==
+                   'money' else 100) if reserve is None else reserve
         if reserve:
             WalletTransaction.create_entry(user=table.host, amount=-reserve,
-                kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
+                                           kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
         return table
 
-    def test_changed_profile_releases_only_affected_unmatched_search(self):
+    def test_changed_profile_does_not_cancel_existing_quick_search(self):
         money = self.search()
         match = self.search('match')
         snapshot = copy.deepcopy(money.rules_snapshot)
@@ -47,21 +49,29 @@ class SearchLifecycleTests(TestCase):
         self.settings.save()
         money.refresh_from_db()
         match.refresh_from_db()
-        self.assertEqual(money.status, 'cancelled')
+        self.assertEqual(money.status, 'open')
         self.assertEqual(money.rules_snapshot, snapshot)
         self.assertEqual(money.fee_percent, 5)
-        self.assertEqual(money.settlement, dict(reason='rules_changed', reservation_released=True, refund='800.00'))
+        self.assertEqual(money.settlement, {})
         self.assertEqual(match.status, 'open')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9900)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+        self.assertEqual(WalletTransaction.objects.filter(
+            head_to_head_table=money, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 0)
 
-    def test_changed_match_profile_releases_automated_match_search(self):
+        new_money = self.search()
+        self.assertEqual(new_money.rules_snapshot['fee_percent'], 10)
+
+    def test_changed_match_profile_does_not_cancel_existing_match_search(self):
         table = self.search('match')
         self.settings.format_profiles['match']['time_controls'] = ['fast']
         self.settings.save()
         table.refresh_from_db()
-        self.assertEqual(table.status, 'cancelled')
-        self.assertEqual(table.settlement['refund'], '100.00')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
+        self.assertEqual(table.status, 'open')
+        self.assertEqual(table.settlement, {})
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+
+        new_match = self.search('match')
+        self.assertEqual(new_match.rules_snapshot['time_controls'], ['fast'])
 
     def test_existing_paired_and_public_friend_contracts_survive_profile_change(self):
         tables = [self.search(status='ready'), self.search(status='playing'),
@@ -77,15 +87,17 @@ class SearchLifecycleTests(TestCase):
             table.refresh_from_db()
             self.assertEqual((table.status, table.rules_snapshot, table.fee_percent,
                               table.target_points, table.time_control), original)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), balance)
-        self.assertFalse(WalletTransaction.objects.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
+        self.assertEqual(
+            WalletTransaction.balance_for_user(self.host), balance)
+        self.assertFalse(WalletTransaction.objects.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
 
     def test_actual_ledger_multiple_entries_partial_release_and_retry(self):
         table = self.search(reserve=600)
         WalletTransaction.create_entry(user=self.host, amount=-200,
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
+                                       kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
         WalletTransaction.create_entry(user=self.host, amount=150,
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
+                                       kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
         self.settings.format_profiles['money']['loss_limit_multiplier'] = 2
         self.settings.save()
         table.refresh_from_db()
@@ -118,7 +130,7 @@ class SearchLifecycleTests(TestCase):
     def test_already_released_reservation_does_not_create_negative_or_duplicate_release(self):
         table = self.search()
         WalletTransaction.create_entry(user=self.host, amount=800,
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
+                                       kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
         self.settings.enabled = False
         self.settings.save()
         table.refresh_from_db()
@@ -143,29 +155,34 @@ class SearchLifecycleTests(TestCase):
         self.settings.save(update_fields=['coin_grant_amount'])
         table.refresh_from_db()
         self.assertEqual(table.status, 'open')
-        self.assertEqual(DirectPlaySettings.load().format_profiles['money']['fee_percent'], 5)
+        self.assertEqual(DirectPlaySettings.load(
+        ).format_profiles['money']['fee_percent'], 5)
 
-    def test_reconcile_retires_noncanonical_money_queue_but_keeps_match_choice(self):
+    def test_reconcile_keeps_existing_searches_open_when_only_profile_changes(self):
         money = self.search()
         money.time_control = 'slow'
         money.save(update_fields=['time_control'])
         match = self.search('match')
         match.time_control = 'slow'
         match.save(update_fields=['time_control'])
-        self.assertEqual(reconcile_searches_locked(), [money.pk])
+        self.assertEqual(reconcile_searches_locked(), [])
+        money.refresh_from_db()
         match.refresh_from_db()
+        self.assertEqual(money.status, 'open')
         self.assertEqual(match.status, 'open')
 
     def test_host_scoped_reconcile_and_legacy_without_reservation(self):
         own = self.search('legacy', reserve=0)
         other = self.search('legacy', host=self.guest, reserve=0)
-        self.assertEqual(reconcile_searches_locked(host_id=self.host.pk), [own.pk])
+        self.assertEqual(reconcile_searches_locked(
+            host_id=self.host.pk), [own.pk])
         own.refresh_from_db()
         other.refresh_from_db()
         self.assertEqual(own.settlement['reason'], 'legacy_search_closed')
         self.assertEqual(own.settlement['refund'], '0.00')
         self.assertEqual(other.status, 'open')
-        self.assertFalse(WalletTransaction.objects.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
+        self.assertFalse(WalletTransaction.objects.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
 
     def test_management_command_reconciles_existing_legacy_searches(self):
         table = self.search('legacy', reserve=0)
@@ -175,14 +192,19 @@ class SearchLifecycleTests(TestCase):
         self.assertEqual(table.status, 'cancelled')
         self.assertIn('Closed 1 unmatched searches', output.getvalue())
 
-    def test_failed_refund_rolls_back_settings_and_search(self):
+    def test_harmless_profile_change_does_not_trigger_refund_path(self):
         table = self.search()
         old_profiles = copy.deepcopy(self.settings.format_profiles)
         self.settings.format_profiles['money']['fee_percent'] = 10
-        with patch('frontend.search_lifecycle.WalletTransaction.create_entry', side_effect=RuntimeError('ledger unavailable')):
-            with self.assertRaisesRegex(RuntimeError, 'ledger unavailable'):
-                self.settings.save()
+        self.settings.save()
         table.refresh_from_db()
         self.assertEqual(table.status, 'open')
-        self.assertEqual(DirectPlaySettings.load().format_profiles, old_profiles)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('9200'))
+        self.assertEqual(table.settlement, {})
+        self.assertEqual(DirectPlaySettings.load(
+        ).format_profiles['money']['fee_percent'], 10)
+        self.assertEqual(DirectPlaySettings.load(
+        ).format_profiles, self.settings.format_profiles)
+        self.assertEqual(WalletTransaction.balance_for_user(
+            self.host), Decimal('9200'))
+        self.assertEqual(WalletTransaction.objects.filter(
+            head_to_head_table=table, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 0)

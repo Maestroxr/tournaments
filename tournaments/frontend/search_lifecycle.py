@@ -13,21 +13,10 @@ def _cancellation_reason(table, settings):
     if table.game_format == 'legacy':
         return 'legacy_search_closed'
     profile = settings.format_profiles.get(table.game_format)
-    if (not settings.enabled or not profile or not profile.get('enabled')
-            or not profile.get('quick') or table.rules_snapshot != profile):
+    if (not settings.enabled or not profile or not profile.get('enabled')):
         return 'rules_changed'
-    clocks = profile.get('time_controls', [])
-    doubling_options = profile.get('doubling_options', [])
-    if (table.target_points not in profile.get('target_points', [])
-            or table.time_control not in clocks
-            or table.doubling_enabled not in doubling_options):
+    if table.is_quick_match and not profile.get('quick'):
         return 'rules_changed'
-    if table.game_format == 'money':
-        clock = 'normal' if 'normal' in clocks else clocks[0]
-        doubling = True if True in doubling_options else doubling_options[0]
-        if (table.target_points != 1 or table.time_control != clock
-                or table.doubling_enabled != doubling):
-            return 'rules_changed'
     return None
 
 
@@ -72,7 +61,8 @@ def reconcile_searches(settings, *, host_id=None):
         table.settlement = {
             'reason': reason, 'reservation_released': True, 'refund': str(refund),
         }
-        table.save(update_fields=['status', 'completed_at', 'settlement', 'updated_at'])
+        table.save(update_fields=[
+                   'status', 'completed_at', 'settlement', 'updated_at'])
         cancelled.append(table.pk)
     return cancelled
 
