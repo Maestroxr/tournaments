@@ -545,12 +545,41 @@ def api_profile(request):
         return JsonResponse({"detail": "Authentication required"}, status=401)
     try:
         data = json.loads(request.body or "{}")
-        phone_number = require_phone_number(data.get("phone_number"))
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
-    except ValidationError as error:
-        return JsonResponse({"errors": {"phone_number": error.messages}}, status=400)
-    models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
+    if not isinstance(data, dict) or not {'username', 'phone_number'} & data.keys():
+        return JsonResponse({"detail": "Provide a username or phone number."}, status=400)
+    errors = {}
+    if 'username' in data:
+        username = data['username']
+        try:
+            if not isinstance(username, str):
+                raise ValidationError('Enter a valid username.')
+            username = User.normalize_username(username.strip())
+            User._meta.get_field('username').clean(username, request.user)
+            validate_admin_username(username)
+            if User.objects.filter(username__iexact=username).exclude(pk=request.user.pk).exists():
+                raise ValidationError('This username is already taken.')
+        except ValidationError as error:
+            errors['username'] = error.messages
+    if 'phone_number' in data:
+        try:
+            if not isinstance(data['phone_number'], str):
+                raise ValidationError('Enter a valid phone number.')
+            phone_number = require_phone_number(data['phone_number'])
+        except ValidationError as error:
+            errors['phone_number'] = error.messages
+    if errors:
+        return JsonResponse({"errors": errors}, status=400)
+    try:
+        with transaction.atomic():
+            if 'username' in data:
+                request.user.username = username
+                request.user.save(update_fields=['username'])
+            if 'phone_number' in data:
+                models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
+    except IntegrityError:
+        return JsonResponse({"errors": {"username": ["This username is already taken."]}}, status=400)
     return JsonResponse(_serialize_user(request.user))
 
 
@@ -984,6 +1013,7 @@ def api_admin_direct_play_settings(request):
                     models.validate_stake_amounts(data["stake_amounts"])
                     row.stake_amounts = sorted(data["stake_amounts"])
                 row.friend_game_fee = _parse_money(data.get("friend_game_fee", row.friend_game_fee), "friend_game_fee")
+                row.ai_game_fee = _parse_money(data.get("ai_game_fee", row.ai_game_fee), "ai_game_fee")
                 row.head_to_head_fee_percent = _parse_money(data.get("head_to_head_fee_percent", row.head_to_head_fee_percent), "head_to_head_fee_percent")
                 row.tournament_fee_percent = _parse_money(data.get("tournament_fee_percent", row.tournament_fee_percent), "tournament_fee_percent")
                 row.coin_grant_enabled = _parse_bool(data.get("coin_grant_enabled"), row.coin_grant_enabled)
@@ -1001,6 +1031,7 @@ def api_admin_direct_play_settings(request):
     return JsonResponse({
         "enabled": row.enabled,
         "friend_game_fee": str(row.friend_game_fee),
+        "ai_game_fee": str(row.ai_game_fee),
         "stake_amounts": row.stake_amounts,
         "game_rules": row.game_rules,
         "format_profiles": row.format_profiles,

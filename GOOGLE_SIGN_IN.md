@@ -1,5 +1,9 @@
 # Google sign-in
 
+> **עדכון תיעוד 19.09.2026 — נוהל מתוחזק.** קיימים auth/google/config, auth/google ו־auth/google/complete, והלקוח קורא הגדרות מהשרת. כתובות ופורטים בהמשך הם דוגמאות שיש להתאים לסביבה; אין כאן בדיקה חדשה של חשבון Google או הרשאותיו.
+>
+> [מצב המערכת העדכני](<../CURRENT_STATE.he.md>) · [מפתח התיעוד](<../docs/README.md>). עדכון זה מבוסס על קוד מקומי; בדיקות וספירות בגוף המסמך נשארות מתוארכות למועד ביצוען.
+
 The tournament login and signup pages use Google Identity Services. The backend validates Google's ID token using `google-auth`, including signature, issuer, audience and expiry. Django CSRF protection and a single-use, ten-minute session nonce protect the callback. No client secret is needed for this ID-token flow.
 
 ## Enable

@@ -31,6 +31,7 @@ interface DirectPlaySettingsForm {
   stake_amounts: number[]
   enabled: boolean
   friend_game_fee: number
+  ai_game_fee: number
   head_to_head_fee_percent: number
   tournament_fee_percent: number
   coin_grant_enabled: boolean
@@ -126,6 +127,7 @@ const settingsValid = computed(() => {
   return (
     rulesValid.value &&
     settings.value.friend_game_fee > 0 &&
+    settings.value.ai_game_fee >= 0 &&
     settings.value.head_to_head_fee_percent >= 0 &&
     settings.value.head_to_head_fee_percent <= 100 &&
     settings.value.tournament_fee_percent >= 8 &&
@@ -159,6 +161,7 @@ function normalizeSettings(value: DirectPlaySettings): DirectPlaySettingsForm {
     game_rules: JSON.parse(JSON.stringify(value.game_rules)),
     stake_amounts: [...(value.stake_amounts ?? [])],
     friend_game_fee: Number(value.friend_game_fee),
+    ai_game_fee: Number(value.ai_game_fee ?? 50),
     head_to_head_fee_percent: Number(value.head_to_head_fee_percent),
     tournament_fee_percent: Number(value.tournament_fee_percent),
     coin_grant_enabled: value.coin_grant_enabled,
@@ -181,6 +184,7 @@ async function saveSettings() {
         game_rules: settings.value.game_rules,
         stake_amounts: settings.value.stake_amounts,
         friend_game_fee: settings.value.friend_game_fee,
+        ai_game_fee: settings.value.ai_game_fee,
         head_to_head_fee_percent: settings.value.head_to_head_fee_percent,
         tournament_fee_percent: settings.value.tournament_fee_percent,
         coin_grant_enabled: settings.value.coin_grant_enabled,
@@ -539,6 +543,14 @@ onUnmounted(() => clearInterval(refreshTimer))
                     />
                   </div>
                   <div class="grid items-start gap-4 lg:grid-cols-2">
+                    <section class="direct-play-feature" aria-labelledby="ai-settings-heading">
+                      <h3 id="ai-settings-heading">Open Sage</h3>
+                      <label class="direct-play-field">
+                        <span>{{ t('directPlay.aiGameFee') }}</span>
+                        <InputNumber v-model="settings.ai_game_fee" :min="0" :max-fraction-digits="2" fluid :aria-label="t('directPlay.aiGameFee')" />
+                        <small>{{ t('directPlay.aiGameFeeHint') }}</small>
+                      </label>
+                    </section>
                     <section
                       class="direct-play-feature"
                       aria-labelledby="tournament-settings-heading"

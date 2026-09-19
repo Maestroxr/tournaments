@@ -1,9 +1,24 @@
-<div align="center">
-  <h1><a href="https://github.com/kostrykin/tournaments">tournaments</a><br>
-  <a href="https://github.com/kostrykin/tournaments/actions/workflows/testsuite.yml"><img src="https://github.com/kostrykin/tournaments/actions/workflows/testsuite.yml/badge.svg"></a>
-  <a href="https://github.com/kostrykin/tournaments/actions/workflows/testsuite.yml"><img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/kostrykin/bb85310a74d6b05330d230443007b878/raw/tournaments.json" /></a>
-  </h1>
-</div>
+# 6B — Club, tournaments and administration backend
+
+Reviewed 2026-09-19 against the local working tree. The requirements declare Django 4.2.15 with Channels/Daphne; this is not a stock upstream tournament demo. The Vue player app is in ../backgammon-tournaments and the Vue admin app is in admin-frontend.
+
+## Responsibilities and routes
+
+The service owns session accounts, email/Google login, profile data, tournament lifecycle, direct-game contracts and escrow, WalletTransaction, Elo, push subscriptions, store catalog and Tranzila orders/membership. It bridges game entry/results and analysis access; the game engine, dice and Open Sage service run separately.
+
+- /api/auth/*, /api/tournaments*, /api/head-to-head/* and /api/admin/* are defined in tournaments/frontend/api_urls.py.
+- /t/fixture/<id>/play, /t/tournament/<id>/play and /t/head-to-head/<code>/play issue game handoffs.
+- /api/practice/ and /t/practice/play implement the new configurable/paid practice contract. The player form now loads the price and submits all required options; [practice status](../docs/open-sage-practice.he.md).
+- /api/analyses and /api/analyses/<uuid> read results; POST on a specific analysis queues reanalysis after ownership validation.
+- Billing, signed result/live/rematch callbacks and admin commands have separate handlers and permissions.
+
+## Local development and operation
+
+Run manage.py from tournaments/, with a separate Python environment using this repository's requirements. The default settings module is tournaments.settings.development. To match the player proxy, use python manage.py runserver 8001 for local HTTP work, or Daphne with tournaments.asgi:application for ASGI/WebSocket. The admin proxy defaults to 8002, so set its VITE_API_URL explicitly when using 8001.
+
+Workers are separate: run_push_notifications is persistent; deliver_admin_game_commands, purge_expired, reconcile_direct_searches and reconcile_tranzila are management commands with their own scheduling needs. The game server's run_tasks and the analysis service's process_analyses must also run. No worker, deployment or migration was executed in this documentation update.
+
+The exact routes, models and pending migrations in the checked-out code determine behavior. Financial values come from the database/catalog, not old planning documents. [Direct formats](GAME_FORMATS.md), [rating](docs/RATING_POLICY.he.md), [admin UI](admin-frontend/README.md), [deployment](DEPLOY_GAME_AND_CLUB.he.md), [documentation index](../docs/README.md).
 
 ## Business model and legal review
 
@@ -12,13 +27,6 @@ The proposed subscription, tournament, prize, Coins, and existing-wallet transit
 ## Beta budget and launch plan
 
 The [Hebrew beta launch plan](BETA_LAUNCH_PLAN.he.md) defines a proposed two-month budget, 5% and 10% paid-conversion scenarios, the corrected ILS 152,000 annual prize total, recruitment cohorts, measurement definitions, support operations, and expansion criteria. A separate [sponsor proposal draft](BETA_SPONSOR_PROPOSAL.he.md) specifies deliverables and funding conditions. These are planning documents; funding, recruitment, analytics implementation, and a full month of observed cohort data remain outstanding.
-
-## Screenshots
-
-<div align="center">
-<p><kbd><img width="1128" src="https://github.com/kostrykin/tournaments/assets/6557139/44c98a04-8613-447a-82fa-30abede06ea3"></kbd></p>
-<p><kbd><img width="1128" src="https://github.com/kostrykin/tournaments/assets/6557139/4fefa3b0-8b98-47bf-9a7e-8812d8f3064a"></kbd></p>
-</div>
 
 ## Installation
 

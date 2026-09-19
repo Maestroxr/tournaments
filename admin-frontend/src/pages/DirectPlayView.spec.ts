@@ -25,6 +25,7 @@ const settings = {
   stake_amounts: [100, 500],
   enabled: true,
   friend_game_fee: '50.00',
+  ai_game_fee: '50.00',
   head_to_head_fee_percent: '5.00',
   tournament_fee_percent: '10.00',
   coin_grant_enabled: true,
@@ -135,7 +136,7 @@ describe('DirectPlayView', () => {
     const wrapper = view()
     await flushPromises()
     await wrapper.get('button[aria-label="Remove amount 100"]').trigger('click')
-    wrapper.findAllComponents(InputNumber)[2]!.vm.$emit('update:modelValue', 750)
+    wrapper.findAllComponents(InputNumber).find(input => input.props('ariaLabel') === 'New amount')!.vm.$emit('update:modelValue', 750)
     await flushPromises()
     await wrapper.get('button[aria-label="Add amount"]').trigger('click')
     await wrapper.get('form').trigger('submit.prevent')
@@ -189,6 +190,7 @@ describe('DirectPlayView', () => {
         game_rules: settings.game_rules,
         stake_amounts: [100, 500],
         friend_game_fee: 250,
+        ai_game_fee: 50,
         head_to_head_fee_percent: 5,
         tournament_fee_percent: 10,
         coin_grant_enabled: true,
@@ -238,10 +240,10 @@ describe('DirectPlayView', () => {
     const wrapper = view()
     await flushPromises()
 
-    const inputs = wrapper.findAllComponents(InputNumber)
-    expect(inputs[3]!.props('min')).toBe(8)
-    expect(inputs[3]!.props('max')).toBe(10)
-    inputs[3]!.vm.$emit('update:modelValue', 7)
+    const input = wrapper.findAllComponents(InputNumber).find(input => input.props('max') === 10)!
+    expect(input.props('min')).toBe(8)
+    expect(input.props('max')).toBe(10)
+    input.vm.$emit('update:modelValue', 7)
     await wrapper.get('form').trigger('submit.prevent')
 
     expect(api).not.toHaveBeenCalledWith('/api/admin/direct-play/settings', expect.objectContaining({ method: 'PUT' }))

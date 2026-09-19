@@ -105,7 +105,7 @@ class DirectPlaySettingsAdmin(admin.ModelAdmin):
         ('Availability', {'fields': ('enabled',)}),
         ('Format profiles', {'fields': ('format_profiles',)}),
         ('Legacy play with a friend', {
-            'fields': ('friend_game_fee',),
+            'fields': ('friend_game_fee', 'ai_game_fee'),
             'description': 'Fixed fee charged to each player for the entire game, regardless of target points. No percentage or winner prize applies.',
         }),
         ('Platform fees', {'fields': ('head_to_head_fee_percent', 'tournament_fee_percent', 'stake_amounts')}),

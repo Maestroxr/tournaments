@@ -536,6 +536,8 @@ export const messages = {
       enabled: 'Head-to-head games enabled',
       enabledHint: 'Turn off new table creation without affecting completed games.',
       friendGameFee: 'Fixed friend game fee',
+      aiGameFee: 'Open Sage match price (6B)',
+      aiGameFeeHint: 'One fee for the entire AI match, regardless of match length. Set 0 for free play.',
       friendGameFeeHint:
         'Each player pays this fixed fee for any match length. The winner receives no prize.',
       matchFee: 'Public Match Play fee',
@@ -1746,6 +1748,8 @@ export const messages = {
       enabled: 'משחקי ראש־בראש פעילים',
       enabledHint: 'אפשר לכבות פתיחת שולחנות חדשים בלי להשפיע על משחקים שהסתיימו.',
       friendGameFee: 'דמי משחק קבועים מול חבר',
+      aiGameFee: 'מחיר מפגש מול Open Sage (6B)',
+      aiGameFeeHint: 'תשלום אחד לכל המפגש מול המחשב, בכל מספר נקודות. 0 למשחק חינם.',
       friendGameFeeHint: 'כל שחקן משלם את הסכום הקבוע בכל אורך משחק. המנצח לא מקבל פרס.',
       matchFee: 'עמלת Match Play ציבורי',
       matchFeeHint: 'האחוז שהמערכת משאירה מקופת משחק ראש־בראש ציבורי.',

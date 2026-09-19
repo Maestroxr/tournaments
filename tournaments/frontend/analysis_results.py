@@ -10,7 +10,7 @@ from django.db.models import Q
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 
-from gamelink.models import GameLink
+from gamelink.models import GameLink, PracticePurchase
 from tournaments.models import HeadToHeadTable
 
 
@@ -19,6 +19,8 @@ def allowed_rooms(user):
                 .exclude(external_room_id="").values_list("external_room_id", flat=True))
     rooms.update(GameLink.objects.filter(Q(fixture__player1__user=user) | Q(fixture__player2__user=user))
                  .exclude(external_room_id="").values_list("external_room_id", flat=True))
+    rooms.update(str(room) for room in PracticePurchase.objects.filter(
+        user=user, room_id__isnull=False).values_list("room_id", flat=True))
     return rooms
 
 

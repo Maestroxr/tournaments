@@ -1,26 +1,31 @@
-# Direct game formats
+# Direct game formats and financial contract
 
-New clients send `game_format: "match" | "money"` separately from `mode: "match" | "friend"`; quick matchmaking has its own endpoint. Configuration lives in the admin Games → Formats and rules screen, or `DirectPlaySettings.format_profiles` in Django admin.
+Reviewed against local code: 2026-09-19. Configuration comes from DirectPlaySettings.format_profiles. This document describes code, not active database values or a production rollout.
 
-Each format controls stakes, access methods, clocks, cube availability and limit, fee percentage, and point targets (match only). Money games have Jacoby and a loss-limit multiplier; they always settle after one game. Crawford is mandatory for the new match format, including no cube in a one-point match.
+## Creation and access
 
-The fee is a percentage of the actual amount transferred by the loser, deducted from the winner's profit. Match transfer is the fixed stake. Money transfer is `min(stake × cube × win multiplier, stake × loss-limit multiplier)`. Jacoby removes the gammon/backgammon multiplier before the first accepted double. A declined double uses the current, unaccepted cube value. For unilateral exits/timeouts, the game server derives the win multiplier from the current board (one if the loser has borne off, otherwise two or three for a checker on the bar/in the winner's home). This rule is displayed to players.
+New clients must send game_format=match|money. mode=match|friend determines public/private access. quick-match uses money; public tables, friend tables and match-search use match. quote() in tournaments/frontend/game_formats.py enforces this mapping, validates profile switches and allowed stakes/options, and chooses server-owned money-game defaults. Omitting game_format no longer creates a new legacy table. Existing legacy tables retain their compatibility paths.
 
-Creation reserves the host's maximum liability with a wallet debit; joining reserves the guest's liability. The winner receives their reservation back plus the transfer less the fee. The loser receives unused reservation back. Cancellation returns reservations. Quick search holds the largest selected liability until settlement/cancellation; matching selects the smallest shared stake and requires identical rule snapshots and format. Players can cancel waiting searches to release the hold.
+Profiles control access, clocks, point targets, cube options and fees. New match contracts require Crawford; a one-point match cannot use the cube. Money games settle after one game. Rule snapshots travel to the game server in signed tickets.
 
-Table snapshots are immutable and carried to the game engine by signed tickets. Results are server-derived and returned through the existing authenticated callback. Missing or invalid money results are rejected without releasing funds; duplicate callbacks do not pay twice. Disabling a profile/access blocks creation and joining, while already funded games retain their contract.
+## Dynamic exposure and reservation
 
-Older clients omitting `game_format` retain the existing fixed-stake/fee-only paths and are managed by the labelled Legacy settings. They cannot bypass the match format's enabled/access switches. Existing tables migrate to `legacy` and retain their settlement semantics.
+calculate_dynamic_params(balance, stake, profile, mars_enabled, is_quick) calculates affordability, allowed_doubles, max_cube and max_exposure. In the quick/money branch it uses the balance, stake and a Mars factor of 2 when enabled (1 otherwise); it does not apply the old fixed loss-limit/profile cube cap. The non-quick branch keeps configured limits. If no balance is supplied, the legacy helper fallback still uses loss_limit_multiplier.
 
-## Local rollout
+required_reserve(table) prioritizes dynamic_reserve_multiplier, then reserve_multiplier, then the legacy format fallback. Matching can reduce the contract to shared exposure and release excess held funds. Do not recalculate an existing game's contract using today's profile. Creation reserves funds; joining reserves the other player's liability. Waiting search cancellation releases the reservation.
 
-Migration `0023_game_formats` adds profiles and immutable table contracts and has been applied to the local database. Deploy the tournaments backend, player/admin frontends, and the separate game backend/frontend together; apply migrations before serving the new UI. No production deployment was performed.
+## Settlement
 
-Useful automated checks:
+For match, transfer is the agreed fixed stake. For money, transfer is min(required_reserve(table), stake × final cube × win multiplier). Win multipliers are single=1, gammon=2, backgammon=3; Jacoby reduces the multiplier to 1 when the cube is 1. The fee is calculated on the actual transfer and deducted from the winner's profit. The winner's own reserve and the loser's unused reserve are returned. Cancellation returns held reserves.
 
-* Tournaments: `manage.py test frontend.test_game_formats frontend.test_head_to_head`.
-* Engine: `manage.py test game.test_formats game.link.tests`; general engine suite also requires the Elixir dice service.
-* Player: `vitest run src/views/__tests__/HeadToHeadView.test.ts --environment jsdom`.
-* Admin: `vitest run src/pages/DirectPlayView.spec.ts src/components/AppTabs.spec.ts`.
+Only the authenticated game result can settle a linked table. The code validates room, status, winner, funding and financial result before writes. Duplicate delivery must not pay twice. Server adjudication determines forfeits/timeouts; client labels are not financial authority.
 
-Use test-only environment configuration for Django checks, never production signing secrets. Browser verification of the admin settings requires an authenticated staff session.
+## Current contract gap
+
+The quick calculation can return max_cube above 64 (its loop permits values up to 2^20), but settle() accepts only 1,2,4,8,16,32,64, even when dynamic_max_cube is larger. Align calculation, signed contract, game enforcement and settlement before treating every calculated double as supported. This is a static-code finding, not a newly executed financial test.
+
+## Related code and checks
+
+[Calculations and settlement](tournaments/frontend/game_formats.py), [API and serialization](tournaments/frontend/api.py), [models](tournaments/tournaments/models.py), [player flows](../GAME_MODES_AND_RULES.he.md), [rating](docs/RATING_POLICY.he.md).
+
+Relevant existing suites include frontend.test_game_formats, frontend.test_head_to_head, tournaments.test_ratings, gamelink.test_ratings, game.tests.integration.test_formats and game.link.tests, plus HeadToHeadView and DirectPlayView frontend tests. Apply all pending migrations in both services for the version being deployed. Old statements about a specific migration already being applied are historical, not an inspection of the current database.

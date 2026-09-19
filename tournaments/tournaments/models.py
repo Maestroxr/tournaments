@@ -633,6 +633,7 @@ class DirectPlaySettings(models.Model):
     game_rules = models.JSONField(default=default_game_rules, validators=[validate_game_rules])
     format_profiles = models.JSONField(default=default_format_profiles, validators=[validate_format_profiles])
     friend_game_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
+    ai_game_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
     head_to_head_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
     tournament_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
     coin_grant_enabled = models.BooleanField(default=True)
@@ -645,6 +646,7 @@ class DirectPlaySettings(models.Model):
         verbose_name_plural = "Direct play settings"
         constraints = [
             CheckConstraint(check=Q(friend_game_fee__gt=0), name="direct_play_friend_game_fee_positive"),
+            CheckConstraint(check=Q(ai_game_fee__gte=0), name="ai_game_fee_nonnegative"),
             CheckConstraint(check=Q(head_to_head_fee_percent__gte=0, head_to_head_fee_percent__lte=100), name="direct_play_fee_percent_range"),
             CheckConstraint(check=Q(tournament_fee_percent__gte=8, tournament_fee_percent__lte=10), name="tournament_fee_percent_range"),
             CheckConstraint(check=Q(coin_grant_amount__gt=0), name="coin_grant_amount_positive"),
@@ -747,8 +749,10 @@ class WalletTransaction(models.Model):
     KIND_HEAD_TO_HEAD_REFUND = "head_to_head_refund"
     KIND_HEAD_TO_HEAD_PRIZE = "head_to_head_prize"
     KIND_RECURRING_BONUS = "recurring_bonus"
+    KIND_AI_GAME_FEE = "ai_game_fee"
 
     KIND_CHOICES = [
+        (KIND_AI_GAME_FEE, "AI match fee"),
         (KIND_DEPOSIT, "Deposit"),
         (KIND_WITHDRAWAL, "Withdrawal"),
         (KIND_TOURNAMENT_ENTRY, "Tournament entry"),

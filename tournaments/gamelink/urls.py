@@ -11,6 +11,7 @@ from . import views
 from .practice import StartPracticeView
 
 urlpatterns = [
+    path('api/practice/', StartPracticeView.as_view(), name='practice-api'),
     path('t/practice/play', StartPracticeView.as_view(), name='gamelink-practice'),
     path('t/fixture/<int:pk>/play', views.StartGameView.as_view(), name='gamelink-start'),
     path('t/tournament/<int:pk>/play', views.StartTournamentGameView.as_view(),

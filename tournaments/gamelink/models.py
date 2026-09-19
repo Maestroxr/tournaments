@@ -3,6 +3,19 @@ import uuid
 from django.db import models
 
 
+class PracticePurchase(models.Model):
+    """Idempotent match purchase; payment is settled only after room preparation."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey('auth.User', on_delete=models.PROTECT)
+    options = models.JSONField(default=dict)
+    fee = models.DecimalField(max_digits=10, decimal_places=2)
+    room_id = models.UUIDField(null=True, blank=True)
+    paid = models.BooleanField(default=False)
+    wallet_entry = models.OneToOneField('tournaments.WalletTransaction', null=True,
+        blank=True, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class LinkedAccount(models.Model):
     """
     Stable, opaque identity of a tournaments user, as seen by the game server.

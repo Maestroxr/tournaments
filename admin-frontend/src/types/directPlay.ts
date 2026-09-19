@@ -25,6 +25,7 @@ export interface DirectPlaySettings {
   stake_amounts?: number[]
   enabled: boolean
   friend_game_fee: string
+  ai_game_fee: string
   head_to_head_fee_percent: string
   tournament_fee_percent: string
   coin_grant_enabled: boolean

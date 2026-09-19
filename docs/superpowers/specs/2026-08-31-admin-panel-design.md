@@ -1,5 +1,9 @@
 # Admin Panel Design — 2026-08-31
 
+> **עדכון תיעוד 19.09.2026 — מסמך היסטורי/בדיקה מתוארכת.** למוצר יש כעת ממשק Vue נפרד ב־admin-frontend תחת /tournaments-admin/, לצד נתיבי Django הישנים. הרשמה ציבורית, אימות דוא״ל ו־Google קיימים; ההצעה להשבית הרשמה והפרדה ל־HTML בלבד אינה תיאור המצב הנוכחי.
+>
+> [מצב המערכת](<../../../../CURRENT_STATE.he.md>) · [תיעוד העיצוב](<../../../../docs/UI_DESIGN.he.md>). לא הורצו בדיקות חדשות במסגרת עדכון זה.
+
 ## Context
 - Existing app: `tournaments` (Django 4.2) with `frontend` (server-rendered Bootstrap 4) + `api.py` (JSON API for separate Vite/Vue user frontend at `/api/`).
 - User wants to convert current `frontend` templates/views from public tournament UI to staff-only admin panel. Admin must create tournaments and manage users (full CRUD). Vue app remains user-facing via API.

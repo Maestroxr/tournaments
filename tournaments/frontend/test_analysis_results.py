@@ -1,8 +1,24 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
-from django.test import SimpleTestCase, RequestFactory
+from django.test import SimpleTestCase, RequestFactory, TestCase
 from .analysis_results import analysis_results
+
+
+class PracticeAnalysisOwnershipTests(TestCase):
+    def test_only_own_prepared_ai_rooms_are_visible(self):
+        import uuid
+        from django.contrib.auth import get_user_model
+        from gamelink.models import PracticePurchase
+        from .analysis_results import allowed_rooms
+        owner = get_user_model().objects.create_user(username='ai-analysis-owner')
+        other = get_user_model().objects.create_user(username='ai-analysis-other')
+        room_id = uuid.uuid4()
+        PracticePurchase.objects.create(user=owner, room_id=room_id, options={}, fee=50, paid=True)
+        PracticePurchase.objects.create(user=owner, options={}, fee=50)
+        self.assertIn(str(room_id), allowed_rooms(owner))
+        self.assertNotIn(str(room_id), allowed_rooms(other))
+        self.assertNotIn('None', allowed_rooms(owner))
 
 
 class AnalysisResultsTests(SimpleTestCase):
