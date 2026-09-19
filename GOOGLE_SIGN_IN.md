@@ -8,16 +8,16 @@ The tournament login and signup pages use Google Identity Services. The backend 
 2. Add the exact frontend origins to **Authorized JavaScript origins**, for example `http://localhost:5175` and `http://127.0.0.1:5175` for local development, and the real HTTPS production origin. Include the port, but no `/tournaments` path. Prefer localhost for local Google testing.
 3. Put the public client ID in the backend environment: `GOOGLE_CLIENT_ID=...apps.googleusercontent.com`. Restart the backend. The frontend fetches this public configuration from the server; no separate frontend environment variable is needed.
 4. Install updated backend requirements and run `python manage.py migrate` from `tournaments/` using the backend virtual environment.
-5. Test a new Google account, complete username, phone and a password, sign out, then sign in again. Test both login and signup pages and the production domain before release.
+5. Test a new Google account: the profile should be created and signed in without another form. Sign out, then sign in again. Test both login and signup pages and the production domain before release.
 
 The button stays hidden when `GOOGLE_CLIENT_ID` is empty. The official Google-rendered dark button appears when enabled. A cancelled Google chooser leaves the normal form available. If CSP is set at the reverse proxy, allow Google's GIS script, frames and connections following the linked setup guide. A restrictive Cross-Origin-Opener-Policy may need `same-origin-allow-popups` for popup-based browsers.
 
 ## Account behavior
 
-- A new Google identity completes username, phone and a single password field before any user account is created. The password uses the normal Django validators and is hashed, allowing password login as well as Google sign-in.
+- A new Google identity automatically creates an account with the email and available given/family names. A unique alphanumeric username is generated. Phone remains blank and no local password is created; authentication uses Google. The completion endpoint remains compatible with pending signup sessions started before this change.
 - Google `sub`, not email, identifies returning users. Disabled users remain blocked.
 - Existing email accounts are never silently linked. The user is directed to their existing password/reset flow. Explicit account linking is not included.
-- Gmail and verified Workspace email addresses are accepted as verified. Other email addresses receive the site's normal verification email before the account becomes active.
+- Every new Google account signs in immediately after Google token verification, including accounts with external email addresses. No additional verification email is sent. Only Gmail and verified Workspace addresses are recorded as independently verified email addresses; external addresses remain unverified for email-based account operations.
 - Pending signup data expires after ten minutes. Google ID tokens are neither stored nor logged.
 
 ## Validation

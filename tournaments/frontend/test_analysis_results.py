@@ -6,6 +6,24 @@ from .analysis_results import analysis_results
 
 
 class AnalysisResultsTests(SimpleTestCase):
+    @patch('frontend.analysis_results.allowed_rooms', return_value={'mine'})
+    @patch('frontend.analysis_results.read_results')
+    def test_reanalysis_checks_ownership_before_posting(self, read, rooms):
+        request = RequestFactory().post('/api/analyses/id', {'eval_level': '2ply'}, content_type='application/json')
+        request.user = SimpleNamespace(is_authenticated=True, is_staff=False)
+        read.return_value = {'room_id': 'other'}
+        self.assertEqual(analysis_results(request, 'id').status_code, 404)
+        read.assert_called_once_with('id/')
+
+    @patch('frontend.analysis_results.allowed_rooms', return_value={'mine'})
+    @patch('frontend.analysis_results.read_results')
+    def test_reanalysis_forwards_validated_depth(self, read, rooms):
+        request = RequestFactory().post('/api/analyses/id', {'eval_level': '2ply'}, content_type='application/json')
+        request.user = SimpleNamespace(is_authenticated=True, is_staff=False)
+        read.side_effect = [{'room_id': 'mine'}, {'status': 'pending', 'eval_level': '2ply'}]
+        self.assertEqual(analysis_results(request, 'id').status_code, 202)
+        read.assert_called_with('id/', payload={'eval_level': '2ply'})
+
     def setUp(self):
         self.request = RequestFactory().get('/api/analyses')
         self.request.user = SimpleNamespace(is_authenticated=True, is_staff=False)

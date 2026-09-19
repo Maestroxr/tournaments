@@ -8,8 +8,10 @@ under a shared one.
 from django.urls import path
 
 from . import views
+from .practice import StartPracticeView
 
 urlpatterns = [
+    path('t/practice/play', StartPracticeView.as_view(), name='gamelink-practice'),
     path('t/fixture/<int:pk>/play', views.StartGameView.as_view(), name='gamelink-start'),
     path('t/tournament/<int:pk>/play', views.StartTournamentGameView.as_view(),
          name='gamelink-tournament-start'),

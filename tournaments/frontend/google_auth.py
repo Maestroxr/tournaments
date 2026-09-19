@@ -2,6 +2,7 @@
 import secrets
 import time
 import logging
+import re
 
 from django import forms
 from django.conf import settings
@@ -14,7 +15,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 
-from .accounts import body, send_link
+from .accounts import body
 from .forms import require_phone_number, validate_admin_username
 from .models import AccountEmail, GoogleIdentity
 
@@ -100,8 +101,36 @@ def authenticate(request):
     if AccountEmail.objects.filter(email__iexact=email).exists() or User.objects.filter(email__iexact=email).exists():
         return failure('existing_account', 409)
     authoritative = email.endswith('@gmail.com') or bool(claims.get('hd'))
-    request.session['google_pending'] = {'subject': subject, 'email': email, 'verified': authoritative, 'issued': time.time()}
-    return JsonResponse({'status': 'profile_required', 'email': email})
+    # Google supplies identity and names, but no phone number or local password.
+    given_name = claims.get('given_name')
+    family_name = claims.get('family_name')
+    given_name = given_name.strip()[:150] if isinstance(given_name, str) else ''
+    family_name = family_name.strip()[:150] if isinstance(family_name, str) else ''
+    base = re.sub(r'[^A-Za-z0-9]', '', given_name)[:120] or 'Player'
+    base = base[:1].upper() + base[1:]
+    try:
+        with transaction.atomic():
+            username = base
+            while User.objects.filter(username__iexact=username).exists():
+                username = base + secrets.token_hex(5)
+            user = User(username=username, email=email, first_name=given_name,
+                        last_name=family_name, is_active=True)
+            user.set_unusable_password()
+            user.save()
+            account = AccountEmail.objects.create(
+                user=user, email=email,
+                verified_at=timezone.now() if authoritative else None,
+            )
+            GoogleIdentity.objects.create(user=user, subject=subject)
+            from tournaments.models import UserContact
+            UserContact.objects.create(user=user, phone_number='')
+    except IntegrityError:
+        # A simultaneous signup must never leave an orphan user behind.
+        identity = GoogleIdentity.objects.select_related('user').filter(subject=subject).first()
+        if identity:
+            return sign_in(request, identity.user)
+        return failure('existing_account', 409)
+    return sign_in(request, user)
 
 
 class ProfileForm(forms.ModelForm):
@@ -153,7 +182,7 @@ def complete(request):
                 return failure('existing_account', 409)
             user = form.save(commit=False)
             user.email = pending['email']
-            user.is_active = pending['verified']
+            user.is_active = True
             user.set_password(form.cleaned_data['password'])
             user.save()
             account = AccountEmail.objects.create(user=user, email=user.email, verified_at=timezone.now() if pending['verified'] else None)
@@ -163,7 +192,4 @@ def complete(request):
     except IntegrityError:
         return failure('existing_account', 409)
     request.session.pop('google_pending', None)
-    if not user.is_active:
-        send_link(account, 'verify')
-        return JsonResponse({'status': 'verification_required'})
     return sign_in(request, user)

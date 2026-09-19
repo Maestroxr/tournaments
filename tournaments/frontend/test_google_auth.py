@@ -50,24 +50,42 @@ class GoogleAuthTests(TestCase):
     def complete(self, **data):
         return self.post('/complete', {'username': 'player', 'phone_number': '050-123-4567', 'password': 'River!Board942', **data})
 
-    def test_new_account_requires_profile_then_creates_verified_account_with_password(self):
-        response = self.authenticate()
-        self.assertEqual(response.json()['status'], 'profile_required')
-        self.assertFalse(User.objects.exists())
-        self.assertEqual(self.complete().json()['status'], 'authenticated')
-        user = User.objects.get(username='Player')
-        self.assertTrue(user.check_password('River!Board942'))
+    def legacy_pending(self):
+        import time
+        session = self.client.session
+        session['google_pending'] = {'subject': 'google-subject-1', 'email': 'player@gmail.com', 'verified': True, 'issued': time.time()}
+        session.save()
+
+    def test_new_account_is_created_and_signed_in_without_profile(self):
+        response = self.authenticate(given_name='David', family_name='Cohen')
+        self.assertEqual(response.json()['status'], 'authenticated')
+        user = User.objects.get(username='David')
+        self.assertEqual(user.first_name, 'David')
+        self.assertEqual(user.last_name, 'Cohen')
+        self.assertEqual(user.email, 'player@gmail.com')
+        self.assertFalse(user.has_usable_password())
         self.assertTrue(user.is_active)
         self.assertIsNotNone(user.account_email.verified_at)
         self.assertEqual(user.google_identity.subject, 'google-subject-1')
-        self.assertEqual(UserContact.objects.get(user=user).phone_number, '050-123-4567')
+        self.assertEqual(UserContact.objects.get(user=user).phone_number, '')
         self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
         self.assertEqual(self.complete().status_code, 400)
-        self.client.logout()
-        self.assertTrue(self.client.login(username='Player', password='River!Board942'))
+        self.assertNotIn('google_pending', self.client.session)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_generated_username_handles_collision_and_non_latin_names(self):
+        User.objects.create_user('player', email='other@example.com')
+        self.assertEqual(self.authenticate(given_name='דוד').json()['status'], 'authenticated')
+        user = GoogleIdentity.objects.get().user
+        self.assertRegex(user.username, r'^Player[0-9a-f]+$')
+        self.assertEqual(user.first_name, 'דוד')
+
+    def test_workspace_account_enters_immediately(self):
+        self.assertEqual(self.authenticate(email='player@company.com', hd='company.com').json()['status'], 'authenticated')
+        self.assertTrue(User.objects.get().is_active)
 
     def test_password_is_required_and_validated_before_account_creation(self):
-        self.authenticate()
+        self.legacy_pending()
         for password in ['', 'short', '123456789', 'password', 'player@gmail.com']:
             with self.subTest(password=password):
                 response = self.complete(password=password)
@@ -81,14 +99,12 @@ class GoogleAuthTests(TestCase):
 
     def test_returning_user_is_identified_by_subject_even_when_email_changes(self):
         self.authenticate()
-        self.complete()
         self.client.logout()
         self.assertEqual(self.authenticate(email='changed@gmail.com').json()['status'], 'authenticated')
         self.assertEqual(User.objects.count(), 1)
 
     def test_inactive_user_cannot_sign_in(self):
         self.authenticate()
-        self.complete()
         User.objects.update(is_active=False)
         self.client.logout()
         self.assertEqual(self.authenticate().status_code, 403)
@@ -133,16 +149,16 @@ class GoogleAuthTests(TestCase):
     def test_unverified_email_rejected(self):
         self.assertEqual(self.authenticate(email_verified=False).status_code, 401)
 
-    def test_non_google_email_needs_email_verification(self):
-        self.authenticate(email='player@example.com')
-        self.assertEqual(self.complete().json()['status'], 'verification_required')
-        self.assertFalse(User.objects.get().is_active)
+    def test_non_google_email_enters_without_additional_email_verification(self):
+        self.assertEqual(self.authenticate(email='player@example.com').json()['status'], 'authenticated')
+        self.assertTrue(User.objects.get().is_active)
         self.assertIsNone(AccountEmail.objects.get().verified_at)
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertNotIn('_auth_user_id', self.client.session)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertIn('_auth_user_id', self.client.session)
+        self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
 
     def test_profile_validation_and_expiry(self):
-        self.authenticate()
+        self.legacy_pending()
         self.assertEqual(self.complete(username='CקרGםד').status_code, 400)
         self.assertEqual(self.complete(phone_number='').status_code, 400)
         self.assertEqual(self.complete(username='').status_code, 400)
@@ -155,7 +171,7 @@ class GoogleAuthTests(TestCase):
         self.assertEqual(self.complete().json()['code'], 'expired')
 
     def test_identity_and_email_races_do_not_create_orphan_users(self):
-        self.authenticate()
+        self.legacy_pending()
         other = User.objects.create_user('other', email='other@gmail.com')
         GoogleIdentity.objects.create(user=other, subject='google-subject-1')
         self.assertEqual(self.complete().status_code, 409)
