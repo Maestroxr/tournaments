@@ -45,8 +45,13 @@ class StartDirectPlayView(LoginRequiredMixin, View):
 
     http_method_names = ['post']
 
-    @transaction.atomic
     def post(self, request, code):
+        from frontend.entry_lifecycle import expire_unstarted_tables
+        expire_unstarted_tables(user_id=request.user.pk)
+        with transaction.atomic():
+            return self._start(request, code)
+
+    def _start(self, request, code):
         if not settings.GAMELINK_ENABLED:
             return HttpResponse(status=412)
         base_url = getattr(settings, 'GAMELINK_BACKGAMMON_URL', '').rstrip('/')
@@ -71,6 +76,9 @@ class StartDirectPlayView(LoginRequiredMixin, View):
         if request.user.id == table.host_id:
             from frontend.push import queue_host_entered_push
             queue_host_entered_push(table)
+        else:
+            from frontend.push import queue_guest_entered_push
+            queue_guest_entered_push(table)
         response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
         response['Referrer-Policy'] = 'no-referrer'
         response['Cache-Control'] = 'no-store'

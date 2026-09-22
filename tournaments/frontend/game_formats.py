@@ -226,8 +226,15 @@ def create_or_match(request, *, quick=False, match_search=False):
         # cleanup locks while acquiring a different pair can invert wallet order.
         from .search_lifecycle import reconcile_searches_locked
         reconcile_searches_locked()
+        from .entry_lifecycle import expire_unstarted_tables, active_table
+        expire_unstarted_tables(user_id=request.user.pk)
         with transaction.atomic():
             settings = DirectPlaySettings.objects.select_for_update().get(pk=1)
+            existing = active_table(request.user.pk)
+            if existing:
+                return JsonResponse({'code': 'active_game_exists',
+                    'detail': 'יש לך כבר משחק פעיל. יש לחזור אליו או לסגור אותו לפני פתיחת משחק נוסף.',
+                    'active_table': _serialize_head_to_head(existing)}, status=409)
             name, profile, stakes, points, clock, doubling = quote(settings, data, quick, match_search)
             fields = dict(game_format=name, rules_snapshot=profile, target_points=points,
                           time_control=clock, doubling_enabled=doubling, is_quick_match=quick)
@@ -245,6 +252,8 @@ def create_or_match(request, *, quick=False, match_search=False):
                     if not common or not _snapshot_eq(candidate.rules_snapshot, profile):
                         continue
                     list(User.objects.select_for_update().filter(pk__in=sorted((candidate.host_id, request.user.pk))).order_by('pk'))
+                    if active_table(request.user.pk) or active_table(candidate.host_id, exclude=candidate.pk):
+                        continue
                     guest_balance = money(WalletTransaction.balance_for_user(request.user))
                     # Dynamic check: minimum exposure
                     affordable_common = []
@@ -309,6 +318,8 @@ def create_or_match(request, *, quick=False, match_search=False):
                     queue_guest_joined_push(candidate)
                     return JsonResponse({**_serialize_head_to_head(candidate), 'matched': True})
             User.objects.select_for_update().get(pk=request.user.pk)
+            if active_table(request.user.pk):
+                return JsonResponse({'code': 'active_game_exists', 'detail': 'יש לך כבר משחק פעיל.'}, status=409)
             guest_balance = money(WalletTransaction.balance_for_user(request.user))
             # For money, use dynamic params for max stake
             if name == 'money':
@@ -380,6 +391,9 @@ def join_table(table, user, settings):
     if not settings.enabled or not profile['enabled'] or not profile[access]:
         raise ValidationError('This game format or access method is disabled.')
     list(User.objects.select_for_update().filter(pk__in=sorted((table.host_id, user.pk))).order_by('pk'))
+    from .entry_lifecycle import active_table
+    if active_table(user.pk, exclude=table.pk) or active_table(table.host_id, exclude=table.pk):
+        raise ValidationError('לאחד השחקנים כבר יש משחק פעיל.')
     required = required_reserve(table)
     if held(table, table.host) < required:
         raise ValidationError('The host reservation is missing.')

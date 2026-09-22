@@ -126,6 +126,7 @@ def issue_direct_play_ticket(user, table, seat):
         'sub': LinkedAccount.external_id_for(user), 'name': user.username,
         # Negative fixture ids occupy a disjoint namespace on the game server.
         'trn': 0, 'fix': -table.pk, 'seat': seat,
+        'entry_deadline': int(table.created_at.timestamp()) + 600,
         'opp': opponent.username if opponent else '', 'tp': table.target_points,
         'dbl': table.doubling_enabled, 'tc': table.time_control,
         **format_claims,

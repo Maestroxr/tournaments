@@ -793,6 +793,8 @@ def api_head_to_head_tables(request):
     if request.method == "GET":
         from .search_lifecycle import reconcile_searches_locked
         reconcile_searches_locked(host_id=request.user.pk)
+        from .entry_lifecycle import expire_unstarted_tables
+        expire_unstarted_tables(user_id=request.user.pk)
         settings_row.refresh_from_db()
         tables = models.HeadToHeadTable.objects.filter(
             mode=models.HeadToHeadTable.MODE_MATCH,
@@ -907,10 +909,13 @@ def api_head_to_head_join(request, code):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
     settings_row = models.DirectPlaySettings.load()
+    from .entry_lifecycle import expire_unstarted_tables
+    expire_unstarted_tables(user_id=request.user.pk)
     if not settings_row.enabled:
         return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
     try:
         with transaction.atomic():
+            settings_row = models.DirectPlaySettings.objects.select_for_update().get(pk=1)
             table = models.HeadToHeadTable.objects.select_for_update().select_related('host').get(code=code.upper())
             if table.game_format == 'legacy' and not settings_row.mode_enabled('quick' if table.is_quick_match else table.mode):
                 return JsonResponse({"detail": "This game mode is currently disabled."}, status=412)
@@ -923,6 +928,9 @@ def api_head_to_head_join(request, code):
                 return JsonResponse({"detail": "This table is no longer available."}, status=409)
             if table.game_format == 'money' or (table.game_format == 'legacy' and table.is_quick_match):
                 return JsonResponse({"detail": "Quick Match tables can only be joined through matchmaking."}, status=409)
+            from .entry_lifecycle import active_table
+            if active_table(request.user.pk, exclude=table.pk):
+                return JsonResponse({'code': 'active_game_exists', 'detail': 'יש לך כבר משחק פעיל.'}, status=409)
             if table.host_id == request.user.id:
                 return JsonResponse({"detail": "You cannot join your own table."}, status=400)
             if table.game_format != 'legacy':
@@ -934,6 +942,8 @@ def api_head_to_head_join(request, code):
                 return JsonResponse(_serialize_head_to_head(table))
             # Lock both balances in a stable order before charging either player.
             list(User.objects.select_for_update().filter(pk__in=sorted([table.host_id, request.user.id])).order_by('pk'))
+            if active_table(request.user.pk, exclude=table.pk) or active_table(table.host_id, exclude=table.pk):
+                return JsonResponse({'code': 'active_game_exists', 'detail': 'לאחד השחקנים כבר יש משחק פעיל.'}, status=409)
             charge = table.fee_per_player if table.is_friend_game else table.amount
             kind = models.WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else models.WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
             guest_balance = models.WalletTransaction.balance_for_user(request.user)

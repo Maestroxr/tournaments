@@ -46,6 +46,8 @@ def purge_expired(nonce_retention = None, now = None):
     safe is worse than one that does not happen.
     """
     now = now or timezone.now()
+    from frontend.entry_lifecycle import expire_unstarted_tables
+    expire_unstarted_tables()
     nonce_retention = nonce_retention if nonce_retention is not None else DEFAULT_NONCE_RETENTION
 
     minimum = minimum_nonce_retention()

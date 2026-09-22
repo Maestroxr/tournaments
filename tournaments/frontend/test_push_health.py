@@ -54,6 +54,17 @@ class PushHealthTests(TestCase):
         heartbeat()
         self.assertEqual(self.health().json()['issues'], [])
 
+    def test_player_config_reports_delivery_availability_without_private_keys(self):
+        response = self.client.get('/api/push/config')
+        self.assertTrue(response.json()['enabled'])
+        self.assertFalse(response.json()['deliveryAvailable'])
+        self.assertEqual(response['Cache-Control'], 'private, no-store')
+        self.assertNotContains(response, 'private-test')
+        heartbeat()
+        self.assertTrue(self.client.get('/api/push/config').json()['deliveryAvailable'])
+        PushWorkerStatus.objects.update(expected_by=timezone.now() - timedelta(seconds=1))
+        self.assertFalse(self.client.get('/api/push/config').json()['deliveryAvailable'])
+
     def test_worker_command_records_heartbeat_without_sending(self):
         with patch('frontend.management.commands.run_push_notifications.discover_ready_matches', return_value=0), \
                 patch('frontend.management.commands.run_push_notifications.find_spec', return_value=object()):

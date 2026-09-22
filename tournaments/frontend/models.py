@@ -44,7 +44,9 @@ class PushDelivery(models.Model):
 class TablePushDelivery(models.Model):
     KIND_GUEST_JOINED = 'guest_joined'
     KIND_HOST_ENTERED = 'host_entered'
-    KIND_CHOICES = [(KIND_GUEST_JOINED, 'Guest joined'), (KIND_HOST_ENTERED, 'Host entered')]
+    KIND_GUEST_ENTERED = 'guest_entered'
+    KIND_CHOICES = [(KIND_GUEST_JOINED, 'Guest joined'), (KIND_HOST_ENTERED, 'Host entered'),
+                    (KIND_GUEST_ENTERED, 'Guest entered')]
 
     subscription = models.ForeignKey(PushSubscription, on_delete=models.CASCADE)
     table = models.ForeignKey('tournaments.HeadToHeadTable', on_delete=models.CASCADE)

@@ -1,0 +1,20 @@
+[Unit]
+Description=Deliver backgammon match notifications
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=backgammon
+WorkingDirectory=/srv/backgammon/backgammon-tournaments-backend/tournaments
+# Use the same environment (database, game link and VAPID keys) as the web server.
+EnvironmentFile=/etc/backgammon/tournaments.env
+ExecStart=/srv/backgammon/backgammon-tournaments-backend/.venv/bin/python manage.py run_push_notifications --interval 5
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

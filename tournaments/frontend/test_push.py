@@ -35,6 +35,17 @@ class PushTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return PushSubscription.objects.get(user=self.user)
 
+    def test_switching_account_clears_both_notification_queues(self):
+        device = self.subscribe()
+        table = self.ready_table()
+        PushDelivery.objects.create(subscription=device, fixture=self.fixture, next_attempt_at=timezone.now())
+        TablePushDelivery.objects.create(subscription=device, table=table, kind='guest_joined', next_attempt_at=timezone.now())
+        self.client.force_login(self.other)
+        response = self.client.post('/api/push/subscription', self.info, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PushDelivery.objects.filter(subscription=device).exists())
+        self.assertFalse(TablePushDelivery.objects.filter(subscription=device).exists())
+
     def ready_table(self):
         return HeadToHeadTable.objects.create(
             code='PUSH01',
@@ -152,6 +163,39 @@ class PushTests(TestCase):
         table.save(update_fields=['status'])
         self.assertEqual(deliver_pending(), 0)
         self.assertIsNotNone(TablePushDelivery.objects.get().discarded_at)
+
+    @override_settings(GAMELINK_BACKGAMMON_URL='https://game.example.com')
+    @patch('gamelink.views.issue_direct_play_ticket', return_value=('test-ticket', None))
+    @patch('frontend.push.send_notification')
+    def test_guest_opening_game_notifies_host_once(self, send, ticket):
+        table = self.ready_table()
+        device = self.subscribe()
+        self.client.force_login(self.other)
+        for _ in range(2):
+            response = self.client.post(f'/t/head-to-head/{table.code}/play')
+            self.assertEqual(response.status_code, 302)
+        delivery = TablePushDelivery.objects.get()
+        self.assertEqual(delivery.subscription_id, device.pk)
+        self.assertEqual(delivery.kind, TablePushDelivery.KIND_GUEST_ENTERED)
+        self.assertEqual(deliver_pending(), 1)
+        self.assertEqual(deliver_pending(), 0)
+        self.assertEqual(send.call_args.args[1]['tag'], f'table-guest-entered:{table.pk}')
+
+    @override_settings(GAMELINK_BACKGAMMON_URL='https://game.example.com')
+    @patch('gamelink.views.issue_direct_play_ticket', return_value=('test-ticket', None))
+    def test_host_opening_game_notifies_guest_and_strangers_cannot_queue(self, ticket):
+        table = self.ready_table()
+        self.client.force_login(self.other)
+        self.client.post('/api/push/subscription', self.info, content_type='application/json')
+        self.client.force_login(self.user)
+        self.assertEqual(self.client.post(f'/t/head-to-head/{table.code}/play').status_code, 302)
+        delivery = TablePushDelivery.objects.get()
+        self.assertEqual(delivery.subscription.user_id, self.other.pk)
+        self.assertEqual(delivery.kind, TablePushDelivery.KIND_HOST_ENTERED)
+        stranger = User.objects.create_user(username='stranger')
+        self.client.force_login(stranger)
+        self.assertEqual(self.client.post(f'/t/head-to-head/{table.code}/play').status_code, 403)
+        self.assertEqual(TablePushDelivery.objects.count(), 1)
 
     def test_provider_encrypts_without_following_redirects(self):
         from cryptography.hazmat.primitives import serialization

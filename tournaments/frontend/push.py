@@ -58,7 +58,15 @@ def validate_subscription(data):
 def config(request):
     if not request.user.is_authenticated:
         return JsonResponse({'detail': 'Authentication required'}, status=401)
-    return JsonResponse({'enabled': configured(), 'publicKey': getattr(settings, 'WEB_PUSH_PUBLIC_KEY', '') if configured() else ''})
+    from .models import PushWorkerStatus
+    response = JsonResponse({
+        'enabled': configured(),
+        'publicKey': getattr(settings, 'WEB_PUSH_PUBLIC_KEY', '') if configured() else '',
+        'deliveryAvailable': configured() and PushWorkerStatus.objects.filter(
+            pk=1, expected_by__gt=timezone.now()).exists(),
+    })
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @require_http_methods(['POST', 'DELETE'])
@@ -91,6 +99,7 @@ def subscription(request):
             return JsonResponse({'detail': 'Maximum of 10 devices reached.'}, status=400)
         if existing and existing.user_id != request.user.pk:
             PushDelivery.objects.filter(subscription=existing).delete()
+            TablePushDelivery.objects.filter(subscription=existing).delete()
         PushSubscription.objects.update_or_create(endpoint_hash=digest, defaults={
             'user': request.user, 'endpoint': endpoint, 'p256dh': keys['p256dh'], 'auth': keys['auth'],
             'language': 'en' if data.get('language') == 'en' else 'he',
@@ -152,6 +161,12 @@ def queue_host_entered_push(table):
         table,
         kind=TablePushDelivery.KIND_HOST_ENTERED,
         recipient_id=table.guest_id,
+    )
+
+
+def queue_guest_entered_push(table):
+    return queue_table_push(
+        table, kind=TablePushDelivery.KIND_GUEST_ENTERED, recipient_id=table.host_id,
     )
 
 
@@ -253,13 +268,17 @@ def deliver_pending_table_events(limit=100, heartbeat=None):
         table = delivery.table
         recipient_id = delivery.subscription.user_id
         valid_status = table.status in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING)
-        expects_host = delivery.kind == TablePushDelivery.KIND_GUEST_JOINED
+        expects_host = delivery.kind in (TablePushDelivery.KIND_GUEST_JOINED, TablePushDelivery.KIND_GUEST_ENTERED)
         expected_recipient = table.host_id if expects_host else table.guest_id
         if not valid_status or not table.guest_id or recipient_id != expected_recipient:
             TablePushDelivery.objects.filter(pk=delivery_id).update(discarded_at=now)
             continue
         english = delivery.subscription.language == 'en'
-        if expects_host:
+        if delivery.kind == TablePushDelivery.KIND_GUEST_ENTERED:
+            title = 'Your opponent opened the game' if english else 'היריב פתח את המשחק שלך'
+            body = f'Table {table.code} — join your opponent to start playing.' if english else f'שולחן {table.code} — היכנס למשחק כדי להתחיל לשחק יחד.'
+            tag = f'table-guest-entered:{table.pk}'
+        elif expects_host:
             title = 'A player joined your table' if english else 'שחקן הצטרף לשולחן שלך'
             body = f'Table {table.code} is ready — open your games to start.' if english else f'שולחן {table.code} מוכן — פתח את המשחקים כדי להתחיל.'
             tag = f'table-guest-joined:{table.pk}'
