@@ -84,6 +84,7 @@ class Tournament(models.Model):
         blank=True,
         default='',
     )
+    gift_received_at = models.DateTimeField(null=True, blank=True)
     platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
     registration_closed_at = models.DateTimeField(null=True, blank=True)
     registration_closed_reason = models.CharField(max_length=20, blank=True, default='')
@@ -270,6 +271,9 @@ class Tournament(models.Model):
                 pass
 
     def award_prize_money(self):
+        # A physical/custom gift is fulfilled outside the wallet.
+        if self.prize_type == 'text':
+            return
         prize_amount = self.effective_prize_money
         if prize_amount <= 0:
             return

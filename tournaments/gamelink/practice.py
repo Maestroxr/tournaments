@@ -39,6 +39,13 @@ def prepare_room(base, token):
         return json.load(response)
 
 
+def practice_status(base, token):
+    body = json.dumps({'ticket': token}).encode()
+    with urlopen(Request(base + '/api/link/practice/status/', data=body,
+                        headers={'Content-Type': 'application/json'}), timeout=10) as response:
+        return json.load(response)
+
+
 class StartPracticeView(LoginRequiredMixin, View):
     http_method_names = ['get', 'post']
 
@@ -115,6 +122,70 @@ class StartPracticeView(LoginRequiredMixin, View):
             return JsonResponse({'error': 'Could not prepare the game. Retry safely; no duplicate charge.', 'code': 'unavailable'}, status=503)
         url = f'{base}/api/link/practice/?ticket={quote(token)}'
         response = JsonResponse({'url': url}) if request.content_type == 'application/json' else HttpResponseRedirect(url)
+        response['Cache-Control'] = 'no-store'
+        response['Referrer-Policy'] = 'no-referrer'
+        return response
+
+
+class ActivePracticeView(LoginRequiredMixin, View):
+    """Return the user's resumable practice match, if the game service still has one."""
+
+    http_method_names = ['get']
+
+    def get(self, request):
+        base = getattr(settings, 'GAMELINK_BACKGAMMON_URL', '').rstrip('/')
+        if not settings.GAMELINK_ENABLED or not base:
+            return JsonResponse({'active': None})
+
+        purchases = PracticePurchase.objects.filter(
+            user=request.user, paid=True, room_id__isnull=False,
+        ).order_by('-created_at')
+        for purchase in purchases:
+            try:
+                status = practice_status(
+                    base,
+                    signed_payload(request.user, purchase, 'status', room_id=str(purchase.room_id)),
+                )
+            except (URLError, TimeoutError, OSError, ValueError, KeyError):
+                return JsonResponse({'active': None})
+            if status.get('active'):
+                options = purchase.options
+                return JsonResponse({'active': {
+                    'id': str(purchase.id),
+                    'difficulty': options['difficulty'],
+                    'target_points': options['tp'],
+                    'time_control': options['tc'],
+                    'doubling_enabled': options['dbl'],
+                }})
+        return JsonResponse({'active': None})
+
+
+class ResumePracticeView(LoginRequiredMixin, View):
+    """Mint a fresh one-time game ticket for an existing paid practice match."""
+
+    http_method_names = ['post']
+
+    def post(self, request, purchase_id):
+        base = getattr(settings, 'GAMELINK_BACKGAMMON_URL', '').rstrip('/')
+        if not settings.GAMELINK_ENABLED or not base:
+            return JsonResponse({'error': 'Practice unavailable'}, status=503)
+        try:
+            purchase = PracticePurchase.objects.get(
+                id=purchase_id, user=request.user, paid=True, room_id__isnull=False,
+            )
+            status = practice_status(
+                base,
+                signed_payload(request.user, purchase, 'status', room_id=str(purchase.room_id)),
+            )
+        except (PracticePurchase.DoesNotExist, ValueError):
+            return JsonResponse({'error': 'Practice game not found'}, status=404)
+        except (URLError, TimeoutError, OSError, KeyError):
+            return JsonResponse({'error': 'Practice unavailable'}, status=503)
+        if not status.get('active'):
+            return JsonResponse({'error': 'This practice game has finished'}, status=409)
+
+        token = signed_payload(request.user, purchase, 'enter', room_id=str(purchase.room_id))
+        response = JsonResponse({'url': f'{base}/api/link/practice/?ticket={quote(token)}'})
         response['Cache-Control'] = 'no-store'
         response['Referrer-Policy'] = 'no-referrer'
         return response

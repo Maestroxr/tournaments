@@ -69,6 +69,7 @@ urlpatterns = [
     path('admin/store-catalog/<int:pk>', admin_catalog, name='api-admin-store-product'),
     path('admin/tournaments', api.api_admin_tournaments, name='api-admin-tournaments'),
     path('admin/tournaments/<int:pk>', api.api_admin_tournament_detail, name='api-admin-tournament-detail'),
+    path('admin/tournaments/<int:pk>/gift-received', api.api_admin_tournament_mark_gift_received, name='api-admin-tournament-gift-received'),
     path('admin/tournaments/<int:pk>/publish', api.api_admin_tournament_publish, name='api-admin-tournament-publish'),
     path('admin/tournaments/<int:pk>/draft', api.api_admin_tournament_draft, name='api-admin-tournament-draft'),
     path('admin/tournaments/<int:pk>/registration/close', api.api_admin_tournament_close_registration, name='api-admin-tournament-close-registration'),

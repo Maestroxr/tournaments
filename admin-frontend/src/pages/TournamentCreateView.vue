@@ -70,6 +70,8 @@ const timeControl = ref('normal')
 const doublingEnabled = ref(true)
 const entryFee = ref(0)
 const prizeMoney = ref(0)
+const prizeType = ref<'coins' | 'text'>('coins')
+const prizeText = ref('')
 const error = ref('')
 const suggestionError = ref('')
 const appliedSuggestion = ref('')
@@ -97,6 +99,8 @@ type ExistingTournament = {
   doubling_enabled?: boolean
   entry_fee?: string | number
   prize_money?: string | number
+  prize_type?: 'coins' | 'text'
+  prize_text?: string
 }
 
 type TournamentSuggestion = { tournament: ExistingTournament; key: string }
@@ -199,6 +203,8 @@ const fieldErrors = computed(() => {
     errors.entry_fee = t('tournamentCreate.entryFeeError')
   if (Number.isNaN(Number(prizeMoney.value)) || Number(prizeMoney.value) < 0)
     errors.prize_money = t('tournamentCreate.prizeError')
+  if (prizeType.value === 'text' && !prizeText.value.trim())
+    errors.prize_text = t('tournamentCreate.giftRequired')
   if (startsAt.value) {
     const date = new Date(startsAt.value)
     if (Number.isNaN(date.getTime())) errors.starts_at = t('tournamentCreate.dateError')
@@ -210,7 +216,7 @@ const fieldErrors = computed(() => {
 const stepFieldNames: Record<number, string[]> = {
   1: ['name', 'starts_at'],
   2: ['min_players', 'max_players'],
-  3: ['target_points', 'entry_fee', 'prize_money'],
+  3: ['target_points', 'entry_fee', 'prize_money', 'prize_text'],
 }
 const currentStepErrors = computed(() =>
   Object.fromEntries(
@@ -262,6 +268,8 @@ const settingsKey = (tournament: ExistingTournament) =>
     doubling_enabled: tournament.doubling_enabled !== false,
     entry_fee: normalizeMoney(tournament.entry_fee),
     prize_money: normalizeMoney(tournament.prize_money),
+    prize_type: tournament.prize_type ?? 'coins',
+    prize_text: tournament.prize_text ?? '',
   })
 const tournamentSuggestions = computed<TournamentSuggestion[]>(() => {
   const bySettings = new Map<string, TournamentSuggestion>()
@@ -357,6 +365,8 @@ function applyPreset(preset: QuickPreset) {
   doublingEnabled.value = true
   entryFee.value = 0
   prizeMoney.value = 0
+  prizeType.value = 'coins'
+  prizeText.value = ''
   selectedPresetId.value = preset.id
   appliedSuggestion.value = t(`tournamentCreate.presetApplied.${preset.id}`)
 }
@@ -370,6 +380,8 @@ function applySuggestion(tournament: ExistingTournament) {
   doublingEnabled.value = tournament.doubling_enabled !== false
   entryFee.value = Number(tournament.entry_fee ?? 0)
   prizeMoney.value = Number(tournament.prize_money ?? 0)
+  prizeType.value = tournament.prize_type ?? 'coins'
+  prizeText.value = tournament.prize_text ?? ''
   appliedSuggestion.value = t('tournamentCreate.previousApplied', { name: tournament.name })
 }
 
@@ -466,6 +478,8 @@ async function create() {
           doubling_enabled: doublingEnabled.value,
           entry_fee: Number(entryFee.value),
           prize_money: Number(prizeMoney.value),
+          prize_type: prizeType.value,
+          prize_text: prizeText.value,
           open_registration: true,
         }),
       })
@@ -789,6 +803,8 @@ async function create() {
               v-model:doubling-enabled="doublingEnabled"
               v-model:entry-fee="entryFee"
               v-model:prize-money="prizeMoney"
+              v-model:prize-type="prizeType"
+              v-model:prize-text="prizeText"
               rules-only
               :errors="visibleErrors"
             />

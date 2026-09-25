@@ -32,7 +32,7 @@ describe('AttendeesView', () => {
     api.mockResolvedValue(response())
     const wrapper = view()
     await flushPromises()
-    expect(wrapper.findAll('input')).toHaveLength(1)
+    expect(wrapper.findAll('input')).toHaveLength(2)
     expect(wrapper.text()).not.toContain('Add guest')
     expect(wrapper.findComponent(WalletTopUpDialog).exists()).toBe(false)
     wrapper.getComponent(AttendeeUserRow).vm.$emit('topUp')

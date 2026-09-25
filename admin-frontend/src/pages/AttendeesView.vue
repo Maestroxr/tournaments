@@ -13,7 +13,7 @@ import RosterRemovalDialog from '@/components/tournament/RosterRemovalDialog.vue
 import WalletTopUpDialog from '@/components/tournament/WalletTopUpDialog.vue'
 import { useTournamentWorkspace } from '@/composables/useTournamentWorkspace'
 import { useI18n } from '@/i18n'
-import { apiFetch, ApiError, formatApiError } from '@/services/api'
+import { apiFetch, ApiError, apiFieldErrors, formatApiError } from '@/services/api'
 
 interface AvailableUser {
   id: number
@@ -51,6 +51,9 @@ const pendingUser = ref<AvailableUser | null>(null)
 const addDialogError = ref('')
 const removalRequest = ref<RosterAttendee[] | null>(null)
 const removalDialogError = ref('')
+const phoneSavingUserId = ref<number | null>(null)
+const phoneErrorUserId = ref<number | null>(null)
+const phoneError = ref('')
 
 const entryFee = computed(() => Number(tournament.value?.entry_fee ?? 0))
 const activeParticipants = computed(() => participants.value.filter(item => item.status === 'registered'))
@@ -190,12 +193,36 @@ async function addUser(user: AvailableUser) {
       topUpUser.value = available.value.find(item => item.id === user.id) ?? user
       error.value = t('attendees.fundingChanged', { name: user.username })
     } else {
-      const message = formatApiError(caught)
+      const message = caught instanceof ApiError && /phone_number/i.test(caught.body)
+        ? t('attendees.phoneRequiredForUser', { name: user.username })
+        : formatApiError(caught)
       if (usesDialog) addDialogError.value = message
       else error.value = message
     }
   } finally {
     pendingAction.value = null
+  }
+}
+
+async function savePhone(user: AvailableUser, phoneNumber: string) {
+  if (phoneSavingUserId.value !== null) return
+  phoneSavingUserId.value = user.id
+  phoneErrorUserId.value = user.id
+  phoneError.value = ''
+  try {
+    const updated = await apiFetch<AvailableUser>(`/api/admin/users/${user.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ phone_number: phoneNumber.trim() }),
+    })
+    const index = available.value.findIndex(item => item.id === user.id)
+    const current = available.value[index]
+    if (current) available.value[index] = { ...current, phone_number: updated.phone_number }
+    phoneErrorUserId.value = null
+    success.value = t('attendees.phoneSavedForUser', { name: user.username })
+  } catch (caught: unknown) {
+    phoneError.value = apiFieldErrors(caught).phone_number || formatApiError(caught)
+  } finally {
+    phoneSavingUserId.value = null
   }
 }
 
@@ -244,7 +271,7 @@ async function topUpSaved(balance: string) {
       <i class="bi bi-arrow-clockwise" aria-hidden="true"></i><span>{{ t('common.loading') }}</span>
     </div>
     <div v-else class="attendees-content">
-      <AppAlert v-if="error" type="error" :message="error" dismissible @close="error = ''" />
+      <AppAlert v-if="error" type="error" :message="error" />
       <AppAlert v-if="success" type="success" :message="success" dismissible @close="success = ''" />
       <AppAlert v-if="balanceError" type="error" :message="balanceError" />
       <AppAlert v-if="isFull" type="warning" :message="t('attendees.capacityReached')" />
@@ -277,7 +304,7 @@ async function topUpSaved(balance: string) {
           <AttendeeUserRow
             v-for="user in filteredAvailable" :key="user.id" :user="user"
             :entry-fee="entryFee" :disabled="!canAdd"
-            :loading="pendingAction === `user-${user.id}`" @add="requestAdd" @top-up="requestTopUp(user)"
+            :loading="pendingAction === `user-${user.id}`" :saving-phone="phoneSavingUserId === user.id" :phone-error="phoneErrorUserId === user.id ? phoneError : ''" @add="requestAdd" @top-up="requestTopUp(user)" @save-phone="savePhone(user, $event)"
           />
           <div v-if="filteredAvailable.length === 0" class="empty-state"><i class="bi bi-search"></i><p>{{ t('attendees.noAvailable') }}</p></div>
         </div>

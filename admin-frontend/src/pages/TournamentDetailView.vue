@@ -40,6 +40,7 @@ const reverting = ref(false)
 const revertError = ref('')
 const showDeleteDialog = ref(false)
 const deleting = ref(false)
+const markingGiftReceived = ref(false)
 const deleteError = ref('')
 const loading = ref(true)
 const error = ref('')
@@ -67,6 +68,10 @@ interface TournamentDetail {
   doubling_enabled: boolean
   entry_fee: string
   prize_money: string
+  prize_type: 'coins' | 'text'
+  prize_text: string
+  gift_received: boolean
+  gift_received_at: string | null
   definition: string
   participants: TournamentParticipant[]
   published: boolean
@@ -93,6 +98,8 @@ const editTime = ref('normal')
 const editDoubling = ref(true)
 const editEntryFee = ref(0)
 const editPrizeMoney = ref(0)
+const editPrizeType = ref<'coins' | 'text'>('coins')
+const editPrizeText = ref('')
 const savedRawDefinition = ref('')
 const savedDraftFingerprint = ref('')
 const pad = (value: number) => String(value).padStart(2, '0')
@@ -173,7 +180,9 @@ const overviewMetrics = computed<TournamentOverviewMetric[]>(() => {
       value: Number(t.value.entry_fee || 0) > 0
         ? Number(t.value.entry_fee).toFixed(2)
         : translate('tournamentOverview.freeEntry'),
-      hint: translate('tournamentOverview.prizeValue', { amount: Number(t.value.prize_money || 0).toFixed(2) }),
+      hint: t.value.prize_type === 'text'
+        ? t.value.prize_text
+        : translate('tournamentOverview.prizeValue', { amount: Number(t.value.prize_money || 0).toFixed(2) }),
       icon: 'bi-wallet2',
     },
   ]
@@ -301,6 +310,8 @@ function parseTournamentMeta() {
   editDoubling.value = t.value.doubling_enabled ?? true
   editEntryFee.value = Number(t.value.entry_fee ?? 0)
   editPrizeMoney.value = Number(t.value.prize_money ?? 0)
+  editPrizeType.value = t.value.prize_type ?? 'coins'
+  editPrizeText.value = t.value.prize_text ?? ''
 }
 
 async function load() {
@@ -371,6 +382,21 @@ async function deleteDraft() {
   }
 }
 
+async function markGiftReceived() {
+  if (!t.value || markingGiftReceived.value) return
+  markingGiftReceived.value = true
+  error.value = ''
+  try {
+    t.value = await apiFetch<TournamentDetail>(`/api/admin/tournaments/${t.value.id}/gift-received`, {
+      method: 'POST',
+    })
+  } catch (caught: unknown) {
+    error.value = formatApiError(caught)
+  } finally {
+    markingGiftReceived.value = false
+  }
+}
+
 function addStage() { stages.value.push({ id: `stage_${stages.value.length + 1}`, name: translate('tournamentSettings.newStage'), mode: 'knockout' }) }
 function removeStage(idx: number) { stages.value.splice(idx, 1) }
 function addPodium() { const ref = stages.value[0]?.id || 'main_round'; podium.value.push(`${ref}.placements[0]`) }
@@ -410,6 +436,8 @@ function draftPayload() {
     doubling_enabled: editDoubling.value,
     entry_fee: Number(editEntryFee.value),
     prize_money: Number(editPrizeMoney.value),
+    prize_type: editPrizeType.value,
+    prize_text: editPrizeText.value,
   }
 }
 
@@ -600,8 +628,13 @@ function podiumLabel(reference: string, index: number) {
           <TournamentMetaItem :label="translate('tournaments.timeControl')" :value="timeControlLabel(t.time_control, t.target_points, translate)" />
           <TournamentMetaItem :label="translate('tournaments.doubling')" :value="translate(t.doubling_enabled ? 'common.enabled' : 'common.disabled')" />
           <TournamentMetaItem :label="translate('tournaments.entryFee')" :value="Number(t.entry_fee || 0).toFixed(2)" />
-          <TournamentMetaItem :label="translate('tournaments.prize')" :value="Number(t.prize_money || 0).toFixed(2)" />
+          <TournamentMetaItem :label="translate('tournaments.prize')" :value="t.prize_type === 'text' ? t.prize_text : Number(t.prize_money || 0).toFixed(2)" />
+          <TournamentMetaItem v-if="t.prize_type === 'text'" :label="translate('tournaments.giftDelivery')" :value="translate(t.gift_received ? 'tournaments.giftReceived' : 'tournaments.giftPending')" />
         </dl>
+        <div v-if="t.prize_type === 'text' && t.state === 'finished' && !t.gift_received" class="mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p class="text-sm text-amber-900">{{ translate('tournaments.giftDeliveryHint') }}</p>
+          <Button :label="translate('tournaments.markGiftReceived')" severity="success" size="small" :loading="markingGiftReceived" @click="markGiftReceived" />
+        </div>
         <div v-if="t.participants?.length" class="mt-4 border-t border-zinc-100 pt-4">
           <div class="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">{{ translate('tournamentSettings.registeredPlayers') }}</div>
           <div class="flex flex-wrap gap-2">
@@ -620,7 +653,7 @@ function podiumLabel(reference: string, index: number) {
         </div>
         <div v-if="editing" class="mb-4 rounded bg-white border border-zinc-200 p-3 space-y-3">
           <label class="block"><span class="mb-1 block text-xs font-medium text-black">{{ translate('tournamentSettings.name') }}</span><InputText v-model="editName" class="w-full" /></label>
-          <TournamentMetaFields :starts-date="editStartsDate" :starts-time="editStartsTime" :time-control="editTime" :min-players="Number(editMin)" :max-players="editMax" :target-points="Number(editPoints)" :doubling-enabled="editDoubling" :entry-fee="editEntryFee" :prize-money="editPrizeMoney" :min-starts-date="minStartsDate" :min-starts-time="minStartsTime" @update:starts-date="editStartsDate=$event" @update:starts-time="editStartsTime=$event" @update:time-control="editTime=$event" @update:min-players="editMin=$event" @update:max-players="editMax=$event" @update:target-points="editPoints=$event" @update:doubling-enabled="editDoubling=$event" @update:entry-fee="editEntryFee=$event" @update:prize-money="editPrizeMoney=$event" />
+          <TournamentMetaFields :starts-date="editStartsDate" :starts-time="editStartsTime" :time-control="editTime" :min-players="Number(editMin)" :max-players="editMax" :target-points="Number(editPoints)" :doubling-enabled="editDoubling" :entry-fee="editEntryFee" :prize-money="editPrizeMoney" :prize-type="editPrizeType" :prize-text="editPrizeText" :min-starts-date="minStartsDate" :min-starts-time="minStartsTime" @update:starts-date="editStartsDate=$event" @update:starts-time="editStartsTime=$event" @update:time-control="editTime=$event" @update:min-players="editMin=$event" @update:max-players="editMax=$event" @update:target-points="editPoints=$event" @update:doubling-enabled="editDoubling=$event" @update:entry-fee="editEntryFee=$event" @update:prize-money="editPrizeMoney=$event" @update:prize-type="editPrizeType=$event" @update:prize-text="editPrizeText=$event" />
         </div>
         <h4 class="mb-2 text-xs font-semibold text-zinc-700">{{ translate('tournamentSettings.structure') }}</h4>
 

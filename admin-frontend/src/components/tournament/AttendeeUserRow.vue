@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Button from 'primevue/button'
+import InputText from 'primevue/inputtext'
 import UserQuickView from '@/components/UserQuickView.vue'
 import { useI18n } from '@/i18n'
 
@@ -9,8 +10,10 @@ const props = defineProps<{
   entryFee: number
   disabled?: boolean
   loading?: boolean
+  savingPhone?: boolean
+  phoneError?: string
 }>()
-const emit = defineEmits<{ add: [id: number]; topUp: [] }>()
+const emit = defineEmits<{ add: [id: number]; topUp: []; savePhone: [phoneNumber: string] }>()
 const { t, locale } = useI18n()
 const balance = computed(() =>
   props.user.balance == null || !Number.isFinite(Number(props.user.balance))
@@ -22,10 +25,13 @@ const shortfall = computed(() =>
     ? null
     : Math.max(0, Math.round(props.entryFee * 100) - Math.round(balance.value * 100)) / 100,
 )
+const hasPhone = computed(() => Boolean(props.user.phone_number?.trim()))
+const phoneNumber = ref('')
 const blocked = computed(
   () =>
     props.disabled ||
     props.loading ||
+    !hasPhone.value ||
     (props.entryFee > 0 && (shortfall.value === null || shortfall.value > 0)),
 )
 function money(value: number) {
@@ -62,6 +68,14 @@ function add() {
         {{ t('attendees.enoughBalance') }}
       </span>
     </div>
+    <div v-if="!hasPhone" class="attendee-user-row__phone-required" role="alert">
+      <p><i class="bi bi-telephone-x-fill" aria-hidden="true"></i>{{ t('attendees.phoneRequiredHint') }}</p>
+      <div class="attendee-user-row__phone-form">
+        <InputText v-model="phoneNumber" :placeholder="t('users.phonePlaceholder')" inputmode="tel" :invalid="Boolean(phoneError)" :disabled="savingPhone" @keydown.enter.prevent="emit('savePhone', phoneNumber)" />
+        <Button icon="bi bi-check-lg" :label="t('attendees.savePhone')" :loading="savingPhone" :disabled="!phoneNumber.trim() || savingPhone" size="small" severity="warn" @click="emit('savePhone', phoneNumber)" />
+      </div>
+      <small v-if="phoneError">{{ phoneError }}</small>
+    </div>
     <div class="attendee-user-row__actions">
       <Button
         v-if="entryFee > 0 && shortfall !== null && shortfall > 0"
@@ -76,9 +90,9 @@ function add() {
       />
       <Button
         icon="bi bi-person-plus"
-        :label="t('attendees.addUser')"
+        :label="hasPhone ? t('attendees.addUser') : t('attendees.phoneRequired')"
         :aria-label="t('attendees.addNamedUser', { name: user.username })"
-        :title="entryFee > 0 && shortfall !== null && shortfall > 0 ? t('attendees.insufficientBalance') : undefined"
+        :title="!hasPhone ? t('attendees.phoneRequiredHint') : entryFee > 0 && shortfall !== null && shortfall > 0 ? t('attendees.insufficientBalance') : undefined"
         :disabled="Boolean(blocked)"
         :loading="loading"
         size="small"
@@ -111,6 +125,16 @@ function add() {
   max-width: 100%;
   padding-inline: 4px;
 }
+.attendee-user-row__phone-required {
+  flex: 1 1 320px;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 600;
+}
+.attendee-user-row__phone-required p { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.attendee-user-row__phone-required small { display: block; margin-top: 5px; color: #b91c1c; }
+.attendee-user-row__phone-form { display: flex; gap: 8px; }
+.attendee-user-row__phone-form :deep(.p-inputtext) { min-width: 0; flex: 1; }
 .attendee-user-row__funding {
   display: flex;
   align-items: center;

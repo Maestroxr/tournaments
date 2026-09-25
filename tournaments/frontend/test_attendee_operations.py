@@ -61,15 +61,19 @@ class AttendeeOperationsTests(TestCase):
     def participant_id(self, player):
         return Participant.objects.get(user=player).pk
 
-    def test_admin_cannot_add_beyond_capacity(self):
+    def test_tournament_starts_when_capacity_is_reached(self):
         self.assertEqual(self.post_player(self.players[0]).status_code, 200)
-        self.assertEqual(self.post_player(self.players[1]).status_code, 200)
+        response = self.post_player(self.players[1])
+        self.assertEqual(response.status_code, 200)
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, 'active')
+        self.assertEqual(self.tournament.registration_closed_reason, 'capacity')
+        self.assertTrue(self.tournament.draw_confirmed_at)
         before = WalletTransaction.balance_for_user(self.players[2])
 
         response = self.post_player(self.players[2])
 
         self.assertEqual(response.status_code, 412, response.content)
-        self.assertEqual(response.json()['code'], 'capacity_full')
         self.assertFalse(TournamentRegistration.objects.filter(
             tournament=self.tournament, participant__user=self.players[2]).exists())
         self.assertEqual(self.tournament.participations.count(), 2)
@@ -87,21 +91,17 @@ class AttendeeOperationsTests(TestCase):
             participant__user=legacy_player,
         ).exists())
 
-    def test_public_join_can_waitlist_only_after_capacity_closure(self):
+    def test_public_join_is_closed_after_capacity_starts_tournament(self):
         self.post_player(self.players[0])
         self.post_player(self.players[1])
         self.client.force_login(self.players[2])
 
         response = self.client.post(reverse('api-join', kwargs={'pk': self.tournament.pk}))
 
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['registration_status'], 'waitlisted')
-        self.client.force_login(self.staff)
-        self.client.post(reverse('api-admin-tournament-reopen-registration', kwargs={'pk': self.tournament.pk}))
-        self.client.post(reverse('api-admin-tournament-close-registration', kwargs={'pk': self.tournament.pk}))
-        self.client.force_login(self.players[3])
-        blocked = self.client.post(reverse('api-join', kwargs={'pk': self.tournament.pk}))
-        self.assertEqual(blocked.status_code, 412)
+        self.assertEqual(response.status_code, 412, response.content)
+        self.assertFalse(TournamentRegistration.objects.filter(
+            tournament=self.tournament, participant__user=self.players[2]
+        ).exists())
 
     def test_check_in_does_not_affect_readiness_but_payment_does(self):
         self.post_player(self.players[0])

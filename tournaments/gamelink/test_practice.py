@@ -94,6 +94,31 @@ class PracticeEntryTests(TestCase):
         self.client.logout()
         self.assertEqual(self.start().status_code, 302)
 
+    def test_active_practice_and_resume(self):
+        with patch('gamelink.practice.prepare_room', side_effect=self.prepare):
+            self.assertEqual(self.start().status_code, 200)
+        purchase = PracticePurchase.objects.get(pk=self.data['request_id'])
+        with patch('gamelink.practice.practice_status', return_value={'active': True}):
+            active = self.client.get('/api/practice/active/')
+            resume = self.client.post(f'/api/practice/{purchase.id}/resume/')
+        self.assertEqual(active.status_code, 200)
+        self.assertEqual(active.json()['active']['id'], str(purchase.id))
+        self.assertEqual(resume.status_code, 200)
+        ticket = parse_qs(urlparse(resume.json()['url']).query)['ticket'][0]
+        data = signing.loads(ticket, key='practice-test-secret', salt='gamelink.practice.v1')
+        self.assertEqual((data['purpose'], data['room_id']), ('enter', self.room))
+
+    def test_finished_practice_is_not_resumable(self):
+        with patch('gamelink.practice.prepare_room', side_effect=self.prepare):
+            self.assertEqual(self.start().status_code, 200)
+        purchase = PracticePurchase.objects.get(pk=self.data['request_id'])
+        with patch('gamelink.practice.practice_status', return_value={'active': False}):
+            self.assertEqual(self.client.get('/api/practice/active/').json(), {'active': None})
+            self.assertEqual(
+                self.client.post(f'/api/practice/{purchase.id}/resume/').status_code,
+                409,
+            )
+
     def test_price_edit_requires_staff_and_rejects_negative(self):
         url = '/api/admin/direct-play/settings'
         self.assertEqual(self.client.put(url, {'ai_game_fee': '70'}, content_type='application/json').status_code, 403)

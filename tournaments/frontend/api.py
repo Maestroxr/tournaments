@@ -198,6 +198,13 @@ def _serialize_tournament(t, request):
         ).select_related("participant").order_by("podium_position")
     ]
     champion = podium[0] if podium else None
+    is_winner = bool(
+        request.user.is_authenticated
+        and champion
+        and t.participations.filter(
+            participant_id=champion["id"], participant__user=request.user
+        ).exists()
+    )
     payload = {
         "id": t.id,
         "name": t.name,
@@ -230,12 +237,17 @@ def _serialize_tournament(t, request):
         "time_control": getattr(t, "time_control", "normal"),
         "doubling_enabled": getattr(t, "doubling_enabled", True),
         "entry_fee": str(getattr(t, "entry_fee", Decimal("0.00"))),
-        "prize_money": str(t.effective_prize_money),
+        "prize_type": t.prize_type,
+        "prize_text": t.prize_text,
+        "gift_received": bool(t.gift_received_at),
+        "gift_received_at": t.gift_received_at.isoformat() if t.gift_received_at else None,
+        "is_winner": is_winner,
+        "prize_money": str(t.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
         "platform_fee_percent": str(t.platform_fee_percent),
         "collected_entry_fees": str(t.collected_entry_fees),
         # placeholders for your Vue fields (map backend -> frontend)
         "enterPrice": float(getattr(t, "entry_fee", Decimal("0.00"))),
-        "prizeMoney": float(t.effective_prize_money),
+        "prizeMoney": float(t.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
         "capacity": t.max_players or 8,
     }
     if request.user.is_authenticated and request.user.is_staff:
@@ -329,6 +341,23 @@ def _validated_tournament_metadata(data):
         cleaned["prize_money"] = _parse_money(data.get("prize_money", data.get("prizeMoney", 0)), "prize_money")
     except ValueError as error:
         errors["prize_money"] = str(error)
+
+    prize_type = data.get("prize_type", "coins")
+    if prize_type not in {"coins", "text"}:
+        errors["prize_type"] = "Invalid prize type."
+    else:
+        cleaned["prize_type"] = prize_type
+        prize_text = data.get("prize_text", "")
+        if not isinstance(prize_text, str):
+            errors["prize_text"] = "Gift description must be text."
+        else:
+            cleaned["prize_text"] = prize_text.strip()
+            if prize_type == "text" and not cleaned["prize_text"]:
+                errors["prize_text"] = "Enter the gift the winner receives."
+            elif len(cleaned["prize_text"]) > 255:
+                errors["prize_text"] = "Gift description must be 255 characters or fewer."
+            if prize_type == "text":
+                cleaned["prize_money"] = Decimal("0.00")
 
     try:
         cleaned["platform_fee_percent"] = _parse_money(
@@ -680,7 +709,8 @@ def api_join(request, pk):
                 _add_to_active_roster(t, registration, request.user)
             except ValidationError:
                 return JsonResponse({"detail": "Insufficient funds to join this tournament."}, status=412)
-            t.close_registration_if_full()
+            if t.close_registration_if_full():
+                _start_tournament_at_capacity(t)
     except models.Tournament.DoesNotExist:
         return JsonResponse({"detail": "Not found"}, status=404)
     except ValidationError as error:
@@ -1231,6 +1261,22 @@ def api_admin_tournament_detail(request, pk):
 
 
 @require_http_methods(["POST"])
+def api_admin_tournament_mark_gift_received(request, pk):
+    err = _require_staff(request)
+    if err:
+        return err
+    tournament = get_object_or_404(models.Tournament, pk=pk)
+    if tournament.prize_type != 'text':
+        return JsonResponse({"detail": "This tournament has no gift prize."}, status=412)
+    if tournament.state != 'finished':
+        return JsonResponse({"detail": "The gift can be marked received after the tournament finishes."}, status=412)
+    if tournament.gift_received_at is None:
+        tournament.gift_received_at = timezone.now()
+        tournament.save(update_fields=['gift_received_at'])
+    return JsonResponse(_serialize_tournament(tournament, request))
+
+
+@require_http_methods(["POST"])
 def api_admin_tournament_publish(request, pk):
     err = _require_staff(request)
     if err:
@@ -1459,7 +1505,8 @@ def api_admin_tournament_attendees(request, pk):
                     'registration_closed_at', 'registration_closed_reason', 'draw_order',
                     'draw_generated_at', 'draw_confirmed_at',
                 ])
-            t.close_registration_if_full()
+            if t.close_registration_if_full():
+                _start_tournament_at_capacity(t)
             return JsonResponse({'detail': 'Added', 'status': registration.status})
         except (User.DoesNotExist, ValueError):
             return JsonResponse({'detail': 'User not found'}, status=404)
@@ -1574,7 +1621,8 @@ def api_admin_tournament_attendees(request, pk):
                 'registration_closed_at', 'registration_closed_reason', 'draw_order',
                 'draw_generated_at', 'draw_confirmed_at',
             ])
-        t.close_registration_if_full()
+        if t.close_registration_if_full():
+            _start_tournament_at_capacity(t)
     else:
         return JsonResponse({'detail': 'Unsupported attendee action'}, status=400)
 
@@ -1991,25 +2039,17 @@ def api_admin_tournament_confirm_draw(request, pk):
     return JsonResponse(_serialize_draw(tournament))
 
 
-@require_http_methods(["POST"])
-@transaction.atomic
-def api_admin_tournament_start(request, pk):
-    err = _require_staff(request)
-    if err:
-        return err
-    t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
-    if t.state != "open":
-        return JsonResponse({"detail": f"Cannot start, state={t.state}"}, status=412)
-    # if t.creator and t.creator_id != request.user.id:
-    #     return JsonResponse({"detail": "Only creator can start"}, status=403)
+def _start_tournament_at_capacity(t):
+    """Create the draw and fixtures once a capped tournament reaches capacity.
+
+    Callers hold the tournament row lock, so only the request that fills the
+    final seat can start it.
+    """
     required = t.min_players
     participant_ids = list(t.participations.values_list("participant_id", flat=True))
     if len(participant_ids) < required:
-        return JsonResponse({"detail": f"Need at least {required} attendees (you have {len(participant_ids)})"}, status=412)
-    try:
-        t.test()
-    except ValidationError as e:
-        return JsonResponse({"detail": "; ".join(e.messages) if hasattr(e, "messages") else str(e)}, status=400)
+        raise ValidationError(f"Need at least {required} attendees (you have {len(participant_ids)})")
+    t.test()
     valid_confirmed_draw = (
         t.draw_confirmed_at is not None
         and len(t.draw_order) == len(participant_ids)
@@ -2030,8 +2070,23 @@ def api_admin_tournament_start(request, pk):
     try:
         t.apply_draw_order()
     except ValidationError as error:
-        return JsonResponse({"detail": "; ".join(error.messages)}, status=412)
+        raise ValidationError("; ".join(error.messages)) from error
     t.update_state()
+
+
+@require_http_methods(["POST"])
+@transaction.atomic
+def api_admin_tournament_start(request, pk):
+    err = _require_staff(request)
+    if err:
+        return err
+    t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+    if t.state != "open":
+        return JsonResponse({"detail": f"Cannot start, state={t.state}"}, status=412)
+    try:
+        _start_tournament_at_capacity(t)
+    except ValidationError as error:
+        return JsonResponse({"detail": "; ".join(error.messages)}, status=400)
     return JsonResponse(_serialize_tournament(t, request))
 
 

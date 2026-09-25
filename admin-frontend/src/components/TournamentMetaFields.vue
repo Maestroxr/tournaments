@@ -4,6 +4,7 @@ import DatePicker from 'primevue/datepicker'
 import InputNumber from 'primevue/inputnumber'
 import Select from 'primevue/select'
 import ToggleSwitch from 'primevue/toggleswitch'
+import InputText from 'primevue/inputtext'
 import { useI18n } from '@/i18n'
 import { timeControlDetail } from '@/utils/adminLabels'
 
@@ -17,6 +18,8 @@ const props = defineProps<{
   doublingEnabled?: boolean
   entryFee?: number
   prizeMoney?: number
+  prizeType?: 'coins' | 'text'
+  prizeText?: string
   minStartsDate?: string
   minStartsTime?: string
   rulesOnly?: boolean
@@ -32,6 +35,8 @@ const emit = defineEmits<{
   (e: 'update:doublingEnabled', v: boolean): void
   (e: 'update:entryFee', v: number): void
   (e: 'update:prizeMoney', v: number): void
+  (e: 'update:prizeType', v: 'coins' | 'text'): void
+  (e: 'update:prizeText', v: string): void
 }>()
 const { t } = useI18n()
 function selectNumber(event: MouseEvent) {
@@ -147,10 +152,20 @@ const startsTimeObject = computed<Date | null>({
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.entryFeeHelp') }}</span>
       </label>
       <label class="block">
+        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.prizeType') }}</span>
+        <Select :model-value="prizeType ?? 'coins'" :options="[{ value: 'coins', label: t('tournaments.coinPrize') }, { value: 'text', label: t('tournaments.giftPrize') }]" option-label="label" option-value="value" fluid @update:model-value="emit('update:prizeType', $event === 'text' ? 'text' : 'coins')" />
+      </label>
+      <label v-if="(prizeType ?? 'coins') === 'coins'" class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.prize') }}</span>
         <InputNumber :model-value="prizeMoney" :min="0" :min-fraction-digits="0" :max-fraction-digits="0" highlight-on-focus fluid :invalid="Boolean(errors?.prize_money)" @click="selectNumber" @update:model-value="emit('update:prizeMoney', Number($event ?? 0))" />
         <span v-if="errors?.prize_money" class="text-xs text-red-600">{{ errors.prize_money }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.prizeHelp') }}</span>
+      </label>
+      <label v-else class="block">
+        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.giftDescription') }}</span>
+        <InputText :model-value="prizeText ?? ''" class="w-full" :placeholder="t('tournaments.giftPlaceholder')" :invalid="Boolean(errors?.prize_text)" maxlength="255" @update:model-value="emit('update:prizeText', String($event ?? ''))" />
+        <span v-if="errors?.prize_text" class="text-xs text-red-600">{{ errors.prize_text }}</span>
+        <span v-else class="text-xs text-zinc-500">{{ t('tournaments.giftHelp') }}</span>
       </label>
       <label class="flex items-start gap-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2">
         <ToggleSwitch :model-value="doublingEnabled" class="doubling-toggle mt-0.5" :aria-label="t('tournaments.doublingCube')" @update:model-value="emit('update:doublingEnabled', Boolean($event))" />
