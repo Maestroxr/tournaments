@@ -24,6 +24,27 @@ class PushHealthTests(TestCase):
     def health(self):
         return self.client.get('/api/admin/push-health')
 
+    def queue_delivery(self, model, user=None, **values):
+        user = user or self.user
+        device, _ = PushSubscription.objects.get_or_create(
+            user=user, endpoint_hash=f'health-{user.pk}', defaults={
+                'endpoint': f'https://fcm.googleapis.com/secret-endpoint-{user.pk}',
+                'p256dh': 'secret-key', 'auth': 'secret-auth',
+            },
+        )
+        params = {'subscription': device, 'next_attempt_at': timezone.now() - timedelta(minutes=3), **values}
+        if model is PushDelivery:
+            tournament = Tournament.objects.create(name='Player health test', podium_spec=[])
+            mode = Knockout.objects.create(tournament=tournament)
+            params['fixture'] = Fixture.objects.create(mode=mode, level=0)
+        else:
+            params['table'] = HeadToHeadTable.objects.create(
+                code=f'I{HeadToHeadTable.objects.count():05d}', host=user, mode='match',
+                amount='100.00', fee_percent='5.00', fee_per_player='5.00',
+            )
+            params['kind'] = TablePushDelivery.KIND_GUEST_JOINED
+        return model.objects.create(**params)
+
     def test_staff_only_and_read_only(self):
         self.client.logout()
         self.assertEqual(self.health().status_code, 401)
@@ -58,12 +79,85 @@ class PushHealthTests(TestCase):
         response = self.client.get('/api/push/config')
         self.assertTrue(response.json()['enabled'])
         self.assertFalse(response.json()['deliveryAvailable'])
+        self.assertIsNone(response.json()['recentDeliveryIssue'])
         self.assertEqual(response['Cache-Control'], 'private, no-store')
         self.assertNotContains(response, 'private-test')
         heartbeat()
         self.assertTrue(self.client.get('/api/push/config').json()['deliveryAvailable'])
         PushWorkerStatus.objects.update(expected_by=timezone.now() - timedelta(seconds=1))
         self.assertFalse(self.client.get('/api/push/config').json()['deliveryAvailable'])
+
+    def test_player_config_reports_recent_issues_in_each_queue(self):
+        heartbeat()
+        for model in (PushDelivery, TablePushDelivery):
+            delivery = self.queue_delivery(model)
+            for attempts, issue in ((0, 'delayed'), (1, 'retrying'), (5, 'failed')):
+                with self.subTest(queue=model.__name__, issue=issue):
+                    delivery.attempts = attempts
+                    delivery.last_failure_at = timezone.now() if attempts else None
+                    delivery.save(update_fields=['attempts', 'last_failure_at'])
+                    response = self.client.get('/api/push/config')
+                    self.assertTrue(response.json()['deliveryAvailable'])
+                    self.assertEqual(response.json()['recentDeliveryIssue'], issue)
+                    for secret in ('secret-endpoint', 'secret-key', 'secret-auth', 'private-test'):
+                        self.assertNotContains(response, secret)
+            delivery.delete()
+
+    def test_player_config_uses_issue_priority_across_both_queues(self):
+        tournament_delivery = self.queue_delivery(PushDelivery)
+        self.queue_delivery(TablePushDelivery, attempts=1, last_failure_at=timezone.now())
+        self.assertEqual(self.client.get('/api/push/config').json()['recentDeliveryIssue'], 'retrying')
+        tournament_delivery.attempts = 5
+        tournament_delivery.last_failure_at = timezone.now()
+        tournament_delivery.save(update_fields=['attempts', 'last_failure_at'])
+        self.assertEqual(self.client.get('/api/push/config').json()['recentDeliveryIssue'], 'failed')
+
+    def test_player_config_ignores_other_accounts_old_resolved_and_inflight_deliveries(self):
+        now = timezone.now()
+        other = User.objects.create_user(username='other-player')
+        cases = [
+            {'user': other, 'attempts': 5, 'last_failure_at': now},
+            {'attempts': 5, 'last_failure_at': now - timedelta(hours=25)},
+            {'attempts': 5, 'last_failure_at': now, 'delivered_at': now},
+            {'attempts': 5, 'last_failure_at': now, 'discarded_at': now},
+            {'attempts': 5, 'next_attempt_at': now + timedelta(seconds=60)},
+            {'attempts': 1, 'next_attempt_at': now + timedelta(seconds=60)},
+            {'attempts': 5},
+            {'attempts': 0, 'next_attempt_at': now - timedelta(minutes=1)},
+            {'attempts': 0, 'next_attempt_at': now - timedelta(hours=25)},
+        ]
+        for model in (PushDelivery, TablePushDelivery):
+            for values in cases:
+                self.queue_delivery(model, **values)
+        self.assertIsNone(self.client.get('/api/push/config').json()['recentDeliveryIssue'])
+
+    def test_final_inflight_attempt_with_earlier_failure_still_reports_retrying(self):
+        now = timezone.now()
+        for model in (PushDelivery, TablePushDelivery):
+            with self.subTest(queue=model.__name__):
+                delivery = self.queue_delivery(
+                    model, attempts=5, last_failure_at=now - timedelta(seconds=70),
+                    next_attempt_at=now + timedelta(seconds=50),
+                )
+                self.assertEqual(self.client.get('/api/push/config').json()['recentDeliveryIssue'], 'retrying')
+                # The final provider response fails while its lease is still active.
+                delivery.last_failure_at = timezone.now()
+                delivery.save(update_fields=['last_failure_at'])
+                self.assertEqual(self.client.get('/api/push/config').json()['recentDeliveryIssue'], 'failed')
+                delivery.delivered_at = timezone.now()
+                delivery.save(update_fields=['delivered_at'])
+                self.assertIsNone(self.client.get('/api/push/config').json()['recentDeliveryIssue'])
+
+    def test_expired_final_lease_with_earlier_failure_reports_exhaustion(self):
+        now = timezone.now()
+        for model in (PushDelivery, TablePushDelivery):
+            with self.subTest(queue=model.__name__):
+                delivery = self.queue_delivery(
+                    model, attempts=5, last_failure_at=now - timedelta(seconds=70),
+                    next_attempt_at=now - timedelta(seconds=1),
+                )
+                self.assertEqual(self.client.get('/api/push/config').json()['recentDeliveryIssue'], 'failed')
+                delivery.delete()
 
     def test_worker_command_records_heartbeat_without_sending(self):
         with patch('frontend.management.commands.run_push_notifications.discover_ready_matches', return_value=0), \

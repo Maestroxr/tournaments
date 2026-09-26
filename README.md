@@ -234,6 +234,13 @@ of 120 seconds or three configured polling intervals. A worker running older cod
 does not report a heartbeat and will trigger a warning until restarted with this code.
 The `--once` command records only a single run and does not replace a supervised worker.
 
+Player notification status also reports recent account delivery problems from both
+queues, including the waiting period before a retry. Apply migration
+`frontend.0007_delivery_failure_timestamps` with `python manage.py migrate` before
+starting the updated API and push worker. It adds nullable failure timestamps;
+historical failures are not inferred from attempt counts. This status covers the
+past 24 hours and does not confirm that a phone displayed a notification.
+
 For missing configuration, set `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` and
 `WEB_PUSH_SUBJECT` in the API and worker environments. For stalled or failed
 deliveries, inspect the worker process and provider connectivity. Exhausted

@@ -34,6 +34,7 @@ class PushDelivery(models.Model):
     fixture = models.ForeignKey('tournaments.Fixture', on_delete=models.CASCADE)
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField()
+    last_failure_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
     discarded_at = models.DateTimeField(null=True, blank=True)
 
@@ -53,6 +54,7 @@ class TablePushDelivery(models.Model):
     kind = models.CharField(max_length=20, choices=KIND_CHOICES)
     attempts = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField()
+    last_failure_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
     discarded_at = models.DateTimeField(null=True, blank=True)
 

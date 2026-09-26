@@ -8,12 +8,15 @@ from urllib.parse import urlsplit
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import F
+from django.db.models import Count, F, Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from .models import PushDelivery, PushSubscription, TablePushDelivery
+
+
+DELIVERY_RETRY_DELAY = timedelta(seconds=60)
 
 
 def configured():
@@ -26,7 +29,8 @@ def endpoint_allowed(endpoint):
     try:
         parsed = urlsplit(endpoint)
         host = parsed.hostname or ''
-        trusted = (host in ('fcm.googleapis.com', 'web.push.apple.com') or
+        trusted = (host == 'fcm.googleapis.com' or
+                   host.endswith('.push.apple.com') or
                    host.endswith('.push.services.mozilla.com') or
                    host.endswith('.notify.windows.com'))
         return (len(endpoint) <= 2048 and parsed.scheme == 'https' and
@@ -54,16 +58,44 @@ def validate_subscription(data):
     return endpoint, keys
 
 
+def recent_delivery_issue(user, now):
+    """Report recent account queue trouble, not delivery to a particular phone."""
+    recent_failure = Q(last_failure_at__gte=now - timedelta(hours=24), last_failure_at__lte=now)
+    # Attempts are incremented when claimed. An earlier failure does not mean a
+    # final attempt currently in flight has failed; compare with its lease start.
+    failed_final_attempt = Q(attempts__gte=5) & (
+        Q(last_failure_at__gte=F('next_attempt_at') - DELIVERY_RETRY_DELAY)
+        | Q(next_attempt_at__lte=now)
+    )
+    checks = {
+        'failed': recent_failure & failed_final_attempt,
+        'retrying': recent_failure & Q(attempts__gt=0) & ~failed_final_attempt,
+        'delayed': Q(attempts=0, next_attempt_at__gte=now - timedelta(hours=24),
+                     next_attempt_at__lte=now - timedelta(minutes=2)),
+    }
+    issues = set()
+    for model in (PushDelivery, TablePushDelivery):
+        counts = model.objects.filter(
+            subscription__user=user,
+            delivered_at=None,
+            discarded_at=None,
+        ).aggregate(**{name: Count('pk', filter=condition) for name, condition in checks.items()})
+        issues.update(name for name, count in counts.items() if count)
+    return next((name for name in checks if name in issues), None)
+
+
 @require_http_methods(['GET'])
 def config(request):
     if not request.user.is_authenticated:
         return JsonResponse({'detail': 'Authentication required'}, status=401)
     from .models import PushWorkerStatus
+    now = timezone.now()
     response = JsonResponse({
         'enabled': configured(),
         'publicKey': getattr(settings, 'WEB_PUSH_PUBLIC_KEY', '') if configured() else '',
         'deliveryAvailable': configured() and PushWorkerStatus.objects.filter(
-            pk=1, expected_by__gt=timezone.now()).exists(),
+            pk=1, expected_by__gt=now).exists(),
+        'recentDeliveryIssue': recent_delivery_issue(request.user, now),
     })
     response['Cache-Control'] = 'private, no-store'
     return response
@@ -205,7 +237,7 @@ def deliver_pending(limit=100, heartbeat=None):
         now = timezone.now()
         # Atomic lease prevents two workers sending the same item concurrently.
         claimed = PushDelivery.objects.filter(pk=delivery_id, delivered_at=None, discarded_at=None,
-            next_attempt_at__lte=now, attempts__lt=5).update(attempts=F('attempts') + 1, next_attempt_at=now + timedelta(seconds=60))
+            next_attempt_at__lte=now, attempts__lt=5).update(attempts=F('attempts') + 1, next_attempt_at=now + DELIVERY_RETRY_DELAY)
         if not claimed:
             continue
         delivery = PushDelivery.objects.select_related('subscription__user', 'fixture__mode__tournament').filter(pk=delivery_id).first()
@@ -230,6 +262,8 @@ def deliver_pending(limit=100, heartbeat=None):
             status = getattr(response, 'status_code', None)
             if status in (404, 410):
                 PushSubscription.objects.filter(pk=device.pk).delete()
+            else:
+                PushDelivery.objects.filter(pk=delivery_id).update(last_failure_at=timezone.now())
             # Do not log endpoints, encryption keys or provider response bodies.
             continue
         PushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
@@ -259,7 +293,7 @@ def deliver_pending_table_events(limit=100, heartbeat=None):
             discarded_at=None,
             next_attempt_at__lte=now,
             attempts__lt=5,
-        ).update(attempts=F('attempts') + 1, next_attempt_at=now + timedelta(seconds=60))
+        ).update(attempts=F('attempts') + 1, next_attempt_at=now + DELIVERY_RETRY_DELAY)
         if not claimed:
             continue
         delivery = TablePushDelivery.objects.select_related('subscription__user', 'table__host', 'table__guest').filter(pk=delivery_id).first()
@@ -298,6 +332,8 @@ def deliver_pending_table_events(limit=100, heartbeat=None):
             response = getattr(error, 'response', None)
             if getattr(response, 'status_code', None) in (404, 410):
                 PushSubscription.objects.filter(pk=delivery.subscription_id).delete()
+            else:
+                TablePushDelivery.objects.filter(pk=delivery_id).update(last_failure_at=timezone.now())
             continue
         TablePushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
         sent += 1

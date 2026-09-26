@@ -87,6 +87,30 @@ class PushTests(TestCase):
         self.assertEqual(self.client.post('/api/push/subscription', self.info, content_type='application/json').status_code, 400)
         self.assertFalse(PushSubscription.objects.exists())
 
+    def test_accepts_apple_push_service_subdomains(self):
+        for host in ('web.push.apple.com', 'region.push.apple.com'):
+            with self.subTest(host=host):
+                self.info['endpoint'] = f'https://{host}/test-token'
+                response = self.client.post('/api/push/subscription', self.info, content_type='application/json')
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertTrue(PushSubscription.objects.filter(user=self.user, endpoint=self.info['endpoint']).exists())
+
+    def test_apple_endpoint_allowlist_preserves_domain_and_transport_checks(self):
+        for endpoint in (
+            'https://web.push.apple.com.evil.test/push',
+            'https://evilpush.apple.com/push',
+            'https://not-apple.example/push',
+            'http://web.push.apple.com/push',
+            'https://user@web.push.apple.com/push',
+            'https://web.push.apple.com:444/push',
+            'https://web.push.apple.com/push#fragment',
+        ):
+            with self.subTest(endpoint=endpoint):
+                self.info['endpoint'] = endpoint
+                response = self.client.post('/api/push/subscription', self.info, content_type='application/json')
+                self.assertEqual(response.status_code, 400, response.content)
+        self.assertFalse(PushSubscription.objects.exists())
+
     @override_settings(WEB_PUSH_PRIVATE_KEY='')
     def test_unconfigured_service_does_not_claim_to_enable_push(self):
         self.assertFalse(self.client.get('/api/push/config').json()['enabled'])
@@ -119,6 +143,27 @@ class PushTests(TestCase):
         self.assertEqual(deliver_pending(), 0)
         delivery.refresh_from_db()
         self.assertIsNotNone(delivery.discarded_at)
+
+    @patch('frontend.push.send_notification', side_effect=OSError('provider unavailable'))
+    def test_provider_failure_is_reported_even_when_worker_is_alive(self, send):
+        from .push_health import heartbeat
+        self.subscribe()
+        discover_ready_matches()
+        queue_guest_joined_push(self.ready_table())
+        heartbeat()
+        for attempt in range(1, 6):
+            for model in (PushDelivery, TablePushDelivery):
+                model.objects.update(next_attempt_at=timezone.now() - timedelta(seconds=1))
+            self.assertEqual(deliver_pending(), 0)
+            for model in (PushDelivery, TablePushDelivery):
+                delivery = model.objects.get()
+                self.assertEqual(delivery.attempts, attempt)
+                self.assertIsNotNone(delivery.last_failure_at)
+                self.assertGreater(delivery.next_attempt_at, timezone.now())
+            config = self.client.get('/api/push/config').json()
+            self.assertTrue(config['deliveryAvailable'])
+            self.assertEqual(config['recentDeliveryIssue'], 'failed' if attempt == 5 else 'retrying')
+        self.assertEqual(send.call_count, 10)
 
     def test_expired_provider_subscription_is_removed(self):
         self.subscribe()
