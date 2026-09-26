@@ -44,13 +44,28 @@ function selectNumber(event: MouseEvent) {
 }
 const timeOptions = computed(() => [
   { value: 'none', label: t('tournaments.noClock'), detail: t('tournaments.untimedMatch') },
-  { value: 'fast', label: t('tournaments.fast'), detail: timeControlDetail('fast', props.targetPoints, t) },
-  { value: 'normal', label: t('tournaments.normal'), detail: timeControlDetail('normal', props.targetPoints, t) },
-  { value: 'slow', label: t('tournaments.slow'), detail: timeControlDetail('slow', props.targetPoints, t) },
+  {
+    value: 'fast',
+    label: t('tournaments.fast'),
+    detail: timeControlDetail('fast', props.targetPoints, t),
+  },
+  {
+    value: 'normal',
+    label: t('tournaments.normal'),
+    detail: timeControlDetail('normal', props.targetPoints, t),
+  },
+  {
+    value: 'slow',
+    label: t('tournaments.slow'),
+    detail: timeControlDetail('slow', props.targetPoints, t),
+  },
 ])
-const selectedTimeOption = computed(() => timeOptions.value.find(option => option.value === props.timeControl))
+const selectedTimeOption = computed(() =>
+  timeOptions.value.find((option) => option.value === props.timeControl),
+)
 const pad = (value: number) => String(value).padStart(2, '0')
-const dateInputValue = (date: Date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+const dateInputValue = (date: Date) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 const timeInputValue = (date: Date) => `${pad(date.getHours())}:${pad(date.getMinutes())}`
 const parseLocalDate = (value?: string) => {
   if (!value) return null
@@ -84,26 +99,66 @@ const startsTimeObject = computed<Date | null>({
     <div v-if="!rulesOnly" class="grid grid-cols-1 gap-4 sm:grid-cols-3">
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.date') }}</span>
-        <DatePicker v-model="startsDateObject" date-format="dd/mm/yy" show-icon fluid manual-input :min-date="minStartsDateObject" :input-class="['w-full rounded border px-3 py-2 text-sm text-black focus:outline-none', errors?.starts_at ? 'border-red-500 focus:border-red-500' : 'border-zinc-300 focus:border-zinc-900']" />
+        <DatePicker
+          v-model="startsDateObject"
+          date-format="dd/mm/yy"
+          show-icon
+          fluid
+          manual-input
+          :min-date="minStartsDateObject"
+          :input-class="[
+            'w-full rounded border px-3 py-2 text-sm text-black focus:outline-none',
+            errors?.starts_at
+              ? 'border-red-500 focus:border-red-500'
+              : 'border-zinc-300 focus:border-zinc-900',
+          ]"
+        />
       </label>
       <label class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.time') }}</span>
-        <DatePicker v-model="startsTimeObject" time-only hour-format="24" show-icon fluid manual-input :min-date="minStartsTimeObject" :input-class="['w-full rounded border px-3 py-2 text-sm text-black focus:outline-none', errors?.starts_at ? 'border-red-500 focus:border-red-500' : 'border-zinc-300 focus:border-zinc-900']" />
+        <DatePicker
+          v-model="startsTimeObject"
+          time-only
+          hour-format="24"
+          show-icon
+          fluid
+          manual-input
+          :min-date="minStartsTimeObject"
+          :input-class="[
+            'w-full rounded border px-3 py-2 text-sm text-black focus:outline-none',
+            errors?.starts_at
+              ? 'border-red-500 focus:border-red-500'
+              : 'border-zinc-300 focus:border-zinc-900',
+          ]"
+        />
         <span v-if="errors?.starts_at" class="text-xs text-red-600">{{ errors.starts_at }}</span>
       </label>
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.timeControl') }}</span>
-        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))">
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.timeControl')
+        }}</span>
+        <Select
+          :model-value="timeControl"
+          :options="timeOptions"
+          option-label="label"
+          option-value="value"
+          fluid
+          @update:model-value="emit('update:timeControl', String($event))"
+        >
           <template #value>
             <div v-if="selectedTimeOption" class="flex min-w-0 flex-col py-0.5">
               <span class="text-sm font-medium text-inherit">{{ selectedTimeOption.label }}</span>
-              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ selectedTimeOption.detail }}</span>
+              <span class="text-xs whitespace-normal text-inherit opacity-70">{{
+                selectedTimeOption.detail
+              }}</span>
             </div>
           </template>
           <template #option="{ option }">
             <div class="flex min-w-0 flex-col py-0.5">
               <span class="text-sm font-medium text-inherit">{{ option.label }}</span>
-              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ option.detail }}</span>
+              <span class="text-xs whitespace-normal text-inherit opacity-70">{{
+                option.detail
+              }}</span>
             </div>
           </template>
         </Select>
@@ -112,65 +167,164 @@ const startsTimeObject = computed<Date | null>({
 
     <div :class="['grid grid-cols-1 gap-4', rulesOnly ? 'sm:grid-cols-2' : 'sm:grid-cols-3']">
       <label v-if="!rulesOnly" class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.minPlayers') }}</span>
-        <InputNumber :model-value="minPlayers" :min="2" show-buttons fluid :invalid="Boolean(errors?.min_players)" @update:model-value="emit('update:minPlayers', Number($event ?? 0))" />
-        <span v-if="errors?.min_players" class="text-xs text-red-600">{{ errors.min_players }}</span>
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.minPlayers')
+        }}</span>
+        <InputNumber
+          :model-value="minPlayers"
+          :min="2"
+          show-buttons
+          fluid
+          :invalid="Boolean(errors?.min_players)"
+          @update:model-value="emit('update:minPlayers', Number($event ?? 0))"
+        />
+        <span v-if="errors?.min_players" class="text-xs text-red-600">{{
+          errors.min_players
+        }}</span>
       </label>
       <label v-if="!rulesOnly" class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.maxPlayers') }}</span>
-        <InputNumber :model-value="maxPlayers === '' ? null : maxPlayers" :min="2" :placeholder="t('tournaments.unlimitedLower')" show-buttons fluid :invalid="Boolean(errors?.max_players)" @update:model-value="emit('update:maxPlayers', $event === null ? '' : Number($event))" />
-        <span v-if="errors?.max_players" class="text-xs text-red-600">{{ errors.max_players }}</span>
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.maxPlayers')
+        }}</span>
+        <InputNumber
+          :model-value="maxPlayers === '' ? null : maxPlayers"
+          :min="2"
+          :placeholder="t('tournaments.unlimitedLower')"
+          show-buttons
+          fluid
+          :invalid="Boolean(errors?.max_players)"
+          @update:model-value="emit('update:maxPlayers', $event === null ? '' : Number($event))"
+        />
+        <span v-if="errors?.max_players" class="text-xs text-red-600">{{
+          errors.max_players
+        }}</span>
       </label>
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.matchLength') }}</span>
-        <InputNumber :model-value="targetPoints" :min="1" show-buttons fluid :invalid="Boolean(errors?.target_points)" @update:model-value="emit('update:targetPoints', Number($event ?? 0))" />
-        <span v-if="errors?.target_points" class="text-xs text-red-600">{{ errors.target_points }}</span>
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.matchLength')
+        }}</span>
+        <InputNumber
+          :model-value="targetPoints"
+          :min="1"
+          show-buttons
+          fluid
+          :invalid="Boolean(errors?.target_points)"
+          @update:model-value="emit('update:targetPoints', Number($event ?? 0))"
+        />
+        <span v-if="errors?.target_points" class="text-xs text-red-600">{{
+          errors.target_points
+        }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.matchLengthHelp') }}</span>
       </label>
       <label v-if="rulesOnly" class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.clockSetting') }}</span>
-        <Select :model-value="timeControl" :options="timeOptions" option-label="label" option-value="value" fluid @update:model-value="emit('update:timeControl', String($event))">
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.clockSetting')
+        }}</span>
+        <Select
+          :model-value="timeControl"
+          :options="timeOptions"
+          option-label="label"
+          option-value="value"
+          fluid
+          @update:model-value="emit('update:timeControl', String($event))"
+        >
           <template #value>
             <div v-if="selectedTimeOption" class="flex min-w-0 flex-col py-0.5">
               <span class="text-sm font-medium text-inherit">{{ selectedTimeOption.label }}</span>
-              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ selectedTimeOption.detail }}</span>
+              <span class="text-xs whitespace-normal text-inherit opacity-70">{{
+                selectedTimeOption.detail
+              }}</span>
             </div>
           </template>
           <template #option="{ option }">
             <div class="flex min-w-0 flex-col py-0.5">
               <span class="text-sm font-medium text-inherit">{{ option.label }}</span>
-              <span class="whitespace-normal text-xs text-inherit opacity-70">{{ option.detail }}</span>
+              <span class="text-xs whitespace-normal text-inherit opacity-70">{{
+                option.detail
+              }}</span>
             </div>
           </template>
         </Select>
         <span class="text-xs text-zinc-500">{{ t('tournaments.clockSettingHelp') }}</span>
       </label>
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.entryFee') }}</span>
-        <InputNumber :model-value="entryFee" :min="0" :min-fraction-digits="0" :max-fraction-digits="0" highlight-on-focus fluid :invalid="Boolean(errors?.entry_fee)" @click="selectNumber" @update:model-value="emit('update:entryFee', Number($event ?? 0))" />
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.entryFee')
+        }}</span>
+        <InputNumber
+          :model-value="entryFee"
+          :min="0"
+          :min-fraction-digits="0"
+          :max-fraction-digits="0"
+          highlight-on-focus
+          fluid
+          :invalid="Boolean(errors?.entry_fee)"
+          @click="selectNumber"
+          @update:model-value="emit('update:entryFee', Number($event ?? 0))"
+        />
         <span v-if="errors?.entry_fee" class="text-xs text-red-600">{{ errors.entry_fee }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.entryFeeHelp') }}</span>
       </label>
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.prizeType') }}</span>
-        <Select :model-value="prizeType ?? 'coins'" :options="[{ value: 'coins', label: t('tournaments.coinPrize') }, { value: 'text', label: t('tournaments.giftPrize') }]" option-label="label" option-value="value" fluid @update:model-value="emit('update:prizeType', $event === 'text' ? 'text' : 'coins')" />
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.prizeType')
+        }}</span>
+        <Select
+          :model-value="prizeType ?? 'coins'"
+          :options="[
+            { value: 'coins', label: t('tournaments.coinPrize') },
+            { value: 'text', label: t('tournaments.giftPrize') },
+          ]"
+          option-label="label"
+          option-value="value"
+          fluid
+          @update:model-value="emit('update:prizeType', $event === 'text' ? 'text' : 'coins')"
+        />
       </label>
       <label v-if="(prizeType ?? 'coins') === 'coins'" class="block">
         <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.prize') }}</span>
-        <InputNumber :model-value="prizeMoney" :min="0" :min-fraction-digits="0" :max-fraction-digits="0" highlight-on-focus fluid :invalid="Boolean(errors?.prize_money)" @click="selectNumber" @update:model-value="emit('update:prizeMoney', Number($event ?? 0))" />
-        <span v-if="errors?.prize_money" class="text-xs text-red-600">{{ errors.prize_money }}</span>
+        <InputNumber
+          :model-value="prizeMoney"
+          :min="0"
+          :min-fraction-digits="0"
+          :max-fraction-digits="0"
+          highlight-on-focus
+          fluid
+          :invalid="Boolean(errors?.prize_money)"
+          @click="selectNumber"
+          @update:model-value="emit('update:prizeMoney', Number($event ?? 0))"
+        />
+        <span v-if="errors?.prize_money" class="text-xs text-red-600">{{
+          errors.prize_money
+        }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.prizeHelp') }}</span>
       </label>
       <label v-else class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.giftDescription') }}</span>
-        <InputText :model-value="prizeText ?? ''" class="w-full" :placeholder="t('tournaments.giftPlaceholder')" :invalid="Boolean(errors?.prize_text)" maxlength="255" @update:model-value="emit('update:prizeText', String($event ?? ''))" />
+        <span class="mb-1 block text-sm font-medium text-black">{{
+          t('tournaments.giftDescription')
+        }}</span>
+        <InputText
+          :model-value="prizeText ?? ''"
+          class="w-full"
+          :placeholder="t('tournaments.giftPlaceholder')"
+          :invalid="Boolean(errors?.prize_text)"
+          maxlength="255"
+          @update:model-value="emit('update:prizeText', String($event ?? ''))"
+        />
         <span v-if="errors?.prize_text" class="text-xs text-red-600">{{ errors.prize_text }}</span>
         <span v-else class="text-xs text-zinc-500">{{ t('tournaments.giftHelp') }}</span>
       </label>
       <label class="flex items-start gap-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2">
-        <ToggleSwitch :model-value="doublingEnabled" class="doubling-toggle mt-0.5" :aria-label="t('tournaments.doublingCube')" @update:model-value="emit('update:doublingEnabled', Boolean($event))" />
+        <ToggleSwitch
+          :model-value="doublingEnabled"
+          class="doubling-toggle mt-0.5"
+          :aria-label="t('tournaments.doublingCube')"
+          @update:model-value="emit('update:doublingEnabled', Boolean($event))"
+        />
         <span>
-          <span class="block text-sm font-medium text-black">{{ t('tournaments.doublingCube') }}</span>
+          <span class="block text-sm font-medium text-black">{{
+            t('tournaments.doublingCube')
+          }}</span>
           <span class="text-xs text-zinc-500">{{ t('tournaments.doublingHelp') }}</span>
         </span>
       </label>
