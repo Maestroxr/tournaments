@@ -2,16 +2,111 @@ from datetime import timedelta
 from urllib.parse import parse_qs
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from django.utils.encoding import force_bytes
+from django.utils.http import urlsafe_base64_encode
 
+from .accounts import verification_tokens
+from .checks import account_configuration
 from .models import AccountEmail
 from tournaments.models import UserContact
 
 
-@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', ACCOUNT_FRONTEND_URL='https://website.example')
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class SignupWithoutEmailTests(TestCase):
+    def signup(self):
+        response = self.client.post('/api/auth/signup', {
+            'username': 'Alice', 'email': 'Alice@example.com',
+            'phone_number': '050-123-4567',
+            'password1': 'Another-Good-Secret-735!',
+            'password2': 'Another-Good-Secret-735!',
+        }, content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
+        return response, User.objects.get(username='Alice')
+
+    def test_signup_enters_immediately_without_email_or_verification(self):
+        self.assertFalse(settings.ACCOUNT_EMAIL_ACTIONS_ENABLED)
+        with patch('frontend.accounts.send_mail') as send_mail:
+            response, user = self.signup()
+        send_mail.assert_not_called()
+        self.assertTrue(response.json()['authenticated'])
+        self.assertFalse(response.json()['email_verified'])
+        self.assertTrue(user.is_active)
+        self.assertTrue(user.check_password('Another-Good-Secret-735!'))
+        self.assertIsNone(user.account_email.verified_at)
+        self.assertIsNone(user.account_email.last_sent_at)
+        self.assertEqual(UserContact.objects.get(user=user).phone_number, '050-123-4567')
+        me = self.client.get('/api/auth/me')
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json()['id'], user.pk)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_unverified_account_can_sign_in_again(self):
+        _, user = self.signup()
+        self.client.logout()
+        response = self.client.post('/api/auth/login', {
+            'username': user.username, 'password': 'Another-Good-Secret-735!',
+        }, content_type='application/json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_email_requests_are_disabled_for_known_and_unknown_accounts(self):
+        _, user = self.signup()
+        self.client.logout()
+        for verified_at in (None, timezone.now()):
+            AccountEmail.objects.filter(user=user).update(verified_at=verified_at)
+            for purpose in ('verify', 'reset'):
+                for email in (user.email, 'missing@example.com'):
+                    with self.subTest(purpose=purpose, email=email, verified=bool(verified_at)):
+                        response = self.client.post(f'/api/auth/{purpose}/request', {
+                            'email': email,
+                        }, content_type='application/json')
+                        self.assertEqual(response.status_code, 404)
+        user.account_email.refresh_from_db()
+        self.assertIsNone(user.account_email.last_sent_at)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_old_valid_email_links_cannot_verify_or_reset_password(self):
+        _, user = self.signup()
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        for purpose, generator in (('verify', verification_tokens), ('reset', default_token_generator)):
+            verified_at = timezone.now() if purpose == 'reset' else None
+            AccountEmail.objects.filter(user=user).update(verified_at=verified_at)
+            response = Client().post(f'/api/auth/{purpose}/confirm', {
+                'uid': uid, 'token': generator.make_token(user),
+                'new_password1': 'Replacement-Secret-825!',
+                'new_password2': 'Replacement-Secret-825!',
+            }, content_type='application/json')
+            self.assertEqual(response.status_code, 404)
+            user.refresh_from_db()
+            self.assertTrue(user.check_password('Another-Good-Secret-735!'))
+            self.assertEqual(user.account_email.verified_at, verified_at)
+        self.assertEqual(self.client.get('/api/auth/me').status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class DisabledEmailConfigurationTests(SimpleTestCase):
+    @override_settings(DEBUG=False, EMAIL_HOST='', DEFAULT_FROM_EMAIL='accounts@localhost',
+                       ACCOUNT_FRONTEND_URL='https://website.example/tournaments')
+    def test_disabled_email_actions_do_not_require_smtp(self):
+        with patch('frontend.checks.sys.argv', ['manage.py', 'check']):
+            self.assertEqual(account_configuration(None), [])
+
+    @override_settings(DEBUG=False, ACCOUNT_FRONTEND_URL='http://localhost:5173/tournaments')
+    def test_signup_redirect_still_requires_a_public_https_url(self):
+        with patch('frontend.checks.sys.argv', ['manage.py', 'check']):
+            self.assertEqual([error.id for error in account_configuration(None)], ['accounts.E001'])
+
+
+@override_settings(ACCOUNT_EMAIL_ACTIONS_ENABLED=True,
+                   EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+                   ACCOUNT_FRONTEND_URL='https://website.example')
 class AccountJourneyTests(TestCase):
     def post(self, path, data, client=None):
         return (client or self.client).post('/api/auth/' + path, data, content_type='application/json')

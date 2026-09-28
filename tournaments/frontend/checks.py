@@ -14,6 +14,8 @@ def account_configuration(app_configs, **kwargs):
     url = urlsplit(settings.ACCOUNT_FRONTEND_URL)
     if url.scheme != 'https' or not url.hostname or url.username or url.query or url.fragment:
         errors.append(Error('ACCOUNT_FRONTEND_URL must be the canonical HTTPS website URL.', id='accounts.E001'))
-    if settings.DEFAULT_FROM_EMAIL.endswith('@localhost') or not settings.EMAIL_HOST:
+    if settings.ACCOUNT_EMAIL_ACTIONS_ENABLED and (
+        settings.DEFAULT_FROM_EMAIL.endswith('@localhost') or not settings.EMAIL_HOST
+    ):
         errors.append(Error('Configure DEFAULT_FROM_EMAIL and an email transport.', id='accounts.E002'))
     return errors

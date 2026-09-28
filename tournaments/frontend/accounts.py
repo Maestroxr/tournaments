@@ -43,7 +43,7 @@ class PublicSignupForm(SignupForm):
     def clean_email(self):
         email = self.cleaned_data['email'].strip().lower()
         if AccountEmail.objects.filter(email=email).exists() or User.objects.filter(email__iexact=email).exists():
-            raise forms.ValidationError('This email cannot be used. Try signing in or recovering your account.')
+            raise forms.ValidationError('This email cannot be used. Try signing in with your existing account.')
         return email
 
     def clean_phone_number(self):
@@ -60,6 +60,8 @@ def body(request):
 
 
 def send_link(account, purpose):
+    if not settings.ACCOUNT_EMAIL_ACTIONS_ENABLED:
+        return
     now = timezone.now()
     # Database cooldown is shared by all processes, including resend and reset.
     with transaction.atomic():
@@ -82,6 +84,18 @@ def send_link(account, purpose):
         AccountEmail.objects.filter(pk=account.pk, last_sent_at=now).update(last_sent_at=None)
 
 
+def grant_signup_bonus(user):
+    """Credit a new player within the account creation transaction."""
+    from tournaments.models import WalletTransaction
+
+    WalletTransaction.create_entry(
+        user=user,
+        amount='1000.00',
+        kind=WalletTransaction.KIND_DEPOSIT,
+        note='בונוס הרשמה',
+    )
+
+
 @require_POST
 def signup(request):
     form = PublicSignupForm(body(request))
@@ -97,12 +111,13 @@ def signup(request):
             account = AccountEmail.objects.create(user=user, email=user.email)
             from tournaments import models
             models.UserContact.objects.create(user=user, phone_number=form.cleaned_data['phone_number'])
+            grant_signup_bonus(user)
     except IntegrityError:
         return JsonResponse({'detail': 'This account already exists.'}, status=400)
     from django.contrib.auth import login
     # Log the user in immediately.
     login(request, user)
-    # Verification remains available, but does not block access.
+    # Account email actions are currently disabled and never block access.
     send_link(account, 'verify')
     return JsonResponse(
         {
@@ -116,6 +131,8 @@ def signup(request):
 
 @require_POST
 def request_link(request, purpose):
+    if not settings.ACCOUNT_EMAIL_ACTIONS_ENABLED:
+        return JsonResponse({'detail': 'Account email actions are currently unavailable.'}, status=404)
     email = body(request).get('email', '')
     if isinstance(email, str):
         account = AccountEmail.objects.select_related('user').filter(email=email.strip().lower()).first()
@@ -127,6 +144,8 @@ def request_link(request, purpose):
 
 @require_POST
 def confirm_link(request, purpose):
+    if not settings.ACCOUNT_EMAIL_ACTIONS_ENABLED:
+        return JsonResponse({'detail': 'Account email actions are currently unavailable.'}, status=404)
     data = body(request)
     try:
         user_id = urlsafe_base64_decode(data.get('uid', '')).decode()

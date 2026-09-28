@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 
-from .accounts import body
+from .accounts import body, grant_signup_bonus
 from .forms import require_phone_number, validate_admin_username
 from .models import AccountEmail, GoogleIdentity
 
@@ -124,6 +124,7 @@ def authenticate(request):
             GoogleIdentity.objects.create(user=user, subject=subject)
             from tournaments.models import UserContact
             UserContact.objects.create(user=user, phone_number='')
+            grant_signup_bonus(user)
     except IntegrityError:
         # A simultaneous signup must never leave an orphan user behind.
         identity = GoogleIdentity.objects.select_related('user').filter(subject=subject).first()
@@ -189,6 +190,7 @@ def complete(request):
             GoogleIdentity.objects.create(user=user, subject=pending['subject'])
             from tournaments.models import UserContact
             UserContact.objects.create(user=user, phone_number=form.cleaned_data['phone_number'])
+            grant_signup_bonus(user)
     except IntegrityError:
         return failure('existing_account', 409)
     request.session.pop('google_pending', None)
