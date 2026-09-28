@@ -674,8 +674,6 @@ def api_tournament_detail(request, pk):
 def api_join(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    if not models.UserContact.objects.filter(user=request.user).exclude(phone_number='').exists():
-        return JsonResponse({"detail": "Add a phone number to your profile before joining a tournament."}, status=412)
     try:
         with transaction.atomic():
             t = models.Tournament.objects.select_for_update().get(pk=pk)
@@ -1466,12 +1464,6 @@ def api_admin_tournament_attendees(request, pk):
         try:
             if data.get('user_id'):
                 user = User.objects.get(pk=int(data['user_id']))
-                if not models.UserContact.objects.filter(user=user).exclude(phone_number='').exists():
-                    return JsonResponse({
-                        'errors': {'phone_number': [
-                            'Phone number is required before adding this player to a tournament.'
-                        ]},
-                    }, status=400)
                 participant = models.Participant.get_or_create_for_user(user)
             elif data.get('name'):
                 name = str(data['name']).strip()

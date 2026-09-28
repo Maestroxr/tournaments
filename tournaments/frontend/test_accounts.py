@@ -210,7 +210,6 @@ class AccountJourneyTests(TestCase):
     def test_legacy_user_can_complete_phone_number_from_profile(self):
         user = User.objects.create_user('legacy', password='Another-Good-Secret-735!')
         self.client.force_login(user)
-        self.assertEqual(self.client.post('/api/tournaments/999/join').status_code, 412)
         response = self.client.put('/api/auth/profile', {'phone_number': '050-123-4567'}, content_type='application/json')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(UserContact.objects.get(user=user).phone_number, '050-123-4567')

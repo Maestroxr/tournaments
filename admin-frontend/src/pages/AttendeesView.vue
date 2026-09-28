@@ -193,9 +193,7 @@ async function addUser(user: AvailableUser) {
       topUpUser.value = available.value.find(item => item.id === user.id) ?? user
       error.value = t('attendees.fundingChanged', { name: user.username })
     } else {
-      const message = caught instanceof ApiError && /phone_number/i.test(caught.body)
-        ? t('attendees.phoneRequiredForUser', { name: user.username })
-        : formatApiError(caught)
+      const message = formatApiError(caught)
       if (usesDialog) addDialogError.value = message
       else error.value = message
     }

@@ -79,17 +79,43 @@ class AttendeeOperationsTests(TestCase):
         self.assertEqual(self.tournament.participations.count(), 2)
         self.assertEqual(WalletTransaction.balance_for_user(self.players[2]), before)
 
-    def test_admin_cannot_add_a_legacy_player_without_a_phone_number(self):
-        legacy_player = User.objects.create_user(username='legacy-no-phone')
+    def test_admin_can_add_players_without_a_phone_number(self):
+        for player, missing_contact in zip(self.players[:2], [True, False]):
+            with self.subTest(missing_contact=missing_contact):
+                if missing_contact:
+                    UserContact.objects.filter(user=player).delete()
+                else:
+                    UserContact.objects.filter(user=player).update(phone_number='')
 
-        response = self.post_player(legacy_player)
+                response = self.post_player(player)
 
-        self.assertEqual(response.status_code, 400, response.content)
-        self.assertIn('phone_number', response.json()['errors'])
-        self.assertFalse(TournamentRegistration.objects.filter(
-            tournament=self.tournament,
-            participant__user=legacy_player,
-        ).exists())
+                self.assertEqual(response.status_code, 200, response.content)
+                registration = TournamentRegistration.objects.get(
+                    tournament=self.tournament, participant__user=player)
+                self.assertEqual(registration.status, TournamentRegistration.STATUS_REGISTERED)
+                self.assertEqual(registration.payment_status, TournamentRegistration.PAYMENT_PAID)
+                self.assertTrue(self.tournament.participations.filter(participant__user=player).exists())
+                self.assertEqual(WalletTransaction.balance_for_user(player), Decimal('25.00'))
+
+    def test_players_can_join_without_a_phone_number(self):
+        for player, missing_contact in zip(self.players[:2], [True, False]):
+            with self.subTest(missing_contact=missing_contact):
+                if missing_contact:
+                    UserContact.objects.filter(user=player).delete()
+                else:
+                    UserContact.objects.filter(user=player).update(phone_number='')
+                self.client.force_login(player)
+
+                response = self.client.post(reverse('api-join', kwargs={'pk': self.tournament.pk}))
+
+                self.assertEqual(response.status_code, 200, response.content)
+                self.assertTrue(response.json()['is_joined'])
+                registration = TournamentRegistration.objects.get(
+                    tournament=self.tournament, participant__user=player)
+                self.assertEqual(registration.status, TournamentRegistration.STATUS_REGISTERED)
+                self.assertEqual(registration.payment_status, TournamentRegistration.PAYMENT_PAID)
+                self.assertTrue(self.tournament.participations.filter(participant__user=player).exists())
+                self.assertEqual(WalletTransaction.balance_for_user(player), Decimal('25.00'))
 
     def test_public_join_is_closed_after_capacity_starts_tournament(self):
         self.post_player(self.players[0])

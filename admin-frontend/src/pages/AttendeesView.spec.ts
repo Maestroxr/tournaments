@@ -112,12 +112,12 @@ describe('AttendeesView', () => {
     })
   })
 
-  it('shows the charge confirmation before adding a funded player', async () => {
+  it('shows the charge confirmation before adding a funded player without a phone', async () => {
     api.mockResolvedValue(response('70.00'))
     const wrapper = view()
     await flushPromises()
 
-    wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
+    await wrapper.get('[aria-label="Add Dana"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.getComponent(AddPlayerDialog).props('user').id).toBe(7)
@@ -130,12 +130,15 @@ describe('AttendeesView', () => {
     })
   })
 
-  it('adds a player directly when the tournament is free', async () => {
-    api.mockResolvedValue(response('0.00', '0.00'))
+  it.each([undefined, '', '   '])('adds a player with phone %j directly when the tournament is free', async phoneNumber => {
+    api.mockResolvedValue({
+      ...response('0.00', '0.00'),
+      available: [{ id: 7, username: 'Dana', balance: '0.00', phone_number: phoneNumber }],
+    })
     const wrapper = view()
     await flushPromises()
 
-    wrapper.getComponent(AttendeeUserRow).vm.$emit('add', 7)
+    await wrapper.get('[aria-label="Add Dana"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.findComponent(AddPlayerDialog).exists()).toBe(false)

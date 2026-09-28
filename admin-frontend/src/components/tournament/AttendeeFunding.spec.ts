@@ -20,7 +20,7 @@ describe('Attendee funding', () => {
   it('blocks paid registration with insufficient funds and offers a top-up', async () => {
     const wrapper = mount(AttendeeUserRow, { props: { user, entryFee: 50 }, global })
     expect(wrapper.getComponent(UserQuickView).props()).toMatchObject({ userId: 7, username: 'Dana' })
-    expect(wrapper.findAll('button')).toHaveLength(2)
+    expect(wrapper.get('[aria-label="Add balance for Dana"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[aria-label="Add Dana"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('30')
     await wrapper.get('[aria-label="Add balance for Dana"]').trigger('click')
@@ -28,19 +28,20 @@ describe('Attendee funding', () => {
     expect(wrapper.emitted('add')).toBeUndefined()
   })
 
-  it('allows adding after the balance is refreshed', async () => {
+  it('allows adding a player without a phone after the balance is refreshed', async () => {
     const wrapper = mount(AttendeeUserRow, { props: { user, entryFee: 50 }, global })
     await wrapper.setProps({ user: { ...user, balance: '50.00' } })
     await wrapper.get('[aria-label="Add Dana"]').trigger('click')
     expect(wrapper.emitted('add')).toEqual([[7]])
-    expect(wrapper.findAll('button')).toHaveLength(1)
+    expect(wrapper.find('[aria-label="Add balance for Dana"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Phone number (optional)')
   })
 
   it('blocks unknown paid balances but still permits free entry', async () => {
     const wrapper = mount(AttendeeUserRow, { props: { user: { ...user, balance: null }, entryFee: 50 }, global })
-    expect(wrapper.get('button').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[aria-label="Add Dana"]').attributes('disabled')).toBeDefined()
     await wrapper.setProps({ entryFee: 0 })
-    await wrapper.get('button').trigger('click')
+    await wrapper.get('[aria-label="Add Dana"]').trigger('click')
     expect(wrapper.emitted('add')).toEqual([[7]])
   })
 

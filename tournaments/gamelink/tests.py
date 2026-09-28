@@ -660,16 +660,21 @@ class StartGameViewTest(StartGameTestBase):
             {'p1', 'p2'},
         )
 
-    def test_phone_less_legacy_player_cannot_start_a_game(self):
+    def test_players_without_phone_numbers_can_start_a_game(self):
         UserContact.objects.filter(user=self.user1).delete()
-        self.login(self.user1)
+        UserContact.objects.filter(user=self.user2).update(phone_number='')
 
-        direct_response = self.client.post(self.play_url())
-        tournament_response = self.client.post(self.tournament_play_url())
+        for user, seat in ((self.user1, 'p1'), (self.user2, 'p2')):
+            self.login(user)
+            for url in (self.play_url(), self.tournament_play_url()):
+                with self.subTest(user=user.username, url=url):
+                    payload = self.ticket_payload(self.client.post(url))
+                    self.assertEqual(payload['fix'], self.fixture.pk)
+                    self.assertEqual(payload['trn'], self.tournament.pk)
+                    self.assertEqual(payload['seat'], seat)
 
-        self.assertEqual(direct_response.status_code, 412)
-        self.assertEqual(tournament_response.status_code, 412)
-        self.assertNothingIssued()
+        self.assertEqual(GameLink.objects.count(), 1)
+        self.assertEqual(IssuedTicket.objects.count(), 4)
 
     def test_posted_fixture_id_cannot_override_the_server_resolution(self):
         other = Fixture.objects.create(

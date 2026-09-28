@@ -31,7 +31,6 @@ const blocked = computed(
   () =>
     props.disabled ||
     props.loading ||
-    !hasPhone.value ||
     (props.entryFee > 0 && (shortfall.value === null || shortfall.value > 0)),
 )
 function money(value: number) {
@@ -68,13 +67,13 @@ function add() {
         {{ t('attendees.enoughBalance') }}
       </span>
     </div>
-    <div v-if="!hasPhone" class="attendee-user-row__phone-required" role="alert">
-      <p><i class="bi bi-telephone-x-fill" aria-hidden="true"></i>{{ t('attendees.phoneRequiredHint') }}</p>
+    <div v-if="!hasPhone" class="attendee-user-row__phone">
+      <p><i class="bi bi-telephone" aria-hidden="true"></i>{{ t('users.phoneOptional') }}</p>
       <div class="attendee-user-row__phone-form">
         <InputText v-model="phoneNumber" :placeholder="t('users.phonePlaceholder')" inputmode="tel" :invalid="Boolean(phoneError)" :disabled="savingPhone" @keydown.enter.prevent="emit('savePhone', phoneNumber)" />
-        <Button icon="bi bi-check-lg" :label="t('attendees.savePhone')" :loading="savingPhone" :disabled="!phoneNumber.trim() || savingPhone" size="small" severity="warn" @click="emit('savePhone', phoneNumber)" />
+        <Button icon="bi bi-check-lg" :label="t('attendees.savePhone')" :loading="savingPhone" :disabled="!phoneNumber.trim() || savingPhone" size="small" severity="secondary" @click="emit('savePhone', phoneNumber)" />
       </div>
-      <small v-if="phoneError">{{ phoneError }}</small>
+      <small v-if="phoneError" role="alert">{{ phoneError }}</small>
     </div>
     <div class="attendee-user-row__actions">
       <Button
@@ -90,9 +89,9 @@ function add() {
       />
       <Button
         icon="bi bi-person-plus"
-        :label="hasPhone ? t('attendees.addUser') : t('attendees.phoneRequired')"
+        :label="t('attendees.addUser')"
         :aria-label="t('attendees.addNamedUser', { name: user.username })"
-        :title="!hasPhone ? t('attendees.phoneRequiredHint') : entryFee > 0 && shortfall !== null && shortfall > 0 ? t('attendees.insufficientBalance') : undefined"
+        :title="entryFee > 0 && shortfall !== null && shortfall > 0 ? t('attendees.insufficientBalance') : undefined"
         :disabled="Boolean(blocked)"
         :loading="loading"
         size="small"
@@ -125,14 +124,14 @@ function add() {
   max-width: 100%;
   padding-inline: 4px;
 }
-.attendee-user-row__phone-required {
+.attendee-user-row__phone {
   flex: 1 1 320px;
-  color: #b45309;
+  color: #92a5c0;
   font-size: 12px;
   font-weight: 600;
 }
-.attendee-user-row__phone-required p { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
-.attendee-user-row__phone-required small { display: block; margin-top: 5px; color: #b91c1c; }
+.attendee-user-row__phone p { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; }
+.attendee-user-row__phone small { display: block; margin-top: 5px; color: #b91c1c; }
 .attendee-user-row__phone-form { display: flex; gap: 8px; }
 .attendee-user-row__phone-form :deep(.p-inputtext) { min-width: 0; flex: 1; }
 .attendee-user-row__funding {
