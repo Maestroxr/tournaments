@@ -60,18 +60,28 @@ cd /home/dev/backgammon-tournaments-backend/tournaments
 ```bash
 cd /home/dev/backgammon-tournaments-backend
 sudo install -m 0644 deploy/tournament-tasks.service.example /etc/systemd/system/backgammon-tournaments-tasks.service
-sudoedit /etc/systemd/system/backgammon-tournaments-tasks.service
 ```
 
-בתבנית יש ערכי דוגמה ל־`User` ול־`EnvironmentFile`. חובה להתאים אותם להגדרות היחידות
-הקיימות, כולל `Group`, `Environment` והרשאות מיוחדות אם קיימים. אפשר לבדוק אותן מקומית
-עם `sudo systemctl cat backgammon-admin-commands.service backgammon-expire-games.service`;
-הפלט עלול לכלול סודות, לכן אין צורך לשלוח אותו. נתיב Python שאומת בשרת הוא
+התבנית הותאמה לשרת Bot1 לפי שתי יחידות הטורנירים העובדות:
+`User=administrator`, ללא `Group` מפורש,
+`EnvironmentFile=/home/dev/backgammon-tournaments-backend/.env`, ו־Python בנתיב
 `/home/dev/backgammon-tournaments-backend/venv/bin/python`.
+
+אם התקנת את התבנית הקודמת והשירות נכשל עם `Failed to load environment files`,
+משוך את העדכון והעתק שוב את התבנית באמצעות הפקודות לעיל. התבנית הקודמת הצביעה
+לקובץ דוגמה שאינו קיים ב־Bot1 והגדירה משתמש אחר. לאחר ההעתקה יש לבצע
+`daemon-reload` ו־`reset-failed`, ואז לחזור למעבר מהטיימרים הישנים כמפורט בהמשך.
+שינוי זה אינו דורש מיגרציה חוזרת אם `frontend.0008_task` כבר הוחלה בהצלחה.
+
+בשרת אחר יש להתאים את המשתמש והסביבה להגדרות היחידות המקומיות, כולל `Group`,
+`Environment` והרשאות מיוחדות אם קיימים, באמצעות
+`sudoedit /etc/systemd/system/backgammon-tournaments-tasks.service`.
+אין לשלוח תוכן קובצי סביבה או ערכי סודות.
 
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/backgammon-tournaments-tasks.service
 sudo systemctl daemon-reload
+sudo systemctl reset-failed backgammon-tournaments-tasks.service
 ```
 
 יש לתקן שגיאות אימות לפני המעבר. ה־cron משתמש ב־`systemctl start` של שירות `oneshot`;
@@ -88,6 +98,9 @@ sudo systemctl daemon-reload
 (
   set -euo pipefail
   cd /home/dev/backgammon-tournaments-backend
+  sudo systemctl enable --now cron
+  sudo systemctl is-active --quiet cron
+  sudo install -m 0644 deploy/tournament-tasks.cron.example /etc/backgammon-tournaments-tasks.cron.pending
   sudo systemctl stop backgammon-admin-commands.timer backgammon-expire-games.timer
   for unit in backgammon-admin-commands.service backgammon-expire-games.service; do
     while true; do
@@ -102,8 +115,10 @@ sudo systemctl daemon-reload
     sudo systemctl start backgammon-admin-commands.timer backgammon-expire-games.timer
     exit 1
   fi
-  sudo install -m 0644 deploy/tournament-tasks.cron.example /etc/cron.d/backgammon-tournaments-tasks
-  sudo systemctl enable --now cron
+  if ! sudo mv /etc/backgammon-tournaments-tasks.cron.pending /etc/cron.d/backgammon-tournaments-tasks; then
+    sudo systemctl start backgammon-admin-commands.timer backgammon-expire-games.timer
+    exit 1
+  fi
   sudo systemctl disable backgammon-admin-commands.timer backgammon-expire-games.timer
   sudo systemctl restart backgammon_tournaments_backend.service
 )

@@ -5,10 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# Match User, Group and environment to the existing tournament job units.
-User=backgammon
+# Bot1 values verified against both existing tournament job units.
+# Adapt User, Group and EnvironmentFile when installing on another host.
+User=administrator
 WorkingDirectory=/home/dev/backgammon-tournaments-backend/tournaments
-EnvironmentFile=/etc/backgammon/tournaments.env
+EnvironmentFile=/home/dev/backgammon-tournaments-backend/.env
 ExecStart=/home/dev/backgammon-tournaments-backend/venv/bin/python -u manage.py run_tasks
 # A batch can take longer while the game server is unavailable.
 TimeoutStartSec=0
