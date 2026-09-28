@@ -270,6 +270,8 @@ describe('TournamentCreateView', () => {
         doubling_enabled: true,
         entry_fee: 0,
         prize_money: 0,
+        prize_type: 'coins',
+        prize_text: '',
         open_registration: true,
       }),
     })
@@ -446,6 +448,67 @@ describe('TournamentCreateView', () => {
     expect(wrapper.text()).not.toContain('Settings copied from Monday Knockout.')
     expect(inputAt(wrapper, 0).element.value).toBe('8')
     expect(inputAt(wrapper, 1).element.value).toBe('16')
+  })
+
+  it.each([
+    { configuredPrize: '0.00', effectivePrize: '90.00', expectedPrize: 0 },
+    { configuredPrize: '1000.00', effectivePrize: '1000.00', expectedPrize: 1000 },
+    { configuredPrize: undefined, effectivePrize: '50.00', expectedPrize: 50 },
+  ])('preserves the configured prize when copying previous settings: $configuredPrize', async ({ configuredPrize, effectivePrize, expectedPrize }) => {
+    apiFetchMock.mockImplementation(async (path, opts) => {
+      if (path === '/api/admin/tournaments' && opts?.method === 'POST') return { id: 8 }
+      if (path === '/api/admin/tournaments') return [{
+        id: 1,
+        name: 'Previous cup',
+        state: 'finished',
+        min_players: 6,
+        max_players: 8,
+        entry_fee: '10.00',
+        configured_prize_money: configuredPrize,
+        prize_money: effectivePrize,
+      }]
+      if (path === '/api/admin/tournaments/8') return { id: 8, state: 'open' }
+      return {}
+    })
+    const wrapper = mountView()
+    await flushPromises()
+    await inputAt(wrapper, 0).setValue('New cup')
+    await wrapper.find('form').trigger('submit.prevent')
+    await wrapper.find('form').trigger('submit.prevent')
+    const previousButton = wrapper.findAll('button').find((button) => button.text().includes('Previous cup'))
+    if (!previousButton) throw new Error('Expected previous tournament button')
+    await previousButton.trigger('click')
+    expect(wrapper.get<HTMLInputElement>('input[aria-label="Prize"]').element.value).toBe(String(expectedPrize))
+    await wrapper.find('form').trigger('submit.prevent')
+    await wrapper.find('form').trigger('submit.prevent')
+    await flushPromises()
+    const createCall = apiFetchMock.mock.calls.find(([path, opts]) => path === '/api/admin/tournaments' && opts?.method === 'POST')
+    expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({
+      entry_fee: 10,
+      prize_money: expectedPrize,
+    })
+    wrapper.unmount()
+  })
+
+  it('groups previous settings by configured prize instead of the collected prize pool', async () => {
+    const previous = {
+      state: 'finished', min_players: 6, max_players: 8, entry_fee: '10.00',
+      configured_prize_money: '0.00',
+    }
+    apiFetchMock.mockResolvedValue([
+      { ...previous, id: 1, name: 'Automatic cup', prize_money: '90.00' },
+      { ...previous, id: 2, name: 'Same automatic settings', prize_money: '45.00' },
+      { ...previous, id: 3, name: 'Fixed prize cup', prize_money: '90.00', configured_prize_money: '90.00' },
+    ])
+    const wrapper = mountView()
+    await flushPromises()
+    await inputAt(wrapper, 0).setValue('New cup')
+    await wrapper.find('form').trigger('submit.prevent')
+    await wrapper.find('form').trigger('submit.prevent')
+    expect(wrapper.text()).toContain('Automatic cup')
+    expect(wrapper.text()).not.toContain('Same automatic settings')
+    expect(wrapper.text()).toContain('Fixed prize cup')
+    wrapper.unmount()
   })
 
   it('updates the preview when player settings change', async () => {

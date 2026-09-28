@@ -26,6 +26,8 @@ interface Tournament {
   doubling_enabled: boolean
   entry_fee: string
   prize_money: string
+  prize_type?: 'coins' | 'text'
+  prize_text?: string
   champion?: {
     id: number | string
     name: string

@@ -99,6 +99,7 @@ type ExistingTournament = {
   doubling_enabled?: boolean
   entry_fee?: string | number
   prize_money?: string | number
+  configured_prize_money?: string | number
   prize_type?: 'coins' | 'text'
   prize_text?: string
 }
@@ -267,7 +268,7 @@ const settingsKey = (tournament: ExistingTournament) =>
     time_control: tournament.time_control ?? 'normal',
     doubling_enabled: tournament.doubling_enabled !== false,
     entry_fee: normalizeMoney(tournament.entry_fee),
-    prize_money: normalizeMoney(tournament.prize_money),
+    prize_money: normalizeMoney(tournament.configured_prize_money ?? tournament.prize_money),
     prize_type: tournament.prize_type ?? 'coins',
     prize_text: tournament.prize_text ?? '',
   })
@@ -379,7 +380,7 @@ function applySuggestion(tournament: ExistingTournament) {
   timeControl.value = tournament.time_control ?? 'normal'
   doublingEnabled.value = tournament.doubling_enabled !== false
   entryFee.value = Number(tournament.entry_fee ?? 0)
-  prizeMoney.value = Number(tournament.prize_money ?? 0)
+  prizeMoney.value = Number(tournament.configured_prize_money ?? tournament.prize_money ?? 0)
   prizeType.value = tournament.prize_type ?? 'coins'
   prizeText.value = tournament.prize_text ?? ''
   appliedSuggestion.value = t('tournamentCreate.previousApplied', { name: tournament.name })

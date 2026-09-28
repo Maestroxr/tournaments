@@ -1,0 +1,5 @@
+# Install as /etc/cron.d/backgammon-tournaments-tasks after configuring the service.
+# The service preserves the backend user/environment; the runner claims durable Tasks.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+* * * * * root /usr/bin/systemctl start backgammon-tournaments-tasks.service

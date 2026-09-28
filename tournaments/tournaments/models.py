@@ -304,7 +304,9 @@ class Tournament(models.Model):
 
     @property
     def effective_prize_money(self):
-        if self.entry_fee <= 0:
+        # An explicit prize is fixed, including tournaments that charge entry.
+        # Zero preserves the automatic net-entry pool for paid tournaments.
+        if self.prize_money > 0 or self.entry_fee <= 0:
             return self.prize_money
         return (
             self.collected_entry_fees

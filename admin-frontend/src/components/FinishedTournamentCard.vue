@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
@@ -25,13 +26,19 @@ interface Tournament {
   doubling_enabled: boolean
   entry_fee: string
   prize_money: string
+  prize_type?: 'coins' | 'text'
+  prize_text?: string
   champion?: PodiumPlayer | null
   podium?: PodiumPlayer[]
 }
 
-defineProps<{ tournament: Tournament }>()
+const props = defineProps<{ tournament: Tournament }>()
 const { locale, t } = useI18n()
 const router = useRouter()
+const isGiftPrize = computed(() => props.tournament.prize_type === 'text')
+const prizeLabel = computed(() => isGiftPrize.value
+  ? props.tournament.prize_text?.trim() || t('tournaments.giftPrize')
+  : Number(props.tournament.prize_money || 0).toFixed(2))
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduled')
@@ -117,7 +124,7 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
       <TournamentMetaItem :label="t('tournaments.timeControl')" :value="timeControlLabel(tournament.time_control, tournament.target_points, t)" />
       <TournamentMetaItem :label="t('tournaments.doubling')" :value="tournament.doubling_enabled ? t('common.enabled') : t('common.disabled')" />
       <TournamentMetaItem :label="t('tournaments.entryFee')" :value="Number(tournament.entry_fee || 0).toFixed(2)" />
-      <TournamentMetaItem :label="t('tournaments.prize')" :value="Number(tournament.prize_money || 0).toFixed(2)" />
+      <TournamentMetaItem class="break-words" :label="t('tournaments.prize')" :value="prizeLabel" />
     </dl>
 
     <RouterLink :to="`/tournaments/${tournament.id}/progress`" class="flex items-center justify-between rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-black">

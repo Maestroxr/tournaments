@@ -1,5 +1,8 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 
 class AccountEmail(models.Model):
@@ -62,3 +65,41 @@ class TablePushDelivery(models.Model):
         constraints = [models.UniqueConstraint(
             fields=['subscription', 'table', 'kind'], name='unique_table_push_per_device_event',
         )]
+
+
+class Task(models.Model):
+    NAME_DELIVER_ADMIN_COMMAND = 'deliver_admin_command'
+    NAME_EXPIRE_UNSTARTED_GAMES = 'expire_unstarted_games'
+    NAME_CHOICES = [
+        (NAME_DELIVER_ADMIN_COMMAND, 'Deliver admin command'),
+        (NAME_EXPIRE_UNSTARTED_GAMES, 'Expire unstarted games'),
+    ]
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_DONE = 'done'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_RUNNING, 'Running'),
+        (STATUS_DONE, 'Done'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=255, unique=True)
+    name = models.CharField(max_length=40, choices=NAME_CHOICES)
+    kwargs = models.JSONField(default=dict)
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    run_at = models.DateTimeField(default=timezone.now)
+    attempts = models.PositiveIntegerField(default=0)
+    lease_token = models.UUIDField(null=True, blank=True)
+    locked_until = models.DateTimeField(null=True, blank=True)
+    last_error = models.TextField(blank=True)
+    last_finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('run_at', 'created_at', 'id')
+        indexes = [
+            models.Index(fields=['status', 'run_at'], name='task_status_run_at_idx'),
+            models.Index(fields=['status', 'locked_until'], name='task_status_lease_idx'),
+        ]

@@ -33,13 +33,15 @@ def remote_expiry(table):
         return json.load(response).get('status')
 
 
-def expire_unstarted_tables(user_id=None):
+def expire_unstarted_tables(user_id=None, heartbeat=None):
     cutoff = timezone.now() - timedelta(minutes=10)
     tables = HeadToHeadTable.objects.filter(status__in=ACTIVE, created_at__lte=cutoff)
     if user_id is not None:
         tables = tables.filter(Q(host_id=user_id) | Q(guest_id=user_id) | Q(status='open'))
     ids = list(tables.values_list('pk', flat=True))
     for pk in ids:
+        if heartbeat is not None and not heartbeat():
+            return False
         observed = HeadToHeadTable.objects.get(pk=pk)
         if (observed.settlement or {}).get('entry_confirmed'):
             continue
@@ -79,3 +81,4 @@ def expire_unstarted_tables(user_id=None):
             table.status = 'cancelled'
             table.completed_at = timezone.now()
             table.save(update_fields=['status', 'completed_at', 'updated_at'])
+    return True

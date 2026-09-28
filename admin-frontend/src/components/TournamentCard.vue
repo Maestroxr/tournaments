@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import TournamentMetaItem from './TournamentMetaItem.vue'
 import TournamentStatusBadge from './TournamentStatusBadge.vue'
 import UserQuickView from './UserQuickView.vue'
 import { timeControlLabel } from '@/utils/adminLabels'
 import { useI18n } from '@/i18n'
+import coinIcon from '@/assets/6b-coin.png'
 
 interface Tournament {
   id: number
@@ -21,10 +23,16 @@ interface Tournament {
   doubling_enabled: boolean
   entry_fee: string
   prize_money: string
+  prize_type?: 'coins' | 'text'
+  prize_text?: string
 }
-defineProps<{ tournament: Tournament }>()
+const props = defineProps<{ tournament: Tournament }>()
 const { locale, t } = useI18n()
 const router = useRouter()
+const isGiftPrize = computed(() => props.tournament.prize_type === 'text')
+const prizeLabel = computed(() => isGiftPrize.value
+  ? props.tournament.prize_text?.trim() || t('tournaments.giftPrize')
+  : Number(props.tournament.prize_money || 0).toFixed(2))
 
 function formatDate(s: string | null) {
   if (!s) return t('tournaments.notScheduledYet')
@@ -145,14 +153,19 @@ function openTournament(event: MouseEvent | KeyboardEvent, tournament: Tournamen
     <section class="mt-5 grid grid-cols-2 divide-x divide-zinc-200 rounded-lg border border-zinc-200 bg-white">
       <div class="px-4 py-3">
         <p class="text-xs font-medium text-zinc-500">{{ t('tournaments.entryFee') }}</p>
-        <p class="mt-1 text-base font-semibold tabular-nums text-zinc-900">
-          ${{ Number(tournament.entry_fee || 0).toFixed(2) }}
+        <p class="mt-1 flex items-center gap-1.5 text-base font-semibold tabular-nums text-zinc-900">
+          <img :src="coinIcon" alt="6B" class="h-5 w-5 shrink-0" />
+          {{ Number(tournament.entry_fee || 0).toFixed(2) }}
         </p>
       </div>
       <div class="px-4 py-3">
         <p class="text-xs font-medium text-zinc-500">{{ t('tournaments.prizePool') }}</p>
-        <p class="mt-1 text-base font-semibold tabular-nums text-emerald-700">
-          ${{ Number(tournament.prize_money || 0).toFixed(2) }}
+        <p v-if="isGiftPrize" class="mt-1 break-words text-base font-semibold text-emerald-700">
+          {{ prizeLabel }}
+        </p>
+        <p v-else class="mt-1 flex items-center gap-1.5 text-base font-semibold tabular-nums text-emerald-700">
+          <img :src="coinIcon" alt="6B" class="h-5 w-5 shrink-0" />
+          {{ prizeLabel }}
         </p>
       </div>
     </section>

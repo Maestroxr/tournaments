@@ -68,6 +68,7 @@ interface TournamentDetail {
   doubling_enabled: boolean
   entry_fee: string
   prize_money: string
+  configured_prize_money?: string | number
   prize_type: 'coins' | 'text'
   prize_text: string
   gift_received: boolean
@@ -309,7 +310,7 @@ function parseTournamentMeta() {
   editTime.value = t.value.time_control ?? 'normal'
   editDoubling.value = t.value.doubling_enabled ?? true
   editEntryFee.value = Number(t.value.entry_fee ?? 0)
-  editPrizeMoney.value = Number(t.value.prize_money ?? 0)
+  editPrizeMoney.value = Number(t.value.configured_prize_money ?? t.value.prize_money ?? 0)
   editPrizeType.value = t.value.prize_type ?? 'coins'
   editPrizeText.value = t.value.prize_text ?? ''
 }

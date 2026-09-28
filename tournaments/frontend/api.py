@@ -242,6 +242,8 @@ def _serialize_tournament(t, request):
         "gift_received": bool(t.gift_received_at),
         "gift_received_at": t.gift_received_at.isoformat() if t.gift_received_at else None,
         "is_winner": is_winner,
+        # Forms must round-trip the configured amount, not the computed pool.
+        "configured_prize_money": str(t.prize_money),
         "prize_money": str(t.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
         "platform_fee_percent": str(t.platform_fee_percent),
         "collected_entry_fees": str(t.collected_entry_fees),

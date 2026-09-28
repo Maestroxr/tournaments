@@ -1,0 +1,17 @@
+[Unit]
+Description=Run backgammon tournament background tasks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Match User, Group and environment to the existing tournament job units.
+User=backgammon
+WorkingDirectory=/home/dev/backgammon-tournaments-backend/tournaments
+EnvironmentFile=/etc/backgammon/tournaments.env
+ExecStart=/home/dev/backgammon-tournaments-backend/venv/bin/python -u manage.py run_tasks
+# A batch can take longer while the game server is unavailable.
+TimeoutStartSec=0
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

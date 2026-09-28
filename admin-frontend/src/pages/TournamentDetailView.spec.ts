@@ -188,6 +188,35 @@ describe('Tournament start confirmation', () => {
     expect(push).toHaveBeenCalledWith('/tournaments/20/players')
   })
 
+  it.each([
+    { configuredPrize: '0.00', effectivePrize: '90.00', expectedPrize: 0 },
+    { configuredPrize: '1000.00', effectivePrize: '1000.00', expectedPrize: 1000 },
+  ])('preserves the configured prize when saving other draft settings: $configuredPrize', async ({ configuredPrize, effectivePrize, expectedPrize }) => {
+    route.name = 'tournament-settings'
+    api.mockImplementation(async (path, options) => {
+      if (path === '/api/admin/tournaments/20' && !options?.method) return {
+        ...tournament,
+        state: 'draft',
+        published: false,
+        configured_prize_money: configuredPrize,
+        prize_money: effectivePrize,
+      }
+      return {}
+    })
+    const wrapper = view()
+    await flushPromises()
+    wrapper.getComponent(InputText).vm.$emit('update:modelValue', 'Renamed cup')
+    await flushPromises()
+    await wrapper.get('[data-testid="publish-and-add"]').trigger('click')
+    await flushPromises()
+    const saveCall = api.mock.calls.find(([path, options]) => path === '/api/admin/tournaments/20' && options?.method === 'PUT')
+    expect(JSON.parse(String(saveCall?.[1]?.body))).toMatchObject({
+      name: 'Renamed cup',
+      prize_money: expectedPrize,
+    })
+    wrapper.unmount()
+  })
+
   it('does not publish when saving changed draft settings fails', async () => {
     route.name = 'tournament-settings'
     api.mockImplementation(async (path, options) => {

@@ -5,7 +5,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from .models import AdminGameCommand
@@ -37,8 +37,9 @@ def deliver_admin_command(command_id):
             if not 200 <= response.status < 300:
                 raise HTTPError(request.full_url, response.status, 'command rejected', response.headers, None)
     except (HTTPError, URLError, OSError, RuntimeError) as error:
-        AdminGameCommand.objects.filter(pk=command.pk).update(
-            status='pending', attempts=models.F('attempts') + 1, last_error=str(error)[:2000])
+        # A reclaimed task may already have delivered while this worker was stalled.
+        AdminGameCommand.objects.filter(pk=command.pk, status='pending').update(
+            attempts=models.F('attempts') + 1, last_error=str(error)[:2000])
         logger.warning('admin game command delivery failed command=%s: %s', command.pk, error)
         return False
     AdminGameCommand.objects.filter(pk=command.pk).update(
@@ -48,7 +49,14 @@ def deliver_admin_command(command_id):
 
 def deliver_admin_command_safely(command_id):
     try:
-        return deliver_admin_command(command_id)
+        from frontend.models import Task
+        from frontend.task_runner import run_task
+        from frontend.tasks import enqueue_admin_command
+
+        task = enqueue_admin_command(command_id)
+        if task.status == Task.STATUS_DONE:
+            return True
+        return run_task(task.pk)
     except Exception as error:
         logger.warning('admin game command unavailable command=%s: %s', command_id, error)
         return False
@@ -57,9 +65,13 @@ def deliver_admin_command_safely(command_id):
 def queue_admin_command(game_link, payload):
     if not getattr(settings, 'GAMELINK_ENABLED', False) or not game_link.external_room_id:
         return None
-    command = AdminGameCommand.objects.create(game_link=game_link, body={**payload})
-    command.body['command_id'] = str(command.pk)
-    command.body['room_id'] = game_link.external_room_id
-    command.body['fixture_id'] = game_link.fixture_id
-    command.save(update_fields=['body'])
+    from frontend.tasks import enqueue_admin_command
+
+    with transaction.atomic():
+        command = AdminGameCommand.objects.create(game_link=game_link, body={**payload})
+        command.body['command_id'] = str(command.pk)
+        command.body['room_id'] = game_link.external_room_id
+        command.body['fixture_id'] = game_link.fixture_id
+        command.save(update_fields=['body'])
+        enqueue_admin_command(command.pk)
     return command
