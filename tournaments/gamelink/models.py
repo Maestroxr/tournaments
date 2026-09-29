@@ -12,7 +12,7 @@ class PracticePurchase(models.Model):
     room_id = models.UUIDField(null=True, blank=True)
     paid = models.BooleanField(default=False)
     wallet_entry = models.OneToOneField('tournaments.WalletTransaction', null=True,
-        blank=True, on_delete=models.PROTECT)
+                                        blank=True, on_delete=models.PROTECT)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -25,9 +25,11 @@ class LinkedAccount(models.Model):
     stay distinct (plan §2, threat 9).
     """
 
-    user        = models.OneToOneField('auth.User', on_delete = models.CASCADE, related_name = 'gamelink_account')
-    external_id = models.UUIDField(default = uuid.uuid4, unique = True, editable = False)
-    created_at  = models.DateTimeField(auto_now_add = True)
+    user = models.OneToOneField(
+        'auth.User', on_delete=models.CASCADE, related_name='gamelink_account')
+    external_id = models.UUIDField(
+        default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f'{self.user} ({self.external_id})'
@@ -37,7 +39,7 @@ class LinkedAccount(models.Model):
         """
         Return the opaque external identity of `user`, creating it on first use.
         """
-        return str(cls.objects.get_or_create(user = user)[0].external_id)
+        return str(cls.objects.get_or_create(user=user)[0].external_id)
 
 
 class GameLink(models.Model):
@@ -46,25 +48,29 @@ class GameLink(models.Model):
     """
 
     STATUS = [
-        ('pending'  , 'Pending'  ),
-        ('playing'  , 'Playing'  ),
+        ('pending', 'Pending'),
+        ('playing', 'Playing'),
         ('completed', 'Completed'),
         ('cancelled', 'Cancelled'),
-        ('failed'   , 'Failed'   ),
+        ('failed', 'Failed'),
     ]
 
-    fixture          = models.OneToOneField('tournaments.Fixture', on_delete = models.CASCADE, related_name = 'game_link')
-    provider         = models.CharField(max_length = 32, default = 'backgammon')
-    external_room_id = models.CharField(max_length = 64, blank = True)
-    status           = models.CharField(max_length = 16, choices = STATUS, default = 'pending')
-    target_points    = models.PositiveSmallIntegerField(default = 1)
-    doubling_enabled = models.BooleanField(default = True)
-    created_at       = models.DateTimeField(auto_now_add = True)
-    expires_at       = models.DateTimeField()
-    completed_at     = models.DateTimeField(null = True, blank = True)
-    raw_result       = models.JSONField(null = True, blank = True)  # audit trail behind the auto-confirmation
-    live_snapshot    = models.JSONField(null = True, blank = True)
-    live_updated_at  = models.DateTimeField(null = True, blank = True)
+    fixture = models.OneToOneField(
+        'tournaments.Fixture', on_delete=models.CASCADE, related_name='game_link')
+    provider = models.CharField(max_length=32, default='backgammon')
+    external_room_id = models.CharField(max_length=64, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS, default='pending')
+    target_points = models.PositiveSmallIntegerField(default=1)
+    doubling_enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True, blank=True)
+    # audit trail behind the auto-confirmation
+    raw_result = models.JSONField(null=True, blank=True)
+    live_snapshot = models.JSONField(null=True, blank=True)
+    live_updated_at = models.DateTimeField(null=True, blank=True)
+    p1_ready_at = models.DateTimeField(null=True, blank=True)
+    p2_ready_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'{self.provider} game for fixture {self.fixture_id} ({self.status})'
@@ -76,11 +82,12 @@ class IssuedTicket(models.Model):
     enforced where redemption is observed, which is the verifier on the game server (plan §4).
     """
 
-    jti        = models.UUIDField(unique = True)
-    game_link  = models.ForeignKey(GameLink, on_delete = models.CASCADE, related_name = 'tickets')
-    user       = models.ForeignKey('auth.User', on_delete = models.CASCADE)
-    seat       = models.CharField(max_length = 2)
-    issued_at  = models.DateTimeField(auto_now_add = True)
+    jti = models.UUIDField(unique=True)
+    game_link = models.ForeignKey(
+        GameLink, on_delete=models.CASCADE, related_name='tickets')
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE)
+    seat = models.CharField(max_length=2)
+    issued_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
     def __str__(self):
@@ -92,8 +99,8 @@ class SeenNonce(models.Model):
     Nonces of inbound result messages, for replay protection. Purged on a schedule (plan §8).
     """
 
-    nonce   = models.CharField(max_length = 64, unique = True)
-    seen_at = models.DateTimeField(auto_now_add = True)
+    nonce = models.CharField(max_length=64, unique=True)
+    seen_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return self.nonce
@@ -135,10 +142,12 @@ class DirectPlayRematch(models.Model):
 class AdminGameCommand(models.Model):
     """Durable tournaments-to-game command; the UUID is the receiver's idempotency key."""
 
-    STATUS = [('pending', 'Pending'), ('delivered', 'Delivered'), ('failed', 'Failed')]
+    STATUS = [('pending', 'Pending'), ('delivered',
+                                       'Delivered'), ('failed', 'Failed')]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    game_link = models.ForeignKey(GameLink, on_delete=models.CASCADE, related_name='admin_commands')
+    game_link = models.ForeignKey(
+        GameLink, on_delete=models.CASCADE, related_name='admin_commands')
     body = models.JSONField()
     status = models.CharField(max_length=16, choices=STATUS, default='pending')
     attempts = models.PositiveIntegerField(default=0)

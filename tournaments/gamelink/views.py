@@ -117,7 +117,7 @@ def playable_seat(user, fixture):
 
     # 3. The fixture has to be one that is playable right now.
     current_stage = tournament.current_stage
-    if current_stage is None or fixture.mode_id != current_stage.id or fixture.level != current_stage.current_level:
+    if current_stage is None or fixture.mode_id != current_stage.id:
         return None, 412
 
     # 4. A fixture whose result is settled is not replayable.
@@ -153,8 +153,6 @@ def _playable_refusal_reason(user, fixture):
     current_stage = tournament.current_stage
     if current_stage is None or fixture.mode_id != current_stage.id:
         return 'fixture_not_in_current_stage'
-    if fixture.level != current_stage.current_level:
-        return 'fixture_not_in_current_level'
     if fixture.is_confirmed:
         return 'fixture_already_confirmed'
     if fixture.player1 is None or fixture.player2 is None:
@@ -240,47 +238,135 @@ class StartTournamentGameView(LoginRequiredMixin, View):
                 pk, request.user.pk)
             return _start_refusal(412, 'disabled')
 
-        try:
-            tournament = Tournament.objects.select_for_update().get(pk=pk)
-        except Tournament.DoesNotExist:
-            logger.warning(
-                'gamelink tournament start refused: tournament does not exist '
-                '[tournament=%s user=%s]', pk, request.user.pk)
-            return _start_refusal(412, 'tournament_does_not_exist')
+        tournament, fixture, seat, refusal = _resolve_current_fixture(request, pk)
+        if refusal is not None:
+            status, reason, detail = refusal
+            if reason == 'tournament_does_not_exist':
+                logger.warning(
+                    'gamelink tournament start refused: tournament does not exist '
+                    '[tournament=%s user=%s]', pk, request.user.pk)
+            elif reason == 'tournament_not_active':
+                logger.warning(
+                    'gamelink tournament start refused: tournament not active '
+                    '[tournament=%s user=%s]', pk, request.user.pk)
+            else:
+                logger.error(
+                    'gamelink tournament start refused: %s '
+                    '[tournament=%s user=%s fixtures=%s]',
+                    reason, pk, request.user.pk, detail)
+            return _start_refusal(status, reason)
 
-        current_stage = tournament.current_stage
-        if tournament.state != 'active' or current_stage is None:
-            logger.warning(
-                'gamelink tournament start refused: tournament not active '
-                '[tournament=%s user=%s]', pk, request.user.pk)
-            return _start_refusal(412, 'tournament_not_active')
-
-        fixtures = list(
-            Fixture.objects.select_for_update().select_related(
-                'mode__tournament', 'player1__user', 'player2__user')
-            .filter(
-                mode_id=current_stage.pk,
-                level=current_stage.current_level,
-            )
-            .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
-            .order_by('pk')
-        )
-        playable = []
-        for fixture in fixtures:
-            seat, _ = playable_seat(request.user, fixture)
-            if seat is not None:
-                playable.append((fixture, seat))
-
-        if len(playable) != 1:
-            reason = 'current_fixture_not_found' if not playable else 'ambiguous_current_fixtures'
-            logger.error(
-                'gamelink tournament start refused: %s '
-                '[tournament=%s user=%s fixtures=%s]',
-                reason, pk, request.user.pk, [fixture.pk for fixture, _ in playable])
-            return _start_refusal(412, reason)
-
-        fixture, seat = playable[0]
         return _issue_game_ticket(request, fixture, seat)
+
+
+def _resolve_current_fixture(request, pk):
+    """
+    Resolve the signed-in user's exactly-one current playable fixture in tournament ``pk``.
+
+    Returns ``(tournament, fixture, seat, refusal)``. On success ``refusal`` is `None` and
+    ``fixture``/``seat`` are authoritative — never trust a fixture id supplied by the client.
+    Otherwise ``refusal`` is a ``(status, reason, detail)`` triple the caller turns into a
+    refusal response. Must run inside a transaction: the tournament and fixture rows are locked.
+    """
+    try:
+        tournament = Tournament.objects.select_for_update().get(pk=pk)
+    except Tournament.DoesNotExist:
+        return None, None, None, (412, 'tournament_does_not_exist', None)
+
+    current_stage = tournament.current_stage
+    if tournament.state != 'active' or current_stage is None:
+        return tournament, None, None, (412, 'tournament_not_active', None)
+
+    fixtures = list(
+        Fixture.objects.select_for_update().select_related(
+            'mode__tournament', 'player1__user', 'player2__user')
+        .filter(
+            mode_id=current_stage.pk,
+        )
+        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+        .order_by('pk')
+    )
+    playable = []
+    for fixture in fixtures:
+        seat, _ = playable_seat(request.user, fixture)
+        if seat is not None:
+            playable.append((fixture, seat))
+
+    if len(playable) != 1:
+        reason = 'current_fixture_not_found' if not playable else 'ambiguous_current_fixtures'
+        return tournament, None, None, (412, reason, [fixture.pk for fixture, _ in playable])
+
+    fixture, seat = playable[0]
+    return tournament, fixture, seat, None
+
+
+# How long one readiness heartbeat counts as fresh. Both seats must have heartbeated inside
+# this window before tickets are issued; each browser re-posts while it waits.
+READY_FRESHNESS_SECONDS = 15
+
+
+def _readiness_fresh(game_link, now):
+    """True only when both seats heartbeated no earlier than the freshness window."""
+    if game_link.p1_ready_at is None or game_link.p2_ready_at is None:
+        return False
+    cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+    return game_link.p1_ready_at >= cutoff and game_link.p2_ready_at >= cutoff
+
+
+class TournamentGameReadyView(LoginRequiredMixin, View):
+    """
+    Record one player's readiness heartbeat for their current tournament fixture.
+
+    POST only, session-authenticated and CSRF-protected like the play endpoint. Each browser
+    posts roughly every two seconds while the loading overlay waits; `both_ready` turns true
+    once both seats have a fresh heartbeat, and only then does the client submit the game
+    entry form. There is no countdown, no cancellation and no entry-timeout behavior here —
+    waiting simply continues until both players are ready.
+    """
+
+    http_method_names = ['post']
+
+    @transaction.atomic
+    def post(self, request, pk):
+        if not settings.GAMELINK_ENABLED:
+            return _start_refusal(412, 'disabled')
+
+        _, fixture, seat, refusal = _resolve_current_fixture(request, pk)
+        if refusal is not None:
+            status, reason, _ = refusal
+            return _start_refusal(status, reason)
+
+        now = timezone.now()
+        game_link, _ = GameLink.objects.get_or_create(
+            fixture=fixture,
+            defaults=dict(
+                target_points=fixture.mode.tournament.target_points,
+                doubling_enabled=fixture.mode.tournament.doubling_enabled,
+                expires_at=now + datetime.timedelta(seconds=settings.GAMELINK_LINK_TTL),
+            ),
+        )
+
+        if game_link.status in ('completed', 'cancelled', 'failed'):
+            return _start_refusal(412, 'link_terminal')
+
+        if game_link.status == 'playing':
+            # Already underway: let the player straight back in.
+            return JsonResponse({
+                'fixture_id': fixture.pk,
+                'seat': seat,
+                'both_ready': True,
+            })
+
+        field = 'p1_ready_at' if seat == 'p1' else 'p2_ready_at'
+        setattr(game_link, field, now)
+        game_link.save(update_fields=[field])
+        # Re-read so a heartbeat the opponent committed while this request was in flight counts.
+        game_link.refresh_from_db()
+        return JsonResponse({
+            'fixture_id': fixture.pk,
+            'seat': seat,
+            'both_ready': _readiness_fresh(game_link, now),
+        })
 
 
 def _issue_game_ticket(request, fixture, seat):
@@ -306,9 +392,16 @@ def _issue_game_ticket(request, fixture, seat):
             ),
         )
 
-        # The game has been played and its result reported; a fresh ticket must not be able to
-        # start a second one over the top of it.
-        if game_link.status == 'completed':
+        # Readiness gate for real tournament fixtures. `playing` means the game is already
+        # underway and this is a re-entry; `pending` starts only once both seats have sent a
+        # fresh readiness heartbeat (see TournamentGameReadyView). Anything else — a link that
+        # is completed, cancelled or failed, or a pending link nobody is waiting on — refuses,
+        # so posting straight at a play endpoint cannot bypass readiness.
+        if game_link.status == 'playing':
+            pass
+        elif game_link.status == 'pending' and _readiness_fresh(game_link, now):
+            pass
+        else:
             return HttpResponse(status=412)
 
         update_fields = []

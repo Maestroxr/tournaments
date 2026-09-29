@@ -59,6 +59,8 @@ class Command(BaseCommand):
                     raw_result=None,
                     live_snapshot=None,
                     live_updated_at=None,
+                    p1_ready_at=None,
+                    p2_ready_at=None,
                 )
 
         self.stdout.write(self.style.SUCCESS(f"Reset {reset} game link(s)."))
