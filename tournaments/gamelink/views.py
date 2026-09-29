@@ -326,11 +326,10 @@ def _has_prior_entry(game_link, user):
 
 def _opponent_info(fixture, seat, game_link, now):
     """
-    Contact/freshness card for the caller's authoritative opponent in this fixture.
+    Freshness card for the caller's authoritative opponent in this fixture.
 
     Only ever called after `_resolve_current_fixture` authorized the caller, so the
-    opponent is always the other seat's user — never an id taken from the request. The
-    phone number comes from the `UserContact` relation and is `None` when absent.
+    opponent is always the other seat's user — never an id taken from the request.
     """
     if seat == 'p1':
         opponent_user = fixture.player2.user
@@ -338,12 +337,9 @@ def _opponent_info(fixture, seat, game_link, now):
     else:
         opponent_user = fixture.player1.user
         opponent_ready_at = game_link.p1_ready_at
-    contact = getattr(opponent_user, 'contact', None)
-    phone_number = (contact.phone_number or None) if contact is not None else None
     cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
     return {
         'username': opponent_user.username,
-        'phone_number': phone_number,
         'is_waiting': opponent_ready_at is not None and opponent_ready_at >= cutoff,
     }
 

@@ -261,16 +261,16 @@ def _serialize_user(user):
     from tournaments.ratings import serialize_rating
     contact = models.UserContact.objects.filter(user=user).first()
     phone_number = contact.phone_number.strip() if contact and contact.phone_number else ""
+    missing_username = not bool((user.username or "").strip())
     missing_phone = not bool(phone_number)
-    missing_password = not user.has_usable_password()
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "phone_number": contact.phone_number if contact else "",
-        "profile_required": missing_phone or missing_password,
+        "profile_required": missing_username or missing_phone,
+        "missing_username": missing_username,
         "missing_phone": missing_phone,
-        "missing_password": missing_password,
         "is_staff": user.is_staff,
         "is_active": user.is_active,
         "balance": str(models.WalletTransaction.balance_for_user(user)),
@@ -584,8 +584,8 @@ def api_profile(request):
         data = json.loads(request.body or "{}")
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
-    if not isinstance(data, dict) or not {'username', 'phone_number', 'password', 'password1', 'password2'} & data.keys():
-        return JsonResponse({"detail": "Provide a username, phone number, or password."}, status=400)
+    if not isinstance(data, dict) or not {'username', 'phone_number'} & data.keys():
+        return JsonResponse({"detail": "Provide a username or phone number."}, status=400)
     errors = {}
     if 'username' in data:
         username = data['username']
@@ -606,31 +606,13 @@ def api_profile(request):
             phone_number = require_phone_number(data['phone_number'])
         except ValidationError as error:
             errors['phone_number'] = error.messages
-    password = None
-    if 'password' in data or 'password1' in data:
-        try:
-            password = data.get('password', data.get('password1'))
-            if not isinstance(password, str) or not password:
-                raise ValidationError('Enter a valid password.')
-            confirm = data.get('password2', data.get('password_confirm', data.get('confirm_password')))
-            if confirm is not None and password != confirm:
-                raise ValidationError('The passwords do not match.')
-            validate_password(password, request.user)
-        except ValidationError as error:
-            errors['password'] = error.messages
     if errors:
         return JsonResponse({"errors": errors}, status=400)
     try:
         with transaction.atomic():
-            user_fields = []
             if 'username' in data:
                 request.user.username = username
-                user_fields.append('username')
-            if password is not None:
-                request.user.set_password(password)
-                user_fields.append('password')
-            if user_fields:
-                request.user.save(update_fields=user_fields)
+                request.user.save(update_fields=['username'])
             if 'phone_number' in data:
                 models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
     except IntegrityError:
@@ -2726,6 +2708,18 @@ def api_admin_wallet_transactions(request):
     })
 
 
+@def _admin_phone_verification(u):
+    """Display-only phone verification state; never creates a UserContact."""
+    contact = models.UserContact.objects.filter(user=u).first()
+    if contact is None:
+        return {"phone_verified": False, "phone_verified_at": None}
+    verified_at = getattr(contact, "phone_verified_at", None)
+    return {
+        "phone_verified": bool(getattr(contact, "phone_verified", False)),
+        "phone_verified_at": verified_at.isoformat() if verified_at else None,
+    }
+
+
 @require_http_methods(["GET", "PUT", "DELETE"])
 def api_admin_user_detail(request, pk):
     err = _require_staff(request)
@@ -2734,6 +2728,7 @@ def api_admin_user_detail(request, pk):
     u = get_object_or_404(User, pk=pk)
     if request.method == "GET":
         data = _serialize_user(u)
+        data.update(_admin_phone_verification(u))
         data["transactions"] = [
             _serialize_wallet_transaction(item)
             for item in u.wallet_transactions.select_related("user", "actor", "tournament")[:50]
@@ -2769,6 +2764,15 @@ def api_admin_user_detail(request, pk):
             return JsonResponse({"errors": {"phone_number": validation_error.messages}}, status=400)
     elif not models.UserContact.objects.filter(user=u).exclude(phone_number='').exists():
         return JsonResponse({"errors": {"phone_number": ["Phone number is required."]}}, status=400)
+    phone_verified = None
+    if "phone_verified" in data:
+        if not isinstance(data["phone_verified"], bool):
+            return JsonResponse({"errors": {"phone_verified": ["Must be a boolean."]}}, status=400)
+        phone_verified = bool(data["phone_verified"])
+        existing_contact = models.UserContact.objects.filter(user=u).first()
+        effective_phone = phone_number if phone_number is not None else (existing_contact.phone_number if existing_contact else "")
+        if not (effective_phone or "").strip():
+            return JsonResponse({"errors": {"phone_verified": ["A phone number is required before verification."]}}, status=400)
     if "is_staff" in data:
         u.is_staff = bool(data["is_staff"])
     if "is_active" in data:
@@ -2791,6 +2795,11 @@ def api_admin_user_detail(request, pk):
                     user=u,
                     defaults={"phone_number": phone_number},
                 )
+            if phone_verified is not None:
+                contact = models.UserContact.objects.filter(user=u).first()
+                contact.phone_verified = phone_verified
+                contact.phone_verified_at = timezone.now() if phone_verified else None
+                contact.save(update_fields=["phone_verified", "phone_verified_at"])
     except ValidationError as validation_error:
         errors = getattr(validation_error, "message_dict", None)
         if errors is None:
@@ -2798,7 +2807,9 @@ def api_admin_user_detail(request, pk):
         return JsonResponse({"errors": errors}, status=400)
     except Exception as e:
         return JsonResponse({"detail": str(e)}, status=400)
-    return JsonResponse(_serialize_user(u))
+    data = _serialize_user(u)
+    data.update(_admin_phone_verification(u))
+    return JsonResponse(data)
 
 
 @require_http_methods(["POST"])

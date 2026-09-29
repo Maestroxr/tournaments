@@ -124,16 +124,7 @@ def issue_direct_play_ticket(user, table, seat) -> tuple[str, uuid.UUID]:
             'loss_limit': loss_limit_value,
         }
 
-    entry_deadline = (table.settlement or {}).get('entry_deadline')
-
-    if type(entry_deadline) is not int:
-        logger.warning(
-            'direct-play table %d has no entry deadline; defaulting to 0', table.pk)
-        logger.warning(entry_deadline)
-        raise ValueError('direct-play table has no entry deadline')
-
-    if table.status == models.HeadToHeadTable.STATUS_READY and entry_deadline <= issued_at:
-        raise ValueError('direct-play entry deadline has expired')
+    entry_deadline = issued_at + (24 * 60 * 60)
 
     payload = {
         'v': TICKET_VERSION, 'iss': settings.GAMELINK_ISSUER,

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 ACTIVE = ('open', 'ready', 'playing')
 
 
-ENTRY_WINDOW_SECONDS = 10 * 60
+ENTRY_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def mark_entry_ready(table):

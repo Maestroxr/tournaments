@@ -58,12 +58,12 @@ def config(request):
 def profile_flags(user):
     from tournaments.models import UserContact
     contact = UserContact.objects.filter(user=user).first()
+    missing_username = not bool((user.username or '').strip())
     missing_phone = not bool(contact and (contact.phone_number or '').strip())
-    missing_password = not user.has_usable_password()
     return {
+        'missing_username': missing_username,
         'missing_phone': missing_phone,
-        'missing_password': missing_password,
-        'profile_required': missing_phone or missing_password,
+        'profile_required': missing_username or missing_phone,
     }
 
 

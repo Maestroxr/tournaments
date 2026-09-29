@@ -3,8 +3,13 @@ import { ref } from 'vue'
 import Button from 'primevue/button'
 import Popover from 'primevue/popover'
 import { apiFetch, formatApiError } from '@/services/api'
-import type { AdminUserSummary } from '@/types/user'
+import type { AdminUserSummary as AdminUserSummaryBase } from '@/types/user'
 import { useI18n } from '@/i18n'
+
+interface AdminUserSummary extends AdminUserSummaryBase {
+  phone_verified: boolean
+  phone_verified_at: string | null
+}
 
 const props = defineProps<{
   userId: number | null
@@ -14,6 +19,8 @@ const props = defineProps<{
 
 const loading = ref(false)
 const error = ref('')
+const verifyError = ref('')
+const verifying = ref(false)
 const user = ref<AdminUserSummary | null>(null)
 const popover = ref<InstanceType<typeof Popover> | null>(null)
 const { direction, t } = useI18n()
@@ -53,6 +60,31 @@ function scheduleClose() {
 function close() {
   cancelClose()
   popover.value?.hide()
+}
+
+function formatVerifiedAt(value: string | null) {
+  if (!value) return value
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return value
+  }
+}
+
+async function toggleVerification() {
+  if (!user.value || verifying.value) return
+  verifying.value = true
+  verifyError.value = ''
+  try {
+    user.value = await apiFetch<AdminUserSummary>(`/api/admin/users/${user.value.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ phone_verified: !user.value.phone_verified }),
+    })
+  } catch (caught: unknown) {
+    verifyError.value = formatApiError(caught)
+  } finally {
+    verifying.value = false
+  }
 }
 </script>
 
@@ -116,6 +148,14 @@ function close() {
               <dd dir="auto">{{ user.phone_number || t('common.noPhone') }}</dd>
             </div>
             <div>
+              <dt>Phone status</dt>
+              <dd>{{ user.phone_verified ? 'Verified' : 'Not verified' }}</dd>
+            </div>
+            <div v-if="user.phone_verified_at">
+              <dt>Verified at</dt>
+              <dd dir="auto">{{ formatVerifiedAt(user.phone_verified_at) }}</dd>
+            </div>
+            <div>
               <dt>{{ t('users.roleLabel') }}</dt>
               <dd>{{ user.is_staff ? t('common.staff') : t('common.user') }}</dd>
             </div>
@@ -124,6 +164,19 @@ function close() {
               <dd>{{ user.is_active ? t('common.active') : t('common.inactive') }}</dd>
             </div>
           </dl>
+
+          <button
+            v-if="user.phone_number"
+            type="button"
+            class="user-quick-view__verify"
+            :disabled="verifying"
+            @click="toggleVerification"
+          >
+            {{ verifying ? '…' : user.phone_verified ? 'Mark as unverified' : 'Mark as verified' }}
+          </button>
+          <p v-if="verifyError" class="user-quick-view__message user-quick-view__message--error">
+            {{ verifyError }}
+          </p>
 
           <RouterLink :to="`/users/${user.id}/edit`" class="user-quick-view__edit">
             <i class="bi bi-pencil-square" aria-hidden="true"></i>
@@ -209,4 +262,20 @@ function close() {
   text-decoration: none;
 }
 .user-quick-view__edit:hover { border-color: #5d9ee8; background: #2c70b8; color: #fff; }
+.user-quick-view__verify {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid #31425f;
+  border-radius: 7px;
+  background: transparent;
+  color: #8cdbff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.user-quick-view__verify:hover:not(:disabled) { background: #1d2a43; color: #f4f7ff; }
+.user-quick-view__verify:disabled { opacity: 0.6; cursor: wait; }
+.user-quick-view__verify:focus-visible { outline: 2px solid #80dbff; outline-offset: 2px; }
 </style>

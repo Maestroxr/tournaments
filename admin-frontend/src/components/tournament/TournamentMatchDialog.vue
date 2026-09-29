@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onUnmounted, onMounted, ref } from 'vue'
 import Drawer from 'primevue/drawer'
+import Avatar from 'primevue/avatar'
 import Button from 'primevue/button'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture } from '@/types/tournamentProgress'
 import TournamentMatchAdminPanel from './TournamentMatchAdminPanel.vue'
+import UserQuickView from '@/components/UserQuickView.vue'
 import MatchLiveStatus from './MatchLiveStatus.vue'
 import MatchPanelNavigation from './MatchPanelNavigation.vue'
 import type { MatchPanelSection } from '@/types/matchAdministration'
@@ -47,6 +49,7 @@ const players = computed(() =>
     const source = props.sources?.[slot]
     return {
       slot,
+      userId: player?.user_id ?? null,
       name:
         player?.name ||
         (source
@@ -122,7 +125,11 @@ function close() {
     </div>
     <div class="match-dialog__players">
       <div v-for="player in players" :key="player.slot" class="match-dialog__player">
-        <span>{{ player.name }}</span
+        <span class="match-dialog__identity"
+          ><Avatar :label="(player.name?.trim()?.[0] || '?').toUpperCase()" shape="circle" /><UserQuickView
+            :user-id="player.userId"
+            :username="player.name"
+        /></span
         ><strong>{{ player.score ?? '–' }}</strong>
       </div>
     </div>
@@ -213,6 +220,14 @@ function close() {
 .match-dialog__player span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+.match-dialog__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.match-dialog__identity span {
   font-weight: 600;
 }
 .match-dialog__player strong {

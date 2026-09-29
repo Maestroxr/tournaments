@@ -539,6 +539,8 @@ class UserContact(models.Model):
         related_name='contact',
     )
     phone_number = models.CharField(max_length=24, blank=True)
+    phone_verified = models.BooleanField(default=False)
+    phone_verified_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f'{self.user}: {self.phone_number}'

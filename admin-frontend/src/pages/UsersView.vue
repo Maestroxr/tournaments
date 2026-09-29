@@ -7,6 +7,7 @@ import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Tag from 'primevue/tag'
 import SearchBar from '@/components/SearchBar.vue'
+import UserQuickView from '@/components/UserQuickView.vue'
 import AppAlert from '@/components/AppAlert.vue'
 import { useI18n } from '@/i18n'
 
@@ -77,7 +78,11 @@ async function remove(id: number) {
           <Avatar :label="(data.username?.trim()?.[0] || '?').toUpperCase()" shape="circle" />
         </template>
       </Column>
-      <Column field="username" :header="t('users.username')" sortable />
+      <Column :header="t('users.username')" sortable sort-field="username">
+        <template #body="{ data }">
+          <UserQuickView :user-id="data.id" :username="data.username" />
+        </template>
+      </Column>
       <Column :header="t('users.balance')" sortable sort-field="balance">
         <template #body="{ data }"><span class="font-medium text-emerald-700">{{ Number(data.balance || 0).toFixed(2) }}</span></template>
       </Column>
