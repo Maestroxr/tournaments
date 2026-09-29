@@ -324,6 +324,30 @@ def _has_prior_entry(game_link, user):
     return IssuedTicket.objects.filter(game_link=game_link, user=user).exists()
 
 
+def _opponent_info(fixture, seat, game_link, now):
+    """
+    Contact/freshness card for the caller's authoritative opponent in this fixture.
+
+    Only ever called after `_resolve_current_fixture` authorized the caller, so the
+    opponent is always the other seat's user — never an id taken from the request. The
+    phone number comes from the `UserContact` relation and is `None` when absent.
+    """
+    if seat == 'p1':
+        opponent_user = fixture.player2.user
+        opponent_ready_at = game_link.p2_ready_at
+    else:
+        opponent_user = fixture.player1.user
+        opponent_ready_at = game_link.p1_ready_at
+    contact = getattr(opponent_user, 'contact', None)
+    phone_number = (contact.phone_number or None) if contact is not None else None
+    cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+    return {
+        'username': opponent_user.username,
+        'phone_number': phone_number,
+        'is_waiting': opponent_ready_at is not None and opponent_ready_at >= cutoff,
+    }
+
+
 class TournamentGameReadyView(LoginRequiredMixin, View):
     """
     Record one player's readiness heartbeat for their current tournament fixture.
@@ -367,6 +391,7 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
                 'fixture_id': fixture.pk,
                 'seat': seat,
                 'both_ready': True,
+                'opponent': _opponent_info(fixture, seat, game_link, now),
             })
 
         field = 'p1_ready_at' if seat == 'p1' else 'p2_ready_at'
@@ -395,6 +420,7 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             'fixture_id': fixture.pk,
             'seat': seat,
             'both_ready': _readiness_fresh(game_link, now),
+            'opponent': _opponent_info(fixture, seat, game_link, now),
         })
 
 
