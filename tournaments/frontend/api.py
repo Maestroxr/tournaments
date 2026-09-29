@@ -260,11 +260,17 @@ def _serialize_tournament(t, request):
 def _serialize_user(user):
     from tournaments.ratings import serialize_rating
     contact = models.UserContact.objects.filter(user=user).first()
+    phone_number = contact.phone_number.strip() if contact and contact.phone_number else ""
+    missing_phone = not bool(phone_number)
+    missing_password = not user.has_usable_password()
     return {
         "id": user.id,
         "username": user.username,
         "email": user.email,
         "phone_number": contact.phone_number if contact else "",
+        "profile_required": missing_phone or missing_password,
+        "missing_phone": missing_phone,
+        "missing_password": missing_password,
         "is_staff": user.is_staff,
         "is_active": user.is_active,
         "balance": str(models.WalletTransaction.balance_for_user(user)),
@@ -578,8 +584,8 @@ def api_profile(request):
         data = json.loads(request.body or "{}")
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
-    if not isinstance(data, dict) or not {'username', 'phone_number'} & data.keys():
-        return JsonResponse({"detail": "Provide a username or phone number."}, status=400)
+    if not isinstance(data, dict) or not {'username', 'phone_number', 'password', 'password1', 'password2'} & data.keys():
+        return JsonResponse({"detail": "Provide a username, phone number, or password."}, status=400)
     errors = {}
     if 'username' in data:
         username = data['username']
@@ -600,13 +606,31 @@ def api_profile(request):
             phone_number = require_phone_number(data['phone_number'])
         except ValidationError as error:
             errors['phone_number'] = error.messages
+    password = None
+    if 'password' in data or 'password1' in data:
+        try:
+            password = data.get('password', data.get('password1'))
+            if not isinstance(password, str) or not password:
+                raise ValidationError('Enter a valid password.')
+            confirm = data.get('password2', data.get('password_confirm', data.get('confirm_password')))
+            if confirm is not None and password != confirm:
+                raise ValidationError('The passwords do not match.')
+            validate_password(password, request.user)
+        except ValidationError as error:
+            errors['password'] = error.messages
     if errors:
         return JsonResponse({"errors": errors}, status=400)
     try:
         with transaction.atomic():
+            user_fields = []
             if 'username' in data:
                 request.user.username = username
-                request.user.save(update_fields=['username'])
+                user_fields.append('username')
+            if password is not None:
+                request.user.set_password(password)
+                user_fields.append('password')
+            if user_fields:
+                request.user.save(update_fields=user_fields)
             if 'phone_number' in data:
                 models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
     except IntegrityError:

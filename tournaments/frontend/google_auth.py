@@ -55,11 +55,23 @@ def config(request):
     return JsonResponse({'enabled': True, 'client_id': client_id, 'nonce': nonce})
 
 
+def profile_flags(user):
+    from tournaments.models import UserContact
+    contact = UserContact.objects.filter(user=user).first()
+    missing_phone = not bool(contact and (contact.phone_number or '').strip())
+    missing_password = not user.has_usable_password()
+    return {
+        'missing_phone': missing_phone,
+        'missing_password': missing_password,
+        'profile_required': missing_phone or missing_password,
+    }
+
+
 def sign_in(request, user):
     if not user.is_active:
         return failure('account_unavailable', 403)
     login(request, user, backend='django.contrib.auth.backends.ModelBackend')
-    return JsonResponse({'status': 'authenticated'})
+    return JsonResponse({'status': 'authenticated', **profile_flags(user)})
 
 
 @never_cache
