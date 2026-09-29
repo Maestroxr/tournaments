@@ -202,6 +202,32 @@ def queue_guest_entered_push(table):
     )
 
 
+def notify_tournament_opponent_waiting(fixture, *, recipient_id):
+    """Immediately push "opponent is waiting" to one tournament player's devices."""
+    if not configured():
+        return 0
+    sent = 0
+    name = fixture.mode.tournament.name
+    for device in PushSubscription.objects.filter(user_id=recipient_id):
+        english = device.language == 'en'
+        payload = {
+            'title': 'Your opponent is waiting' if english else 'היריב שלך מחכה לך',
+            'body': f'{name} — your opponent is waiting for you. Enter the game.' if english else f'{name} — היריב שלך מחכה לך. היכנס למשחק.',
+            'url': '/tournaments/my-games',
+            'tag': f'tournament-opponent-waiting:{fixture.pk}',
+        }
+        try:
+            send_notification(device, payload)
+        except Exception as error:
+            response = getattr(error, 'response', None)
+            if getattr(response, 'status_code', None) in (404, 410):
+                PushSubscription.objects.filter(pk=device.pk).delete()
+            # Any other failure must not reach the readiness request; try the next device.
+            continue
+        sent += 1
+    return sent
+
+
 def send_notification(device, payload):
     # Keep provider encryption/signing in the maintained Web Push library.
     import requests

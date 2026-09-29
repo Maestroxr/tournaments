@@ -313,6 +313,17 @@ def _readiness_fresh(game_link, now):
     return game_link.p1_ready_at >= cutoff and game_link.p2_ready_at >= cutoff
 
 
+def _has_prior_entry(game_link, user):
+    """
+    True when this backend already issued `user` a ticket for `game_link`.
+
+    An issued ticket is the tournaments side's authoritative evidence that this player
+    entered the linked room before, which is what distinguishes re-entry into a `playing`
+    link from a first entry that must still go through readiness.
+    """
+    return IssuedTicket.objects.filter(game_link=game_link, user=user).exists()
+
+
 class TournamentGameReadyView(LoginRequiredMixin, View):
     """
     Record one player's readiness heartbeat for their current tournament fixture.
@@ -349,8 +360,9 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
         if game_link.status in ('completed', 'cancelled', 'failed'):
             return _start_refusal(412, 'link_terminal')
 
-        if game_link.status == 'playing':
-            # Already underway: let the player straight back in.
+        if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
+            # Already underway and this player entered before: straight back in. Anyone
+            # else falls through to the readiness check below instead of bypassing it.
             return JsonResponse({
                 'fixture_id': fixture.pk,
                 'seat': seat,
@@ -358,10 +370,27 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             })
 
         field = 'p1_ready_at' if seat == 'p1' else 'p2_ready_at'
+        previous_ready_at = getattr(game_link, field)
+        cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+        new_waiting_attempt = previous_ready_at is None or previous_ready_at < cutoff
+        if seat == 'p1':
+            opponent_user_id = fixture.player2.user_id
+        else:
+            opponent_user_id = fixture.player1.user_id
         setattr(game_link, field, now)
         game_link.save(update_fields=[field])
         # Re-read so a heartbeat the opponent committed while this request was in flight counts.
         game_link.refresh_from_db()
+        if (new_waiting_attempt and opponent_user_id is not None
+                and not _readiness_fresh(game_link, now)):
+            from frontend.push import notify_tournament_opponent_waiting
+            transaction.on_commit(
+                lambda fixture=fixture, opponent_user_id=opponent_user_id:
+                    notify_tournament_opponent_waiting(
+                        fixture,
+                        recipient_id=opponent_user_id,
+                    )
+            )
         return JsonResponse({
             'fixture_id': fixture.pk,
             'seat': seat,
@@ -392,12 +421,13 @@ def _issue_game_ticket(request, fixture, seat):
             ),
         )
 
-        # Readiness gate for real tournament fixtures. `playing` means the game is already
-        # underway and this is a re-entry; `pending` starts only once both seats have sent a
-        # fresh readiness heartbeat (see TournamentGameReadyView). Anything else — a link that
-        # is completed, cancelled or failed, or a pending link nobody is waiting on — refuses,
-        # so posting straight at a play endpoint cannot bypass readiness.
-        if game_link.status == 'playing':
+        # Readiness gate for real tournament fixtures. `playing` allows a ticket only as a
+        # re-entry for a player this backend already issued a ticket to; `pending` starts
+        # only once both seats have sent a fresh readiness heartbeat (see
+        # TournamentGameReadyView). Anything else — a link that is completed, cancelled or
+        # failed, a first entry into a `playing` link, or a pending link nobody is waiting
+        # on — refuses, so posting straight at a play endpoint cannot bypass readiness.
+        if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
             pass
         elif game_link.status == 'pending' and _readiness_fresh(game_link, now):
             pass
