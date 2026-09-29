@@ -22,10 +22,12 @@ import hmac
 import re
 import time
 import uuid
+from venv import logger
 
 from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ImproperlyConfigured
+from django.db import models
 
 TICKET_VERSION = 1
 TICKET_SALT = 'gamelink.ticket.v1'
@@ -62,32 +64,34 @@ def issue_ticket(user, fixture, seat, game_link):
 
     from .models import LinkedAccount
 
-    own, opponent = (fixture.player1, fixture.player2) if seat == 'p1' else (fixture.player2, fixture.player1)
+    own, opponent = (fixture.player1, fixture.player2) if seat == 'p1' else (
+        fixture.player2, fixture.player1)
 
     issued_at = int(time.time())
     jti = uuid.uuid4()
     payload = {
-        'v'   : TICKET_VERSION,
-        'iss' : settings.GAMELINK_ISSUER,
-        'aud' : settings.GAMELINK_AUDIENCE,
-        'jti' : str(jti),
-        'iat' : issued_at,
-        'exp' : issued_at + settings.GAMELINK_TICKET_TTL,
-        'sub' : LinkedAccount.external_id_for(user),
+        'v': TICKET_VERSION,
+        'iss': settings.GAMELINK_ISSUER,
+        'aud': settings.GAMELINK_AUDIENCE,
+        'jti': str(jti),
+        'iat': issued_at,
+        'exp': issued_at + settings.GAMELINK_TICKET_TTL,
+        'sub': LinkedAccount.external_id_for(user),
         'name': own.name if own else '',
-        'trn' : fixture.mode.tournament_id,
-        'fix' : fixture.pk,
+        'trn': fixture.mode.tournament_id,
+        'fix': fixture.pk,
         'seat': seat,
-        'opp' : opponent.name if opponent else '',
-        'tp'  : game_link.target_points,
-        'dbl' : game_link.doubling_enabled,
-        'tc'  : fixture.mode.tournament.time_control,
+        'opp': opponent.name if opponent else '',
+        'tp': game_link.target_points,
+        'dbl': game_link.doubling_enabled,
+        'tc': fixture.mode.tournament.time_control,
     }
-    token = signing.dumps(payload, key = _ticket_secret(), salt = TICKET_SALT, compress = False)
+    token = signing.dumps(payload, key=_ticket_secret(),
+                          salt=TICKET_SALT, compress=False)
     return token, jti
 
 
-def issue_direct_play_ticket(user, table, seat):
+def issue_direct_play_ticket(user, table, seat) -> tuple[str, uuid.UUID]:
     """Mint a game ticket for a paid one-on-one table (not a tournament fixture)."""
     if seat not in SEATS:
         raise ValueError(f'unknown seat: "{seat}"')
@@ -119,6 +123,18 @@ def issue_direct_play_ticket(user, table, seat):
             'stake': str(table.amount),
             'loss_limit': loss_limit_value,
         }
+
+    entry_deadline = (table.settlement or {}).get('entry_deadline')
+
+    if type(entry_deadline) is not int:
+        logger.warning(
+            'direct-play table %d has no entry deadline; defaulting to 0', table.pk)
+        logger.warning(entry_deadline)
+        raise ValueError('direct-play table has no entry deadline')
+
+    if table.status == models.HeadToHeadTable.STATUS_READY and entry_deadline <= issued_at:
+        raise ValueError('direct-play entry deadline has expired')
+
     payload = {
         'v': TICKET_VERSION, 'iss': settings.GAMELINK_ISSUER,
         'aud': settings.GAMELINK_AUDIENCE, 'jti': str(jti),
@@ -126,16 +142,17 @@ def issue_direct_play_ticket(user, table, seat):
         'sub': LinkedAccount.external_id_for(user), 'name': user.username,
         # Negative fixture ids occupy a disjoint namespace on the game server.
         'trn': 0, 'fix': -table.pk, 'seat': seat,
-        'entry_deadline': int(table.created_at.timestamp()) + 600,
+        'entry_deadline': entry_deadline,
         'opp': opponent.username if opponent else '', 'tp': table.target_points,
         'dbl': table.doubling_enabled, 'tc': table.time_control,
         **format_claims,
     }
-    token = signing.dumps(payload, key=_ticket_secret(), salt=TICKET_SALT, compress=False)
+    token = signing.dumps(payload, key=_ticket_secret(),
+                          salt=TICKET_SALT, compress=False)
     return token, jti
 
 
-def verify_ticket(token, max_age = None):
+def verify_ticket(token, max_age=None):
     """
     Verify `token` and return its payload.
 
@@ -150,7 +167,8 @@ def verify_ticket(token, max_age = None):
     if max_age is None:
         max_age = settings.GAMELINK_TICKET_TTL
 
-    payload = signing.loads(token, key = _ticket_secret(), salt = TICKET_SALT, max_age = max_age)
+    payload = signing.loads(token, key=_ticket_secret(),
+                            salt=TICKET_SALT, max_age=max_age)
 
     if not isinstance(payload, dict):
         raise signing.BadSignature('ticket payload is not an object')
@@ -212,7 +230,8 @@ def sign_result_body(raw_body, timestamp, nonce):
     secrets = _result_secrets()
     if not secrets:
         raise ImproperlyConfigured('GAMELINK_RESULT_SECRETS is not configured')
-    signature = hmac.new(secrets[0].encode(), result_signature_base(raw_body, timestamp, nonce), hashlib.sha256)
+    signature = hmac.new(secrets[0].encode(), result_signature_base(
+        raw_body, timestamp, nonce), hashlib.sha256)
     return f'{RESULT_SIGNATURE_VERSION}={signature.hexdigest()}'
 
 
@@ -259,7 +278,8 @@ def sign_command_body(raw_body, timestamp):
     secret = getattr(settings, 'GAMELINK_COMMAND_SECRET', '')
     if not secret:
         raise ImproperlyConfigured('GAMELINK_COMMAND_SECRET is not configured')
-    signature = hmac.new(secret.encode(), command_signature_base(raw_body, timestamp), hashlib.sha256)
+    signature = hmac.new(secret.encode(), command_signature_base(
+        raw_body, timestamp), hashlib.sha256)
     return f'{COMMAND_SIGNATURE_VERSION}={signature.hexdigest()}'
 
 

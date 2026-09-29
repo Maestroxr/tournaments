@@ -69,17 +69,20 @@ class StartDirectPlayView(LoginRequiredMixin, View):
             seat = 'p2'
         else:
             return HttpResponse(status=403)
-        token, _ = issue_direct_play_ticket(request.user, table, seat)
-        if table.status == HeadToHeadTable.STATUS_READY:
-            table.status = HeadToHeadTable.STATUS_PLAYING
-            table.save(update_fields=['status', 'updated_at'])
+
+        try:
+            token, _ = issue_direct_play_ticket(request.user, table, seat)
+        except ValueError:
+            return HttpResponse(status=412)
+
         if request.user.id == table.host_id:
             from frontend.push import queue_host_entered_push
             queue_host_entered_push(table)
         else:
             from frontend.push import queue_guest_entered_push
             queue_guest_entered_push(table)
-        response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
+        response = HttpResponseRedirect(
+            f'{base_url}/api/link/enter/?ticket={quote(token)}')
         response['Referrer-Policy'] = 'no-referrer'
         response['Cache-Control'] = 'no-store'
         return response
@@ -184,15 +187,17 @@ class StartGameView(LoginRequiredMixin, View):
     @transaction.atomic
     def post(self, request, pk):
         if not settings.GAMELINK_ENABLED:
-            logger.warning('gamelink start refused: disabled [fixture=%s user=%s]', pk, request.user.pk)
+            logger.warning(
+                'gamelink start refused: disabled [fixture=%s user=%s]', pk, request.user.pk)
             return _start_refusal(412, 'disabled')
 
         try:
-            fixture = Fixture.objects.get(pk = pk)
+            fixture = Fixture.objects.get(pk=pk)
             Tournament.objects.select_for_update().get(pk=fixture.mode.tournament_id)
             fixture = Fixture.objects.select_for_update().get(pk=pk)
         except Fixture.DoesNotExist:
-            logger.warning('gamelink start refused: fixture does not exist [fixture=%s user=%s]', pk, request.user.pk)
+            logger.warning(
+                'gamelink start refused: fixture does not exist [fixture=%s user=%s]', pk, request.user.pk)
             return _start_refusal(412, 'fixture_does_not_exist')
 
         seat, refusal = playable_seat(request.user, fixture)
@@ -205,7 +210,8 @@ class StartGameView(LoginRequiredMixin, View):
                 'fixture_level=%s current_level=%s confirmed=%s p1_user=%s p2_user=%s]',
                 reason, fixture.pk, request.user.pk, tournament.state, fixture.mode_id,
                 getattr(tournament.current_stage, 'id', None), fixture.level,
-                getattr(tournament.current_stage, 'current_level', None), fixture.is_confirmed,
+                getattr(tournament.current_stage, 'current_level',
+                        None), fixture.is_confirmed,
                 fixture.player1.user_id if fixture.player1 else None,
                 fixture.player2.user_id if fixture.player2 else None,
             )
@@ -288,22 +294,22 @@ def _issue_game_ticket(request, fixture, seat):
         return _start_refusal(412, 'backgammon_url_is_empty')
 
     now = timezone.now()
-    link_ttl = datetime.timedelta(seconds = settings.GAMELINK_LINK_TTL)
+    link_ttl = datetime.timedelta(seconds=settings.GAMELINK_LINK_TTL)
 
     with transaction.atomic():
         game_link, _ = GameLink.objects.get_or_create(
-            fixture = fixture,
-            defaults = dict(
-                target_points = fixture.mode.tournament.target_points,
-                doubling_enabled = fixture.mode.tournament.doubling_enabled,
-                expires_at = now + link_ttl,
+            fixture=fixture,
+            defaults=dict(
+                target_points=fixture.mode.tournament.target_points,
+                doubling_enabled=fixture.mode.tournament.doubling_enabled,
+                expires_at=now + link_ttl,
             ),
         )
 
         # The game has been played and its result reported; a fresh ticket must not be able to
         # start a second one over the top of it.
         if game_link.status == 'completed':
-            return HttpResponse(status = 412)
+            return HttpResponse(status=412)
 
         update_fields = []
         if game_link.target_points != fixture.mode.tournament.target_points:
@@ -320,23 +326,25 @@ def _issue_game_ticket(request, fixture, seat):
             update_fields.append('expires_at')
 
         if update_fields:
-            game_link.save(update_fields = update_fields)
+            game_link.save(update_fields=update_fields)
 
         token, jti = issue_ticket(request.user, fixture, seat, game_link)
         IssuedTicket.objects.create(
-            jti        = jti,
-            game_link  = game_link,
-            user       = request.user,
-            seat       = seat,
-            expires_at = now + datetime.timedelta(seconds = settings.GAMELINK_TICKET_TTL),
+            jti=jti,
+            game_link=game_link,
+            user=request.user,
+            seat=seat,
+            expires_at=now +
+            datetime.timedelta(seconds=settings.GAMELINK_TICKET_TTL),
         )
 
-    response = HttpResponseRedirect(f'{base_url}/api/link/enter/?ticket={quote(token)}')
+    response = HttpResponseRedirect(
+        f'{base_url}/api/link/enter/?ticket={quote(token)}')
 
     # The ticket is in the URL, so keep it out of the next request's `Referer` and out of any
     # shared cache (plan §2, threat 5).
     response['Referrer-Policy'] = 'no-referrer'
-    response['Cache-Control']   = 'no-store'
+    response['Cache-Control'] = 'no-store'
     return response
 
 
@@ -374,7 +382,7 @@ _ERRORS = {
 }
 
 
-@method_decorator(csrf_exempt, name = 'dispatch')
+@method_decorator(csrf_exempt, name='dispatch')
 class ResultCallbackView(View):
     """
     Record the result of an externally played game.
@@ -417,7 +425,7 @@ class ResultCallbackView(View):
         #    gating on it would be theatre. Cross-environment confusion is kept out by giving each
         #    environment its own secret (plan §2, threat 7), not by this header.
         timestamp = request.headers.get('X-Gamelink-Timestamp', '')
-        nonce     = request.headers.get('X-Gamelink-Nonce', '')
+        nonce = request.headers.get('X-Gamelink-Nonce', '')
         signature = request.headers.get('X-Gamelink-Signature', '')
 
         if not _TIMESTAMP_PATTERN.match(timestamp):
@@ -444,7 +452,7 @@ class ResultCallbackView(View):
         #    roll back to, every query after this one would fail.
         try:
             with transaction.atomic():
-                SeenNonce.objects.create(nonce = nonce)
+                SeenNonce.objects.create(nonce=nonce)
         except IntegrityError:
             return _reject(request, 401, 'nonce has been seen before')
 
@@ -461,7 +469,6 @@ class ResultCallbackView(View):
 
         return self.record(request, body)
 
-
     def record(self, request, body):
         """
         Apply a verified, well-formed result to its fixture.
@@ -477,13 +484,14 @@ class ResultCallbackView(View):
 
         with transaction.atomic():
             try:
-                tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
+                tournament_id = Fixture.objects.values_list(
+                    'mode__tournament_id', flat=True).get(pk=fixture_id)
                 Tournament.objects.select_for_update().get(pk=tournament_id)
                 locked_fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
-                game_link = GameLink.objects.select_for_update().get(fixture_id = fixture_id)
+                game_link = GameLink.objects.select_for_update().get(fixture_id=fixture_id)
                 game_link.fixture = locked_fixture
             except (GameLink.DoesNotExist, Fixture.DoesNotExist):
-                return _reject(request, 404, 'no game link for this fixture', fixture_id = fixture_id,
+                return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id,
                                code='fixture_not_found')
 
             if locked_fixture.admin_result:
@@ -500,12 +508,12 @@ class ResultCallbackView(View):
             if game_link.status == STATUS_CANCELLED:
                 if body['status'] == STATUS_CANCELLED:
                     return _accepted('already_recorded')
-                return _reject(request, 409, 'a cancelled link cannot then be completed', fixture_id = fixture_id,
+                return _reject(request, 409, 'a cancelled link cannot then be completed', fixture_id=fixture_id,
                                code='link_cancelled')
 
             if game_link.status not in OPEN_LINK_STATUSES:
                 return _reject(request, 409, f'link is {game_link.status} and takes no result',
-                               fixture_id = fixture_id, code='link_not_open')
+                               fixture_id=fixture_id, code='link_not_open')
 
             fixture = game_link.fixture
 
@@ -514,13 +522,13 @@ class ResultCallbackView(View):
             # way is not to be acted on.
             if body['tournament_id'] != fixture.mode.tournament_id:
                 return _reject(request, 409, 'tournament_id does not belong to this fixture',
-                               fixture_id = fixture_id, code='tournament_mismatch')
+                               fixture_id=fixture_id, code='tournament_mismatch')
 
             # The room is pinned on first contact and checked ever after, so a second game cannot
             # report a result over the first one's fixture (plan §2, threat 3).
             if game_link.external_room_id and game_link.external_room_id != body['room_id']:
                 return _reject(request, 409, 'room_id does not match the room this fixture is linked to',
-                               fixture_id = fixture_id, code='room_mismatch')
+                               fixture_id=fixture_id, code='room_mismatch')
 
             if body['status'] == STATUS_CANCELLED:
                 return self._record_cancellation(game_link, body)
@@ -531,7 +539,8 @@ class ResultCallbackView(View):
         """Settle a versioned contract, retaining fee-only settlement for legacy friend tables."""
         with transaction.atomic():
             try:
-                table = HeadToHeadTable.objects.select_for_update().select_related('host', 'guest').get(pk=table_id)
+                table = HeadToHeadTable.objects.select_for_update(
+                ).select_related('host', 'guest').get(pk=table_id)
             except HeadToHeadTable.DoesNotExist:
                 return _reject(request, 404, 'no direct-play table for this result', fixture_id=-table_id)
             if table.status == HeadToHeadTable.STATUS_COMPLETED:
@@ -562,7 +571,8 @@ class ResultCallbackView(View):
                 charge_kind = WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
                 charge_amount = table.fee_per_player if table.is_friend_game else table.amount
                 for player_id in (table.host_id, table.guest_id):
-                    charges = table.wallet_transactions.filter(user_id=player_id, kind=charge_kind, amount=-charge_amount)
+                    charges = table.wallet_transactions.filter(
+                        user_id=player_id, kind=charge_kind, amount=-charge_amount)
                     if charges.count() != 1 or table.wallet_transactions.filter(user_id=player_id, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists():
                         return _reject(request, 409, 'direct-play table is not funded', fixture_id=-table_id)
             table.external_room_id = body['room_id']
@@ -577,9 +587,11 @@ class ResultCallbackView(View):
                             head_to_head_table=table, note=f'Cancelled table {table.code}',
                         )
                 table.status = HeadToHeadTable.STATUS_CANCELLED
-                table.save(update_fields=['external_room_id', 'status', 'updated_at'])
+                table.save(update_fields=[
+                           'external_room_id', 'status', 'updated_at'])
                 return _accepted('recorded')
-            winner = table.host if body.get('winner_seat') == 'p1' else table.guest if body.get('winner_seat') == 'p2' else None
+            winner = table.host if body.get('winner_seat') == 'p1' else table.guest if body.get(
+                'winner_seat') == 'p2' else None
             if winner is None:
                 return _reject(request, 400, 'direct-play result has no winner', fixture_id=-table_id)
             if not table.is_friend_game:
@@ -596,7 +608,8 @@ class ResultCallbackView(View):
             table.winner = winner
             table.status = HeadToHeadTable.STATUS_COMPLETED
             table.completed_at = timezone.now()
-            table.save(update_fields=['external_room_id', 'winner', 'status', 'completed_at', 'updated_at'])
+            table.save(update_fields=[
+                       'external_room_id', 'winner', 'status', 'completed_at', 'updated_at'])
             from gamelink.ratings import rate_table
             rate_table(table, body)
             return _accepted('recorded')
@@ -609,10 +622,11 @@ class ResultCallbackView(View):
         so the players or an organiser can settle it by hand exactly as they would have without
         any of this (plan §2, threat 18).
         """
-        game_link.status           = STATUS_CANCELLED
+        game_link.status = STATUS_CANCELLED
         game_link.external_room_id = body['room_id']
-        game_link.raw_result       = body
-        game_link.save(update_fields = ['status', 'external_room_id', 'raw_result'])
+        game_link.raw_result = body
+        game_link.save(
+            update_fields=['status', 'external_room_id', 'raw_result'])
 
         logger.info('gamelink result recorded: fixture %s cancelled, released for manual scoring',
                     game_link.fixture_id)
@@ -626,8 +640,10 @@ class ResultCallbackView(View):
         # every potential payout/rating identity in one order before either step.
         participant_ids = list(fixture.mode.tournament.participations.values_list(
             'participant__user_id', flat=True))
-        participant_ids.extend(player.user_id for player in (fixture.player1, fixture.player2) if player)
-        list(User.objects.select_for_update().filter(pk__in=participant_ids).order_by('pk'))
+        participant_ids.extend(player.user_id for player in (
+            fixture.player1, fixture.player2) if player)
+        list(User.objects.select_for_update().filter(
+            pk__in=participant_ids).order_by('pk'))
         # Seats, not colours: the sender has already mapped the score onto `p1`/`p2`, which are
         # this side's `player1` and `player2` because that is how the ticket assigned them.
         previous_score = [fixture.score1, fixture.score2]
@@ -646,7 +662,7 @@ class ResultCallbackView(View):
             fixture.full_clean()
         except ValidationError as error:
             return _reject(request, 409, f'the reported score is not valid for this fixture: {error}',
-                           fixture_id = fixture.pk, code='invalid_score')
+                           fixture_id=fixture.pk, code='invalid_score')
 
         fixture.save()
 
@@ -654,15 +670,16 @@ class ResultCallbackView(View):
         # not carry over — the same thing the manual path does when a score is edited.
         fixture.confirmations.clear()
 
-        game_link.status           = STATUS_COMPLETED
-        game_link.completed_at     = timezone.now()
+        game_link.status = STATUS_COMPLETED
+        game_link.completed_at = timezone.now()
         game_link.external_room_id = body['room_id']
-        game_link.raw_result       = body
-        game_link.save(update_fields = ['status', 'completed_at', 'external_room_id', 'raw_result'])
+        game_link.raw_result = body
+        game_link.save(
+            update_fields=['status', 'completed_at', 'external_room_id', 'raw_result'])
         from gamelink.ratings import rate_fixture
         rate_fixture(fixture, body)
         FixtureAudit.objects.create(fixture=fixture, action='game_result',
-            before={'score': previous_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': True})
+                                    before={'score': previous_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': True})
 
         # This is where the tournament actually advances: the level closes, a knockout propagates
         # its winner, and a finished tournament gets its podium.
@@ -722,10 +739,12 @@ class LiveSnapshotCallbackView(View):
                 # and organizer rulings, so an in-flight snapshot cannot follow a ruling.
                 if tournament_id == 0 and fixture_id < 0:
                     return self._record_direct_play(request, -fixture_id, body)
-                actual_tournament_id = Fixture.objects.values_list('mode__tournament_id', flat=True).get(pk=fixture_id)
+                actual_tournament_id = Fixture.objects.values_list(
+                    'mode__tournament_id', flat=True).get(pk=fixture_id)
                 Tournament.objects.select_for_update().get(pk=actual_tournament_id)
                 Fixture.objects.select_for_update().get(pk=fixture_id)
-                link = GameLink.objects.select_for_update().select_related('fixture__mode').get(fixture_id=fixture_id)
+                link = GameLink.objects.select_for_update().select_related(
+                    'fixture__mode').get(fixture_id=fixture_id)
                 if link.fixture.mode.tournament_id != tournament_id or link.external_room_id not in ('', room_id):
                     return _reject(request, 409, 'live snapshot does not match fixture', fixture_id=fixture_id)
                 if link.fixture.admin_result:
@@ -736,16 +755,18 @@ class LiveSnapshotCallbackView(View):
                     link.live_updated_at = timezone.now()
                     link.external_room_id = room_id
                     link.status = 'playing' if link.status == 'pending' else link.status
-                    link.save(update_fields=['live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
+                    link.save(update_fields=[
+                              'live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
                     if body.get('status') == 'playing' and not FixtureAudit.objects.filter(fixture_id=fixture_id, action='live_started').exists():
-                        FixtureAudit.objects.create(fixture_id=fixture_id, action='live_started')
-                    transaction.on_commit(lambda: _broadcast_live_snapshot(tournament_id, fixture_id, body))
+                        FixtureAudit.objects.create(
+                            fixture_id=fixture_id, action='live_started')
+                    transaction.on_commit(lambda: _broadcast_live_snapshot(
+                        tournament_id, fixture_id, body))
         except IntegrityError:
             return _reject(request, 401, 'nonce has been seen before')
         except (GameLink.DoesNotExist, Fixture.DoesNotExist):
             return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
         return JsonResponse({'status': 'recorded'})
-
 
     def _record_direct_play(self, request, table_id, body):
         """Called inside the authenticated snapshot transaction, including nonce storage."""
@@ -853,8 +874,10 @@ def _direct_play_response(table, status):
     money = None
     if table.game_format == 'money':
         from django.db.models import Sum
-        p1_total = table.wallet_transactions.filter(user_id=table.host_id).aggregate(total=Sum('amount'))['total']
-        p2_total = table.wallet_transactions.filter(user_id=table.guest_id).aggregate(total=Sum('amount'))['total'] if table.guest_id else None
+        p1_total = table.wallet_transactions.filter(
+            user_id=table.host_id).aggregate(total=Sum('amount'))['total']
+        p2_total = table.wallet_transactions.filter(user_id=table.guest_id).aggregate(
+            total=Sum('amount'))['total'] if table.guest_id else None
         if p1_total is None:
             p1_total = Decimal('0')
         if p2_total is None:
@@ -985,7 +1008,8 @@ class RematchCallbackView(View):
             actor = p1 if actor_seat == 'p1' else p2
             other = p2 if actor == p1 else p1
             # check if already pending
-            existing = DirectPlayRematch.objects.select_for_update().filter(source_table=source).first()
+            existing = DirectPlayRematch.objects.select_for_update().filter(
+                source_table=source).first()
             if existing:
                 if existing.status == 'pending':
                     if existing.requester_id == actor.id:
@@ -997,15 +1021,18 @@ class RematchCallbackView(View):
                     if not existing.new_table:
                         return _reject(request, 409, 'rematch created but no table')
                     from .signing import issue_direct_play_ticket
-                    t1, _ = issue_direct_play_ticket(existing.new_table.host, existing.new_table, 'p1')
-                    t2, _ = issue_direct_play_ticket(existing.new_table.guest, existing.new_table, 'p2')
+                    t1, _ = issue_direct_play_ticket(
+                        existing.new_table.host, existing.new_table, 'p1')
+                    t2, _ = issue_direct_play_ticket(
+                        existing.new_table.guest, existing.new_table, 'p2')
                     return JsonResponse({'status': 'created', 'table_id': existing.new_table.pk, 'table_code': existing.new_table.code, 'tickets': {'p1': t1, 'p2': t2}})
             # preflight eligibility: check can_join for both
             # requester must afford now, responder preflight
             for user, code in [(actor, 'requester_not_eligible'), (other, 'opponent_not_eligible')]:
                 bal = WalletTransaction.balance_for_user(user)
                 if source.game_format == 'money':
-                    params = calculate_dynamic_params(bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+                    params = calculate_dynamic_params(
+                        bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
                     if not params['can_join']:
                         return JsonResponse({'code': code}, status=409)
                 elif source.is_friend_game:
@@ -1021,10 +1048,12 @@ class RematchCallbackView(View):
                 existing.requester = actor
                 existing.responder = other
                 existing.status = 'pending'
-                existing.save(update_fields=['requester', 'responder', 'status', 'updated_at'])
+                existing.save(
+                    update_fields=['requester', 'responder', 'status', 'updated_at'])
                 rem = existing
             else:
-                rem = DirectPlayRematch.objects.create(source_table=source, requester=actor, responder=other, status='pending')
+                rem = DirectPlayRematch.objects.create(
+                    source_table=source, requester=actor, responder=other, status='pending')
             return JsonResponse({'status': 'pending'})
 
     def _handle_accept(self, request, body, table_id, room_id, actor_seat):
@@ -1051,7 +1080,8 @@ class RematchCallbackView(View):
             # lock users
             from django.contrib.auth.models import User
             uids = sorted([p1.id, p2.id])
-            list(User.objects.select_for_update().filter(pk__in=uids).order_by('pk'))
+            list(User.objects.select_for_update().filter(
+                pk__in=uids).order_by('pk'))
             active = [H.STATUS_OPEN, H.STATUS_READY, H.STATUS_PLAYING]
             for uid in uids:
                 if H.objects.filter(host_id=uid, status__in=active).exists() or H.objects.filter(guest_id=uid, status__in=active).exists():
@@ -1062,7 +1092,8 @@ class RematchCallbackView(View):
             for user, code in ((actor, 'requester_not_eligible'), (other, 'opponent_not_eligible')):
                 bal = WalletTransaction.balance_for_user(user)
                 if source.game_format == 'money':
-                    params = calculate_dynamic_params(bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
+                    params = calculate_dynamic_params(
+                        bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
                     if not params['can_join']:
                         return JsonResponse({'code': code}, status=409)
                 elif source.is_friend_game:
@@ -1122,7 +1153,8 @@ class RematchCallbackView(View):
                 return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
             if source.status != HeadToHeadTable.STATUS_COMPLETED:
                 return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
-            rem = DirectPlayRematch.objects.select_for_update().filter(source_table=source).first()
+            rem = DirectPlayRematch.objects.select_for_update().filter(
+                source_table=source).first()
             if not rem:
                 return JsonResponse({'status': 'no_pending'})
             if rem.status != 'pending':
@@ -1132,7 +1164,7 @@ class RematchCallbackView(View):
             return JsonResponse({'status': 'cancelled'})
 
 
-def _reject(request, status, reason, fixture_id = None, *, code=None):
+def _reject(request, status, reason, fixture_id=None, *, code=None):
     """
     Log the full reason. Only validated result handlers opt in to a public, fixed error code.
     """
@@ -1146,4 +1178,4 @@ def _reject(request, status, reason, fixture_id = None, *, code=None):
     payload = {'error': _ERRORS[status]}
     if code is not None:
         payload['code'] = code
-    return JsonResponse(payload, status = status)
+    return JsonResponse(payload, status=status)

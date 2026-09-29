@@ -10,12 +10,27 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransaction
 
+
 logger = logging.getLogger(__name__)
 ACTIVE = ('open', 'ready', 'playing')
 
 
+ENTRY_WINDOW_SECONDS = 10 * 60
+
+
+def mark_entry_ready(table):
+    settlement = dict(table.settlement or {})
+    settlement['entry_deadline'] = int(
+        timezone.now().timestamp()) + ENTRY_WINDOW_SECONDS
+    settlement.pop('entry_confirmed', None)
+
+    table.settlement = settlement
+    table.status = HeadToHeadTable.STATUS_READY
+
+
 def active_table(user_id, exclude=None):
-    tables = HeadToHeadTable.objects.filter(Q(host_id=user_id) | Q(guest_id=user_id), status__in=ACTIVE)
+    tables = HeadToHeadTable.objects.filter(
+        Q(host_id=user_id) | Q(guest_id=user_id), status__in=ACTIVE)
     if exclude is not None:
         tables = tables.exclude(pk=exclude)
     return tables.first()
@@ -23,39 +38,70 @@ def active_table(user_id, exclude=None):
 
 def remote_expiry(table):
     from gamelink.signing import sign_command_body
-    raw = json.dumps({'v': 1, 'action': 'expire_unstarted', 'fixture_id': -table.pk}).encode()
+    raw = json.dumps({'v': 1, 'action': 'expire_unstarted',
+                     'fixture_id': -table.pk}).encode()
     timestamp = str(int(timezone.now().timestamp()))
     request = Request(settings.GAMELINK_BACKGAMMON_URL.rstrip('/') + '/api/link/admin-command/',
-        data=raw, headers={'Content-Type': 'application/json', 'X-Gamelink-Timestamp': timestamp,
-            'X-Gamelink-Issuer': settings.GAMELINK_ISSUER,
-            'X-Gamelink-Signature': sign_command_body(raw, timestamp)}, method='POST')
+                      data=raw, headers={'Content-Type': 'application/json', 'X-Gamelink-Timestamp': timestamp,
+                                         'X-Gamelink-Issuer': settings.GAMELINK_ISSUER,
+                                         'X-Gamelink-Signature': sign_command_body(raw, timestamp)}, method='POST')
     with urlopen(request, timeout=3) as response:
         return json.load(response).get('status')
 
 
 def expire_unstarted_tables(user_id=None, heartbeat=None):
-    cutoff = timezone.now() - timedelta(minutes=10)
-    tables = HeadToHeadTable.objects.filter(status__in=ACTIVE, created_at__lte=cutoff)
+    now = timezone.now()
+    now_ts = int(now.timestamp())
+    open_cutoff = now - timedelta(seconds=ENTRY_WINDOW_SECONDS)
+
+    tables = HeadToHeadTable.objects.filter(status__in=ACTIVE)
+
     if user_id is not None:
-        tables = tables.filter(Q(host_id=user_id) | Q(guest_id=user_id) | Q(status='open'))
+        tables = tables.filter(
+            Q(host_id=user_id) |
+            Q(guest_id=user_id) |
+            Q(status=HeadToHeadTable.STATUS_OPEN)
+        )
+
     ids = list(tables.values_list('pk', flat=True))
+
     for pk in ids:
         if heartbeat is not None and not heartbeat():
             return False
+
         observed = HeadToHeadTable.objects.get(pk=pk)
+
         if (observed.settlement or {}).get('entry_confirmed'):
             continue
+
+        if observed.status == HeadToHeadTable.STATUS_OPEN:
+            if observed.created_at > open_cutoff:
+                continue
+        else:
+            entry_deadline = (observed.settlement or {}).get('entry_deadline')
+
+            # Compatibility for tables created before entry_deadline was stored.
+            if type(entry_deadline) is not int:
+                entry_deadline = (
+                    int(observed.updated_at.timestamp()) +
+                    ENTRY_WINDOW_SECONDS
+                )
+
+            if entry_deadline > now_ts:
+                continue
         result = None
         if observed.status == 'playing' or observed.external_room_id:
             try:
                 result = remote_expiry(observed)
             except Exception:
-                logger.warning('Entry expiry deferred for table %s: game server unavailable', pk)
+                logger.warning(
+                    'Entry expiry deferred for table %s: game server unavailable', pk)
                 continue
             if result == 'started':
                 with transaction.atomic():
                     current = HeadToHeadTable.objects.select_for_update().get(pk=pk)
-                    current.settlement = {**(current.settlement or {}), 'entry_confirmed': True}
+                    current.settlement = {
+                        **(current.settlement or {}), 'entry_confirmed': True}
                     current.save(update_fields=['settlement'])
                 continue
             if result not in ('missing', 'cancelled'):
@@ -69,15 +115,17 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             if table.status != observed.status or table.external_room_id != observed.external_room_id:
                 continue
             from django.contrib.auth.models import User
-            players = list(User.objects.select_for_update().filter(pk__in=[table.host_id, table.guest_id]).order_by('pk'))
+            players = list(User.objects.select_for_update().filter(
+                pk__in=[table.host_id, table.guest_id]).order_by('pk'))
             for player in players:
                 net = table.wallet_transactions.filter(user=player).filter(
-                    Q(amount__lt=0) | Q(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND)
+                    Q(amount__lt=0) | Q(
+                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND)
                 ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
                 if net < 0:
                     WalletTransaction.create_entry(user=player, amount=-net,
-                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-                        head_to_head_table=table, note=f'Entry deadline expired: {table.code}')
+                                                   kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+                                                   head_to_head_table=table, note=f'Entry deadline expired: {table.code}')
             table.status = 'cancelled'
             table.completed_at = timezone.now()
             table.save(update_fields=['status', 'completed_at', 'updated_at'])

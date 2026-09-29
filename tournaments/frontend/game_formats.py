@@ -1,4 +1,5 @@
 """Server-owned quotes, escrow debits and settlement for versioned game formats."""
+from .entry_lifecycle import mark_entry_ready
 import copy
 import json
 from decimal import Decimal
@@ -354,9 +355,17 @@ def create_or_match(request, *, quick=False, match_search=False):
                     candidate.fee_per_player = money(
                         stake * candidate.fee_percent / 100)
                     candidate.guest = request.user
-                    candidate.status = 'ready'
+
+                    mark_entry_ready(candidate)
+
                     candidate.save(update_fields=[
-                                   'amount', 'fee_per_player', 'guest', 'status', 'updated_at', 'settlement'])
+                        'amount',
+                        'fee_per_player',
+                        'guest',
+                        'status',
+                        'updated_at',
+                        'settlement',
+                    ])
                     from .push import queue_guest_joined_push
                     queue_guest_joined_push(candidate)
                     return JsonResponse({**_serialize_head_to_head(candidate), 'matched': True})
@@ -442,7 +451,7 @@ def join_table(table, user, settings):
         raise ValidationError('This game format or access method is disabled.')
     list(User.objects.select_for_update().filter(
         pk__in=sorted((table.host_id, user.pk))).order_by('pk'))
-    from .entry_lifecycle import active_table
+    from .entry_lifecycle import active_table, mark_entry_ready
     if active_table(user.pk, exclude=table.pk) or active_table(table.host_id, exclude=table.pk):
         raise ValidationError('לאחד השחקנים כבר יש משחק פעיל.')
     required = required_reserve(table)
@@ -450,8 +459,14 @@ def join_table(table, user, settings):
         raise ValidationError('The host reservation is missing.')
     reserve(table, user, required)
     table.guest = user
-    table.status = 'ready'
-    table.save(update_fields=['guest', 'status', 'updated_at'])
+    mark_entry_ready(table)
+
+    table.save(update_fields=[
+        'guest',
+        'status',
+        'settlement',
+        'updated_at',
+    ])
     from .push import queue_guest_joined_push
     queue_guest_joined_push(table)
 
