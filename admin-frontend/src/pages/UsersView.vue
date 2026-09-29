@@ -2,6 +2,7 @@
 import { ref, onBeforeUnmount, onMounted } from 'vue'
 import { apiFetch, formatApiError } from '@/services/api'
 import Button from 'primevue/button'
+import Avatar from 'primevue/avatar'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Tag from 'primevue/tag'
@@ -71,10 +72,12 @@ async function remove(id: number) {
     <DataTable v-else :value="users" :loading="loading" data-key="id" striped-rows show-gridlines size="small">
       <template #empty>{{ t('users.empty') }}</template>
       <Column field="id" :header="t('common.id')" sortable />
-      <Column field="username" :header="t('users.username')" sortable />
-      <Column :header="t('users.phone')">
-        <template #body="{ data }">{{ data.phone_number || '-' }}</template>
+      <Column>
+        <template #body="{ data }">
+          <Avatar :label="(data.username?.trim()?.[0] || '?').toUpperCase()" shape="circle" />
+        </template>
       </Column>
+      <Column field="username" :header="t('users.username')" sortable />
       <Column :header="t('users.balance')" sortable sort-field="balance">
         <template #body="{ data }"><span class="font-medium text-emerald-700">{{ Number(data.balance || 0).toFixed(2) }}</span></template>
       </Column>
