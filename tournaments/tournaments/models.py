@@ -258,7 +258,7 @@ class Tournament(models.Model):
 
             # If the tournament is finished, update the podium positions.
             podium = self._get_podium()
-            eligible_podium = [p for p in podium if not self.participations.filter(participant=p, disqualified_at__isnull=False).exists()]
+            eligible_podium = [p for p in podium if p is not None and not self.participations.filter(participant=p, disqualified_at__isnull=False).exists()]
             for position, participant in enumerate(eligible_podium):
                 participation = self.participations.get(participant = participant)
                 participation.podium_position = position
@@ -1358,9 +1358,13 @@ class Knockout(Mode):
         Propagate the value of the `src_slot` attribute of `src_fixture` to the corresponding `player` attribute of `dst_fixture`.
 
         The corresponding `player` attribute is identified by `dst_play_slot`, which must be 1 or 2.
+        A terminal source without a player for that slot (double_no_show)
+        propagates nothing; the empty-branch resolver in update_fixtures
+        owns those destinations.
         """
         player = getattr(src_fixture, src_slot, None)
-        assert player is not None
+        if player is None:
+            return False
         dst_attr = 'player' + str(dst_player_slot)
         if getattr(dst_fixture, dst_attr) is not None:
             return False
@@ -1422,7 +1426,95 @@ class Knockout(Mode):
                 fixture.save()
                 _notify_match_ready(fixture)
                 updates_performed = True
+        if self._resolve_empty_destinations():
+            updates_performed = True
         return updates_performed
+
+    def _inbound_sources(self, dst_fixture):
+        """All (src_fixture, src_slot) pairs whose propagate graph targets dst."""
+        inbound = []
+        for src in self.fixtures.all():
+            propagate = (src.extras or {}).get('propagate', {}) if isinstance(src.extras, dict) else {}
+            for slot_name, target in propagate.items():
+                if isinstance(target, dict) and target.get('fixture_id') == dst_fixture.id:
+                    inbound.append((src, slot_name))
+        return inbound
+
+    def _resolve_empty_destinations(self):
+        """Auto-resolve destinations fed by terminal empty branches.
+
+        Only runs once ALL inbound sources are terminal (is_confirmed):
+        - 2 winners -> normal playable fixture, do nothing here.
+        - 1 winner -> bye: resolve dst with that winner (no_show_bye).
+        - 0 winners -> void: resolve dst with no winner (double_no_show).
+        Idempotent: never touches confirmed/admin-resolved fixtures, never
+        changes an existing winner, never stamps playable_at.
+        """
+        from django.utils import timezone as tz
+
+        changed = False
+        for dst in self.fixtures.all():
+            if dst.is_confirmed or dst.admin_result:
+                continue
+            inbound = self._inbound_sources(dst)
+            if not inbound:
+                continue
+            if not all(src.is_confirmed for src, _ in inbound):
+                continue
+            winners = []
+            for src, slot in inbound:
+                if slot == 'loser':
+                    winners.append(src.loser)
+                else:
+                    winners.append(src.winner)
+            real = [w for w in winners if w is not None]
+            if len(real) >= 2:
+                continue
+            if len(real) == 1:
+                winner = real[0]
+                dst.admin_result = 'no_show_bye'
+                dst.admin_winner = winner
+                dst.admin_resolved_at = tz.now()
+                dst.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+                FixtureAudit.objects.create(
+                    fixture=dst,
+                    action='no_show_bye',
+                    reason='Opposite branch empty; winner advances without a match.',
+                    before={'score': [dst.score1, dst.score2], 'admin_result': ''},
+                    after={'admin_result': 'no_show_bye', 'winner_participant_id': winner.pk},
+                )
+                self._cancel_link(dst)
+                changed = True
+            else:
+                dst.admin_result = 'double_no_show'
+                dst.admin_winner = None
+                dst.admin_resolved_at = tz.now()
+                dst.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+                FixtureAudit.objects.create(
+                    fixture=dst,
+                    action='double_no_show',
+                    reason='Both inbound branches empty; fixture resolved without a winner.',
+                    before={'score': [dst.score1, dst.score2], 'admin_result': ''},
+                    after={'admin_result': 'double_no_show'},
+                )
+                self._cancel_link(dst)
+                changed = True
+        return changed
+
+    @staticmethod
+    def _cancel_link(fixture):
+        """Close any pending GameLink so no ticket can be issued afterwards."""
+        try:
+            from gamelink.models import GameLink
+        except Exception:
+            return
+        try:
+            link = GameLink.objects.filter(fixture_id=fixture.pk).first()
+            if link is not None and link.status == 'pending':
+                link.status = 'cancelled'
+                link.save(update_fields=['status'])
+        except Exception:
+            return
 
     def check_fixture(self, fixture):
         if fixture.score1 is not None and fixture.score2 is not None and fixture.score1 == fixture.score2:
@@ -1559,7 +1651,10 @@ class Fixture(models.Model):
 
     @property
     def is_confirmed(self):
-        if self.admin_result in ('advance', 'disqualify') and self.admin_winner_id:
+        if self.admin_result in ('advance', 'disqualify', 'no_show_bye') and self.admin_winner_id:
+            return True
+        # Terminal without a winner: both players eliminated, bracket continues.
+        if self.admin_result == 'double_no_show':
             return True
         if self.score1 is None or self.score2 is None:
             return False

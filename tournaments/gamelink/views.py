@@ -354,6 +354,52 @@ def _no_show_winner_seat(fixture):
     return None
 
 
+def _is_double_no_show(fixture):
+    """Whether `fixture` was resolved as a double no-show (no winner)."""
+    if getattr(fixture, 'admin_result', None) != 'double_no_show':
+        return False
+    return FixtureAudit.objects.filter(fixture=fixture, action='double_no_show').exists()
+
+
+def _resolve_double_no_show_locked(fixture, locked_link, now):
+    """Resolve an expired fixture where neither player entered. Caller holds locks.
+
+    `locked_link` is the re-locked GameLink or None when no link row exists.
+    Idempotent: returns True when already double-resolved, False when the
+    double case does not apply. Never invents a score or winner.
+    """
+    if fixture.is_confirmed or fixture.admin_result:
+        return _is_double_no_show(fixture)
+    if fixture.playable_at is None:
+        return False
+    if fixture.player1_id is None or fixture.player2_id is None:
+        return False
+    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    if entry_deadline is None or now < entry_deadline:
+        return False
+    if locked_link is not None:
+        if locked_link.status != 'pending':
+            return False
+        if _fresh_seat(locked_link, 'p1', now) or _fresh_seat(locked_link, 'p2', now):
+            return False
+    fixture.admin_result = 'double_no_show'
+    fixture.admin_winner = None
+    fixture.admin_resolved_at = now
+    fixture.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+    FixtureAudit.objects.create(
+        fixture=fixture,
+        action='double_no_show',
+        reason='Neither player entered before the entry deadline.',
+        before={'score': [fixture.score1, fixture.score2], 'admin_result': ''},
+        after={'admin_result': 'double_no_show'},
+    )
+    if locked_link is not None:
+        locked_link.status = 'cancelled'
+        locked_link.save(update_fields=['status'])
+    fixture.mode.tournament.update_state()
+    return True
+
+
 def _try_resolve_no_show(fixture, game_link, now):
     """
     Resolve an expired pending fixture as an opponent-no-show walkover.
@@ -372,6 +418,8 @@ def _try_resolve_no_show(fixture, game_link, now):
     if entry_deadline is None or now < entry_deadline:
         return None
     if fixture.is_confirmed or fixture.admin_result:
+        if _is_double_no_show(fixture):
+            return 'double_no_show'
         return _no_show_winner_seat(fixture)
     if game_link.status != 'pending':
         return None
@@ -379,8 +427,13 @@ def _try_resolve_no_show(fixture, game_link, now):
     p1_here = _fresh_seat(locked_link, 'p1', now)
     p2_here = _fresh_seat(locked_link, 'p2', now)
     if p1_here == p2_here:
-        # Both entered — the normal both_ready flow owns that race — or
-        # neither did. Never award or invent a winner here.
+        if not p1_here and not p2_here:
+            # Neither entered before the deadline: eliminate both.
+            if _resolve_double_no_show_locked(fixture, locked_link, now):
+                return 'double_no_show'
+            return None
+        # Both entered — the normal both_ready flow owns that race.
+        # Never award or invent a winner here.
         return None
     winner_seat = 'p1' if p1_here else 'p2'
     winner = fixture.player1 if winner_seat == 'p1' else fixture.player2
@@ -429,6 +482,54 @@ def _no_show_terminal_response(fixture, seat, winner_seat, now):
     })
 
 
+def _double_no_show_terminal_response(fixture, seat, now):
+    """Terminal double-no-show state: fixture ended with no winner."""
+    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    game_link = GameLink.objects.filter(fixture_id=fixture.pk).first()
+    if game_link is not None:
+        try:
+            opponent = _opponent_info(fixture, seat, game_link, now)
+        except Exception:
+            opponent = {'username': '', 'is_waiting': False}
+    else:
+        opponent = {'username': '', 'is_waiting': False}
+    return JsonResponse({
+        'fixture_id': fixture.pk,
+        'seat': seat,
+        'both_ready': False,
+        'entry_status': 'double_no_show',
+        'reason': 'double_no_show',
+        'winner_seat': None,
+        'entry_deadline': entry_deadline,
+        'remaining_seconds': 0,
+        'opponent': opponent,
+    })
+
+
+def _double_no_show_after_resolution(request, tournament_pk):
+    """Terminal double-no-show state for a player with no playable fixture."""
+    try:
+        Tournament.objects.select_for_update().get(pk=tournament_pk)
+    except Tournament.DoesNotExist:
+        return None
+    candidates = (Fixture.objects.select_related('mode__tournament', 'player1__user', 'player2__user')
+        .filter(mode__tournament_id=tournament_pk, admin_result='double_no_show')
+        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+        .order_by('-pk'))
+    now = timezone.now()
+    for fixture in candidates:
+        if not _is_double_no_show(fixture):
+            continue
+        if fixture.player1 is not None and fixture.player1.user_id == request.user.id:
+            seat = 'p1'
+        elif fixture.player2 is not None and fixture.player2.user_id == request.user.id:
+            seat = 'p2'
+        else:
+            continue
+        return _double_no_show_terminal_response(fixture, seat, now)
+    return None
+
+
 def _no_show_after_resolution(request, tournament_pk):
     """
     Terminal no-show state for a player whose fixture already ended and who
@@ -457,7 +558,7 @@ def _no_show_after_resolution(request, tournament_pk):
         else:
             continue
         return _no_show_terminal_response(fixture, seat, winner_seat, now)
-    return None
+    return _double_no_show_after_resolution(request, tournament_pk)
 
 
 def _readiness_fresh(game_link, now):
@@ -497,6 +598,50 @@ def _opponent_info(fixture, seat, game_link, now):
         'username': opponent_user.username,
         'is_waiting': opponent_ready_at is not None and opponent_ready_at >= cutoff,
     }
+
+
+def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_fixture_id=None):
+    """Opportunistically resolve silent expired fixtures with zero readiness.
+
+    Runs inside the caller's transaction via savepoints; one fixture failure
+    never breaks the heartbeat. Returns the number resolved.
+    """
+    from django.db import transaction as db_transaction
+
+    cutoff = now - TOURNAMENT_ENTRY_WINDOW
+    candidate_ids = list(
+        Fixture.objects.filter(
+            mode__tournament_id=tournament_id,
+            playable_at__lte=cutoff,
+            player1__isnull=False,
+            player2__isnull=False,
+            admin_result='',
+            score1__isnull=True,
+            score2__isnull=True,
+        ).values_list('pk', flat=True)
+    )
+    resolved = 0
+    for fixture_id in candidate_ids:
+        if exclude_fixture_id is not None and fixture_id == exclude_fixture_id:
+            continue
+        try:
+            with db_transaction.atomic():
+                fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
+                if fixture.is_confirmed or fixture.admin_result:
+                    continue
+                if fixture.playable_at is None:
+                    continue
+                entry_deadline, _ = _entry_deadline_fields(fixture, now)
+                if entry_deadline is None or now < entry_deadline:
+                    continue
+                link = GameLink.objects.select_for_update().filter(fixture_id=fixture.pk).first()
+                if link is not None and link.status != 'pending':
+                    continue
+                if _resolve_double_no_show_locked(fixture, link, now):
+                    resolved += 1
+        except Exception:
+            continue
+    return resolved
 
 
 class TournamentGameReadyView(LoginRequiredMixin, View):
@@ -587,8 +732,16 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
                 'opponent': _opponent_info(fixture, seat, game_link, now),
             })
         winner_seat = _try_resolve_no_show(fixture, game_link, now)
+        if winner_seat == 'double_no_show':
+            return _double_no_show_terminal_response(fixture, seat, now)
         if winner_seat is not None:
             return _no_show_terminal_response(fixture, seat, winner_seat, now)
+        try:
+            resolve_expired_double_no_shows_for_tournament(
+                fixture.mode.tournament_id, now, exclude_fixture_id=fixture.pk,
+            )
+        except Exception:
+            pass
         entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
         return JsonResponse({
             'fixture_id': fixture.pk,
