@@ -6,6 +6,7 @@ import secrets
 import string
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
@@ -20,7 +21,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from gamelink.views import _playable_refusal_reason, playable_seat
+from gamelink.views import _entry_deadline_fields, _playable_refusal_reason, playable_seat
 from tournaments import models
 from .forms import (
     SignupForm,
@@ -32,6 +33,11 @@ from .forms import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The admin frontend sends naive local wall times (``YYYY-MM-DDTHH:mm``).
+# Those values represent organizer-local Israel time and must be interpreted
+# as Asia/Jerusalem — never as the server zone (UTC) — before UTC storage.
+ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
 
 
 def _clip_client_value(value, limit=500):
@@ -60,12 +66,19 @@ def _playability_payload(request, fixture):
     if reason == "ready" and not getattr(settings, "GAMELINK_BACKGAMMON_URL", "").strip():
         reason = "backgammon_url_is_empty"
         refusal = 412
+    can_play = seat is not None and reason == "ready"
+    # Read-only entry deadline: same fixture.playable_at + 10-minute window
+    # the ready endpoint uses. Never marks readiness, never resolves no-show.
+    entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, timezone.now())
     return {
-        "can_play": seat is not None and reason == "ready",
+        "can_play": can_play,
         "seat": seat,
         "reason": reason,
         "status": refusal,
         "message": PLAYABILITY_MESSAGES.get(reason, "This match is not ready yet."),
+        "entry_deadline": entry_deadline.isoformat() if entry_deadline is not None else None,
+        "remaining_seconds": remaining_seconds,
+        "entry_status": "waiting" if can_play and entry_deadline is not None else None,
     }
 
 
@@ -138,6 +151,9 @@ def _serialize_tournament(t, request):
     is_joined = False
     is_eliminated = False
     can_play = False
+    entry_deadline = None
+    remaining_seconds = None
+    entry_status = None
     registration_status = None
     if request.user.is_authenticated:
         is_joined = t.participations.filter(
@@ -165,10 +181,14 @@ def _serialize_tournament(t, request):
                 # Keep the tournament-card status aligned with the exact predicate used when a
                 # ticket is issued. This prevents a stale/future fixture or disabled GameLink from
                 # being advertised as playable.
-                can_play = any(
-                    _playability_payload(request, fixture)["can_play"]
-                    for fixture in current_fixtures
-                )
+                for fixture in current_fixtures:
+                    playability = _playability_payload(request, fixture)
+                    if playability["can_play"]:
+                        can_play = True
+                        entry_deadline = playability["entry_deadline"]
+                        remaining_seconds = playability["remaining_seconds"]
+                        entry_status = playability["entry_status"]
+                        break
             lost_confirmed = user_fixtures.filter(
                 Q(
                     Q(player1=participant, score1__lt=F("score2"))
@@ -227,6 +247,9 @@ def _serialize_tournament(t, request):
         "registration_status": registration_status,
         "is_eliminated": is_eliminated,
         "can_play": can_play,
+        "entry_deadline": entry_deadline,
+        "remaining_seconds": remaining_seconds,
+        "entry_status": entry_status,
         "champion": champion,
         "podium": podium,
         "participant_count": t.participations.count(),
@@ -387,13 +410,16 @@ def _validated_tournament_metadata(data):
 
     starts_at = data.get("starts_at")
     if starts_at in (None, ""):
-        cleaned["starts_at"] = None
+        errors["starts_at"] = "This field is required."
     elif not isinstance(starts_at, str) or parse_datetime(starts_at) is None:
         errors["starts_at"] = "Invalid date and time."
     else:
         parsed_starts_at = parse_datetime(starts_at)
         if timezone.is_naive(parsed_starts_at):
-            parsed_starts_at = timezone.make_aware(parsed_starts_at)
+            parsed_starts_at = timezone.make_aware(
+                parsed_starts_at,
+                timezone=ISRAEL_TZ,
+            )
         if parsed_starts_at < timezone.now().replace(second=0, microsecond=0):
             errors["starts_at"] = "Must be now or in the future."
         else:
@@ -2708,7 +2734,7 @@ def api_admin_wallet_transactions(request):
     })
 
 
-@def _admin_phone_verification(u):
+def _admin_phone_verification(u):
     """Display-only phone verification state; never creates a UserContact."""
     contact = models.UserContact.objects.filter(user=u).first()
     if contact is None:

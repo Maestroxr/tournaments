@@ -10,6 +10,7 @@ from django.db import models, transaction
 from django.db.models import CheckConstraint, Max, Min, Q, QuerySet
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
+from django.utils import timezone
 from polymorphic.models import PolymorphicModel
 
 
@@ -63,7 +64,7 @@ class Tournament(models.Model):
     creator = models.ForeignKey('auth.User', on_delete = models.SET_NULL, related_name = 'tournaments', null = True, blank = True)
     # New easy fields — keep YAML for knockout/groups/division structure, add UI-friendly metadata
     created_at = models.DateTimeField(auto_now_add=True)
-    starts_at = models.DateTimeField(null=True, blank=True)
+    starts_at = models.DateTimeField()
     min_players = models.PositiveSmallIntegerField(default=6)
     max_players = models.PositiveSmallIntegerField(null=True, blank=True)
     target_points = models.PositiveSmallIntegerField(default=5, help_text="Points / games to win")
@@ -357,7 +358,7 @@ class Tournament(models.Model):
 
     @transaction.atomic
     def test(self):
-        tournament = Tournament.load(definition = self.definition, name = 'Test')
+        tournament = Tournament.load(definition = self.definition, name = 'Test', starts_at = self.starts_at)
         for participating_name in (f'--testuser-{pidx}' for pidx in range(len(self.participants))):
             participant = Participant.objects.get_or_create(name = participating_name)[0]
             Participation.objects.create(participant = participant, tournament = tournament, slot_id = Participation.next_slot_id(tournament))
@@ -1039,6 +1040,38 @@ def get_stats(participant, filters = None):
     return row
 
 
+def _notify_match_ready(fixture):
+    """
+    Schedule the one-time "match is ready" push for both assigned players of a
+    fixture that has just become playable.
+
+    Called only at the exact transition where ``playable_at`` goes from None
+    to set — never from ``Fixture.save()`` — so later saves and readiness
+    heartbeats cannot resend. ``playable_at`` remains the database source of
+    truth for whether the transition already happened.
+    """
+    if fixture.is_confirmed or fixture.admin_result:
+        return
+    recipients = []
+    for player in (fixture.player1, fixture.player2):
+        if player is not None and player.user_id is not None:
+            recipients.append(player.user_id)
+    if not recipients:
+        return
+    fixture_id = fixture.pk
+
+    def _send():
+        # Local import on purpose: mirrors the existing function-level
+        # ``from frontend.push import ...`` pattern in gamelink/views.py and
+        # keeps any import cycle with the tournaments app impossible.
+        from frontend.push import notify_tournament_match_ready
+        fresh = Fixture.objects.select_related('mode__tournament').get(pk=fixture_id)
+        for recipient_id in recipients:
+            notify_tournament_match_ready(fresh, recipient_id=recipient_id)
+
+    transaction.on_commit(_send)
+
+
 class Groups(Mode):
 
     min_group_size = models.PositiveSmallIntegerField()
@@ -1064,12 +1097,14 @@ class Groups(Mode):
                     if pidx1 >= len(group) or pidx2 >= len(group): 
                         continue
 
-                    Fixture.objects.create(
+                    fixture = Fixture.objects.create(
                         mode     = self,
                         level    = level,
                         player1  = group[pidx1],
                         player2  = group[pidx2],
+                        playable_at = timezone.now(),
                     )
+                    _notify_match_ready(fixture)
 
     def get_standings(self, participant):
         row = get_stats(participant, dict(mode = self))
@@ -1226,7 +1261,10 @@ class Knockout(Mode):
                 player1 = player1,
                 player2 = player2,
                 extras  = extras,
+                playable_at = timezone.now() if player1 is not None and player2 is not None else None,
             )
+            if fixture.playable_at is not None:
+                _notify_match_ready(fixture)
             tree1_levels[0].append(fixture)
 
         # Assert that all participants were distributed.
@@ -1328,7 +1366,18 @@ class Knockout(Mode):
             return False
         else:
             setattr(dst_fixture, dst_attr, player)
+            # Write-once transition to playability: stamp the first moment the
+            # destination fixture holds both players. Never reset afterwards.
+            became_playable = (
+                dst_fixture.player1_id is not None
+                and dst_fixture.player2_id is not None
+                and dst_fixture.playable_at is None
+            )
+            if became_playable:
+                dst_fixture.playable_at = timezone.now()
             dst_fixture.save()
+            if became_playable:
+                _notify_match_ready(dst_fixture)
             return True
         
 
@@ -1430,6 +1479,11 @@ class Fixture(models.Model):
     admin_winner = models.ForeignKey('Participant', null=True, blank=True, on_delete=models.PROTECT, related_name='administrative_wins')
     admin_resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # First moment both players were assigned and the fixture became actually
+    # playable. Write-once: set at creation when both players are present,
+    # otherwise stamped by Knockout._propagate when the final missing player
+    # arrives. Never reset afterwards.
+    playable_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [

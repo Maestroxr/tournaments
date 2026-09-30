@@ -70,9 +70,11 @@ class TablePushDelivery(models.Model):
 class Task(models.Model):
     NAME_DELIVER_ADMIN_COMMAND = 'deliver_admin_command'
     NAME_EXPIRE_UNSTARTED_GAMES = 'expire_unstarted_games'
+    NAME_START_SCHEDULED_TOURNAMENTS = 'start_scheduled_tournaments'
     NAME_CHOICES = [
         (NAME_DELIVER_ADMIN_COMMAND, 'Deliver admin command'),
         (NAME_EXPIRE_UNSTARTED_GAMES, 'Expire unstarted games'),
+        (NAME_START_SCHEDULED_TOURNAMENTS, 'Start scheduled tournaments'),
     ]
     STATUS_PENDING = 'pending'
     STATUS_RUNNING = 'running'

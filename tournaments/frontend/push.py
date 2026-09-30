@@ -228,6 +228,32 @@ def notify_tournament_opponent_waiting(fixture, *, recipient_id):
     return sent
 
 
+def notify_tournament_match_ready(fixture, *, recipient_id):
+    """Immediately push "match is ready, 10 minutes to enter" to one tournament player's devices."""
+    if not configured():
+        return 0
+    sent = 0
+    name = fixture.mode.tournament.name
+    for device in PushSubscription.objects.filter(user_id=recipient_id):
+        english = device.language == 'en'
+        payload = {
+            'title': 'Your tournament match is ready.' if english else 'המשחק שלך בטורניר מוכן.',
+            'body': f'{name} — you have 10 minutes to enter the match.' if english else f'{name} — יש לך 10 דקות להיכנס למשחק.',
+            'url': '/tournaments/my-games',
+            'tag': f'tournament-match-ready:{fixture.pk}',
+        }
+        try:
+            send_notification(device, payload)
+        except Exception as error:
+            response = getattr(error, 'response', None)
+            if getattr(response, 'status_code', None) in (404, 410):
+                PushSubscription.objects.filter(pk=device.pk).delete()
+            # Any other failure must not reach the fixture flow; try the next device.
+            continue
+        sent += 1
+    return sent
+
+
 def send_notification(device, payload):
     # Keep provider encryption/signing in the maintained Web Push library.
     import requests

@@ -41,7 +41,7 @@ const minStartsTime = ref(timeInputValue(now))
 const startsDate = ref('')
 const startsTime = ref('')
 const startsAt = computed(() =>
-  startsDate.value ? `${startsDate.value}T${startsTime.value || '00:00'}` : '',
+  startsDate.value && startsTime.value ? `${startsDate.value}T${startsTime.value}` : '',
 )
 const minStartsDateObject = computed(() => parseLocalDate(minStartsDate.value) || new Date())
 const minStartsTimeObject = computed(() =>
@@ -206,7 +206,9 @@ const fieldErrors = computed(() => {
     errors.prize_money = t('tournamentCreate.prizeError')
   if (prizeType.value === 'text' && !prizeText.value.trim())
     errors.prize_text = t('tournamentCreate.giftRequired')
-  if (startsAt.value) {
+  if (!startsDate.value || !startsTime.value)
+    errors.starts_at = t('tournamentCreate.startRequired')
+  else if (startsAt.value) {
     const date = new Date(startsAt.value)
     if (Number.isNaN(date.getTime())) errors.starts_at = t('tournamentCreate.dateError')
     else if (date.getTime() < Math.floor(Date.now() / 60_000) * 60_000)
@@ -348,7 +350,7 @@ const playerRangeText = computed(() =>
     : t('tournamentCreate.playersRange', { min: minPlayers.value, max: maxPlayers.value }),
 )
 const scheduleText = computed(() => {
-  if (!startsAt.value) return t('tournaments.notScheduled')
+  if (!startsAt.value) return t('tournamentCreate.startRequired')
   const value = new Date(startsAt.value)
   if (Number.isNaN(value.getTime())) return startsAt.value
   return new Intl.DateTimeFormat(locale.value === 'he' ? 'he-IL' : 'en-GB', {
@@ -471,7 +473,7 @@ async function create() {
         body: JSON.stringify({
           name: name.value.trim(),
           template: template.value,
-          starts_at: startsAt.value || null,
+          starts_at: startsAt.value,
           min_players: Number(minPlayers.value),
           max_players: maxPlayers.value === '' ? null : Number(maxPlayers.value),
           target_points: Number(targetPoints.value),
@@ -593,10 +595,7 @@ async function create() {
               <div class="grid min-w-0 grid-cols-2 gap-3">
                 <label class="block min-w-0"
                   ><span class="mb-1 block text-sm font-medium"
-                    >{{ t('tournaments.date') }}
-                    <span class="font-normal text-zinc-500"
-                      >({{ t('tournamentCreate.optional') }})</span
-                    ></span
+                    >{{ t('tournaments.date') }} *</span
                   ><DatePicker
                     v-model="startsDateObject"
                     date-format="dd/mm/yy"
@@ -607,7 +606,7 @@ async function create() {
                     :invalid="Boolean(visibleErrors.starts_at)"
                 /></label>
                 <label class="block min-w-0"
-                  ><span class="mb-1 block text-sm font-medium">{{ t('tournaments.time') }}</span
+                  ><span class="mb-1 block text-sm font-medium">{{ t('tournaments.time') }} *</span
                   ><DatePicker
                     v-model="startsTimeObject"
                     time-only

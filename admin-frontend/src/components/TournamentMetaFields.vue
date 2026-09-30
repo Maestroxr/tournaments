@@ -98,7 +98,7 @@ const startsTimeObject = computed<Date | null>({
   <div class="space-y-4">
     <div v-if="!rulesOnly" class="grid grid-cols-1 gap-4 sm:grid-cols-3">
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.date') }}</span>
+        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.date') }} *</span>
         <DatePicker
           v-model="startsDateObject"
           date-format="dd/mm/yy"
@@ -115,7 +115,7 @@ const startsTimeObject = computed<Date | null>({
         />
       </label>
       <label class="block">
-        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.time') }}</span>
+        <span class="mb-1 block text-sm font-medium text-black">{{ t('tournaments.time') }} *</span>
         <DatePicker
           v-model="startsTimeObject"
           time-only

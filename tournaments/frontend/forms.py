@@ -5,6 +5,7 @@ from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 from django.contrib.auth.models import User
 
 from tournaments import models
@@ -118,12 +119,17 @@ class CreateTournamentForm(forms.Form):
     name = forms.CharField(label='Name', max_length=100, required=True)
     definition = forms.CharField(label='Definition', widget=forms.Textarea(
         attrs={'class': 'textarea-monospace'}), required=True)
+    starts_at = forms.DateTimeField(label='Starts at', required=True, widget=forms.DateTimeInput(
+        attrs={'type': 'datetime-local'}))
 
     @transaction.atomic
     def validate_definition(self, definition):
         try:
             tournament = models.Tournament.load(
-                definition=definition, name='Test')
+                definition=definition, name='Test',
+                # Throwaway probe row only; the transaction is always rolled
+                # back below. Real tournaments use the form's own starts_at.
+                starts_at=timezone.now())
             tournament.full_clean()
             for stage in tournament.stages.all():
                 stage.full_clean()
@@ -157,6 +163,7 @@ class CreateTournamentForm(forms.Form):
         tournament = models.Tournament.load(
             definition=self.cleaned_data['definition'],
             name=self.cleaned_data['name'],
+            starts_at=self.cleaned_data['starts_at'],
             creator=request.user)
         tournament.definition = self.data['definition']
         tournament.save()

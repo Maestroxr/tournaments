@@ -30,6 +30,11 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let socket: WebSocket | null = null
 let disposed = false
 let refreshQueued = false
+const MIN_AUTO_REFRESH_INTERVAL_MS = 2000
+const COALESCE_DELAY_MS = 2500
+let coalescedTimer: ReturnType<typeof setTimeout> | null = null
+let lastFetchStartedAt = 0
+let needsRefresh = false
 const selectedView = computed(() => {
   if (route.name === 'tournament-bracket') return 'matches'
   if (route.name === 'tournament-standings' || route.name === 'tournament-results') return 'standings'
@@ -93,9 +98,16 @@ const waitingPlayers = computed(() => data.value?.control_room?.waiting_players 
 
 watch(selectedView, () => { selectedFixtureId.value = null })
 
-async function load(initial = false) {
+async function load(initial = false, opts: { force?: boolean } = {}) {
   if (disposed) return
+  const forced = initial || opts.force === true
+  if (!forced && Date.now() - lastFetchStartedAt < MIN_AUTO_REFRESH_INTERVAL_MS) {
+    needsRefresh = false
+    return
+  }
   if (refreshing.value) { refreshQueued = true; return }
+  lastFetchStartedAt = Date.now()
+  needsRefresh = false
   refreshing.value = true
   if (initial) loading.value = true
   else refreshing.value = true
@@ -133,6 +145,17 @@ function scheduleRefresh() {
   }, 15000)
 }
 
+function requestCoalescedRefresh(delayMs = COALESCE_DELAY_MS) {
+  if (disposed) return
+  needsRefresh = true
+  if (coalescedTimer !== null) return
+  coalescedTimer = setTimeout(() => {
+    coalescedTimer = null
+    if (disposed || !needsRefresh) return
+    void load()
+  }, delayMs)
+}
+
 function progressSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/tournaments-ws/admin/tournaments/${id}/progress/`
@@ -155,7 +178,7 @@ function applyLiveSnapshot(payload: unknown) {
   if (event.type !== 'live_snapshot' || typeof event.fixture_id !== 'number') return
   const fixture = findFixture(event.fixture_id)
   if (!fixture) {
-    void load()
+    requestCoalescedRefresh()
     return
   }
   const previousStatus = operationalStatus(fixture)
@@ -171,7 +194,7 @@ function applyLiveSnapshot(payload: unknown) {
       data.value.control_room.counts.playing += 1
     }
   } else if (event.live?.status === 'completed') {
-    void load()
+    requestCoalescedRefresh()
   }
   lastUpdatedAt.value = new Date()
 }
@@ -227,6 +250,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true
   if (refreshTimer !== null) clearTimeout(refreshTimer)
+  if (coalescedTimer !== null) clearTimeout(coalescedTimer)
+  coalescedTimer = null
   closeSocket()
 })
 </script>
@@ -235,7 +260,7 @@ onBeforeUnmount(() => {
   <div class="tournament-progress-page min-w-0">
       <div v-if="loading" class="py-10 text-center text-sm text-zinc-500">{{ t('common.loading') }}</div>
       <AppAlert v-if="error" type="error" :message="error" class="mb-3" />
-      <Button v-if="!loading && !data" :label="t('common.refresh')" severity="secondary" outlined :loading="refreshing" @click="load()" />
+      <Button v-if="!loading && !data" :label="t('common.refresh')" severity="secondary" outlined :loading="refreshing" @click="load(false, { force: true })" />
 
       <template v-if="data">
         <div class="workspace-toolbar">
@@ -246,7 +271,7 @@ onBeforeUnmount(() => {
               {{ t(liveConnected ? 'tournamentWorkspace.connected' : 'tournamentWorkspace.reconnecting') }}
             </span>
             <span>{{ t(data.is_finished ? 'tournamentWorkspace.finalized' : 'tournamentWorkspace.synced') }} {{ formatUpdatedAt(lastUpdatedAt) }}</span>
-            <Button icon="bi bi-arrow-clockwise" text rounded severity="secondary" :aria-label="t('common.refresh')" :loading="refreshing" :disabled="refreshing" @click="load()" />
+            <Button icon="bi bi-arrow-clockwise" text rounded severity="secondary" :aria-label="t('common.refresh')" :loading="refreshing" :disabled="refreshing" @click="load(false, { force: true })" />
           </div>
         </div>
 
@@ -295,7 +320,7 @@ onBeforeUnmount(() => {
         <TournamentMatchesPanel v-else-if="selectedView === 'matches'" :stages="data.stages" @select="selectedFixtureId = $event" />
         <TournamentStandingsPanel v-else :finished="data.is_finished" :podium="data.podium || []" />
         <TournamentMatchDialog v-if="selectedFixture" :key="selectedFixture.id" :fixture="selectedFixture"
-          :tournament-id="id" :round="selectedRound" :sources="selectedSources" :live-connected="liveConnected" :updated-at="lastUpdatedAt" @saved="load()" @close="selectedFixtureId = null" />
+          :tournament-id="id" :round="selectedRound" :sources="selectedSources" :live-connected="liveConnected" :updated-at="lastUpdatedAt" @saved="load(false, { force: true })" @close="selectedFixtureId = null" />
       </template>
   </div>
 </template>

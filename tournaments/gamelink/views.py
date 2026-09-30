@@ -14,6 +14,7 @@ must never acquire any — see the note on the class itself.
 import datetime
 import json
 import logging
+import math
 import re
 import time
 from decimal import Decimal
@@ -304,6 +305,160 @@ def _resolve_current_fixture(request, pk):
 # this window before tickets are issued; each browser re-posts while it waits.
 READY_FRESHNESS_SECONDS = 15
 
+# Absolute entry window for a tournament fixture, measured from the fixture's
+# own playable moment — never from heartbeats, link creation, or request time.
+TOURNAMENT_ENTRY_WINDOW = datetime.timedelta(minutes=10)
+
+
+def _entry_deadline_fields(fixture, now):
+    """
+    Return ``(entry_deadline, remaining_seconds)`` for `fixture`.
+
+    The deadline is derived only from ``fixture.playable_at``. When it is
+    unexpectedly missing, both values stay `None` so the gap remains visible
+    instead of being silently replaced by the wrong clock. The remaining time
+    never goes negative; an expired deadline reports ``0`` without resolving
+    anything — no-show resolution happens elsewhere.
+    """
+    if fixture.playable_at is None:
+        return None, None
+    entry_deadline = fixture.playable_at + TOURNAMENT_ENTRY_WINDOW
+    remaining_seconds = max(
+        0,
+        math.ceil((entry_deadline - now).total_seconds()),
+    )
+    return entry_deadline, remaining_seconds
+
+
+def _fresh_seat(game_link, seat, now):
+    """Whether `seat` declared readiness inside the freshness window."""
+    ready_at = game_link.p1_ready_at if seat == 'p1' else game_link.p2_ready_at
+    if ready_at is None:
+        return False
+    return ready_at >= now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+
+
+def _no_show_winner_seat(fixture):
+    """
+    Winner seat of an opponent-no-show resolution, or `None` when `fixture`
+    was not resolved as a no-show walkover.
+    """
+    if not fixture.admin_result or fixture.admin_winner_id is None:
+        return None
+    if not FixtureAudit.objects.filter(fixture=fixture, action='opponent_no_show').exists():
+        return None
+    if fixture.admin_winner_id == fixture.player1_id:
+        return 'p1'
+    if fixture.admin_winner_id == fixture.player2_id:
+        return 'p2'
+    return None
+
+
+def _try_resolve_no_show(fixture, game_link, now):
+    """
+    Resolve an expired pending fixture as an opponent-no-show walkover.
+
+    Call only from inside the ready transaction: the tournament and fixture
+    rows are already locked, and the link row is re-locked here so concurrent
+    heartbeat/timeout requests serialize. Readiness is recomputed from the
+    locked link, so a lately committed opponent heartbeat still wins the
+    normal ``both_ready`` flow. Returns the winner seat, or `None` when no
+    walkover applies (deadline not reached, both or neither present, link not
+    pending, or fixture already resolved).
+    """
+    if fixture.playable_at is None:
+        return None
+    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    if entry_deadline is None or now < entry_deadline:
+        return None
+    if fixture.is_confirmed or fixture.admin_result:
+        return _no_show_winner_seat(fixture)
+    if game_link.status != 'pending':
+        return None
+    locked_link = GameLink.objects.select_for_update().get(pk=game_link.pk)
+    p1_here = _fresh_seat(locked_link, 'p1', now)
+    p2_here = _fresh_seat(locked_link, 'p2', now)
+    if p1_here == p2_here:
+        # Both entered — the normal both_ready flow owns that race — or
+        # neither did. Never award or invent a winner here.
+        return None
+    winner_seat = 'p1' if p1_here else 'p2'
+    winner = fixture.player1 if winner_seat == 'p1' else fixture.player2
+    fixture.admin_result = 'advance'
+    fixture.admin_winner = winner
+    fixture.admin_resolved_at = now
+    fixture.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+    FixtureAudit.objects.create(
+        fixture=fixture,
+        action='opponent_no_show',
+        reason=f'{winner_seat} entered; the opponent never entered before the entry deadline.',
+        before={'score': [fixture.score1, fixture.score2], 'admin_result': ''},
+        after={'admin_result': 'advance', 'winner_seat': winner_seat,
+               'winner_participant_id': winner.pk},
+    )
+    # Terminal for first entries: no ticket can be issued off this link again.
+    locked_link.status = 'cancelled'
+    locked_link.save(update_fields=['status'])
+    # Existing tournament flow: mark resolved, confirm via admin_result, and
+    # propagate the winner through the bracket.
+    fixture.mode.tournament.update_state()
+    return winner_seat
+
+
+def _no_show_terminal_response(fixture, seat, winner_seat, now):
+    """Terminal no-show state for a player whose fixture already ended."""
+    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    game_link = GameLink.objects.filter(fixture_id=fixture.pk).first()
+    if game_link is not None:
+        opponent = _opponent_info(fixture, seat, game_link, now)
+    elif fixture.player1 is not None and fixture.player2 is not None:
+        opponent_user = fixture.player2.user if seat == 'p1' else fixture.player1.user
+        opponent = {'username': opponent_user.username, 'is_waiting': False}
+    else:
+        opponent = {'username': '', 'is_waiting': False}
+    return JsonResponse({
+        'fixture_id': fixture.pk,
+        'seat': seat,
+        'both_ready': False,
+        'entry_status': 'won_by_no_show' if winner_seat == seat else 'lost_by_no_show',
+        'reason': 'opponent_no_show',
+        'winner_seat': winner_seat,
+        'entry_deadline': entry_deadline,
+        'remaining_seconds': 0,
+        'opponent': opponent,
+    })
+
+
+def _no_show_after_resolution(request, tournament_pk):
+    """
+    Terminal no-show state for a player whose fixture already ended and who
+    therefore no longer resolves to a playable fixture.
+
+    Returns a JsonResponse, or `None` when no no-show resolution applies (the
+    caller then returns the original refusal, reopening nothing).
+    """
+    try:
+        Tournament.objects.select_for_update().get(pk=tournament_pk)
+    except Tournament.DoesNotExist:
+        return None
+    candidates = (Fixture.objects.select_related('mode__tournament', 'player1__user', 'player2__user')
+        .filter(mode__tournament_id=tournament_pk, admin_result='advance')
+        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+        .order_by('-pk'))
+    now = timezone.now()
+    for fixture in candidates:
+        winner_seat = _no_show_winner_seat(fixture)
+        if winner_seat is None:
+            continue
+        if fixture.player1 is not None and fixture.player1.user_id == request.user.id:
+            seat = 'p1'
+        elif fixture.player2 is not None and fixture.player2.user_id == request.user.id:
+            seat = 'p2'
+        else:
+            continue
+        return _no_show_terminal_response(fixture, seat, winner_seat, now)
+    return None
+
 
 def _readiness_fresh(game_link, now):
     """True only when both seats heartbeated no earlier than the freshness window."""
@@ -364,6 +519,9 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
 
         _, fixture, seat, refusal = _resolve_current_fixture(request, pk)
         if refusal is not None:
+            terminal = _no_show_after_resolution(request, pk)
+            if terminal is not None:
+                return terminal
             status, reason, _ = refusal
             return _start_refusal(status, reason)
 
@@ -383,10 +541,14 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
         if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
             # Already underway and this player entered before: straight back in. Anyone
             # else falls through to the readiness check below instead of bypassing it.
+            entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
             return JsonResponse({
                 'fixture_id': fixture.pk,
                 'seat': seat,
                 'both_ready': True,
+                'entry_status': 'ready',
+                'entry_deadline': entry_deadline,
+                'remaining_seconds': remaining_seconds,
                 'opponent': _opponent_info(fixture, seat, game_link, now),
             })
 
@@ -412,10 +574,29 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
                         recipient_id=opponent_user_id,
                     )
             )
+        both_ready = _readiness_fresh(game_link, now)
+        if both_ready:
+            entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
+            return JsonResponse({
+                'fixture_id': fixture.pk,
+                'seat': seat,
+                'both_ready': both_ready,
+                'entry_status': 'ready',
+                'entry_deadline': entry_deadline,
+                'remaining_seconds': remaining_seconds,
+                'opponent': _opponent_info(fixture, seat, game_link, now),
+            })
+        winner_seat = _try_resolve_no_show(fixture, game_link, now)
+        if winner_seat is not None:
+            return _no_show_terminal_response(fixture, seat, winner_seat, now)
+        entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
         return JsonResponse({
             'fixture_id': fixture.pk,
             'seat': seat,
-            'both_ready': _readiness_fresh(game_link, now),
+            'both_ready': both_ready,
+            'entry_status': 'waiting',
+            'entry_deadline': entry_deadline,
+            'remaining_seconds': remaining_seconds,
             'opponent': _opponent_info(fixture, seat, game_link, now),
         })
 

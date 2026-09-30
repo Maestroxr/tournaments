@@ -303,7 +303,7 @@ function parseTournamentMeta() {
       editStartsDate.value = dateInputValue(d)
       editStartsTime.value = timeInputValue(d)
     }
-  } else { editStartsDate.value = minStartsDate.value; editStartsTime.value = timeInputValue(now) }
+  } else { editStartsDate.value = ''; editStartsTime.value = '' }
   editMin.value = t.value.min_players ?? 6
   editMax.value = t.value.max_players ?? ''
   editPoints.value = t.value.target_points ?? 5
@@ -423,9 +423,9 @@ function draftPayload() {
         podium: [...podium.value],
       }
     : parsedDefinition
-  const startsAt = editStartsDate.value
-    ? `${editStartsDate.value}T${editStartsTime.value || '00:00'}`
-    : null
+  const startsAt = editStartsDate.value && editStartsTime.value
+    ? `${editStartsDate.value}T${editStartsTime.value}`
+    : ''
   return {
     name: editName.value,
     definition,
@@ -461,6 +461,10 @@ async function publishAndManagePlayers() {
   error.value = ''
   try {
     const tid = props.id || String(route.params.id)
+    if (!editStartsDate.value || !editStartsTime.value) {
+      error.value = translate('tournamentCreate.startRequired')
+      return
+    }
     if (draftChanged.value) {
       const payload = draftPayload()
       await apiFetch(`/api/admin/tournaments/${tid}`, {

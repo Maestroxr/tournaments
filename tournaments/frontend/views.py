@@ -183,6 +183,7 @@ class UpdateTournamentView(AdminRequiredMixin, IsCreatorMixin, SingleObjectMixin
         data['initial'] = dict(
             name=self.get_object().name,
             definition=self.get_object().definition,
+            starts_at=self.get_object().starts_at,
         )
         return data
 
@@ -691,6 +692,7 @@ class CloneTournamentView(AdminRequiredMixin, LoginRequiredMixin, SingleObjectMi
         tournament = models.Tournament.load(
             definition=self.object.definition,
             name=self.object.name + ' (Copy)',
+            starts_at=self.object.starts_at,
             creator=request.user)
         request.session['alert'] = dict(
             status='success', text=f'A copy of the tournament "{self.object.name}" has been created (see below).')
