@@ -26,6 +26,11 @@ def schedule_tasks():
         defaults={'name': Task.NAME_START_SCHEDULED_TOURNAMENTS},
     )
     created_count += int(created)
+    _, created = Task.objects.get_or_create(
+        key='expire-tournament-entry-deadlines',
+        defaults={'name': Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES},
+    )
+    created_count += int(created)
     pending_ids = AdminGameCommand.objects.filter(status='pending').values_list('pk', flat=True)
     for command_id in pending_ids.iterator():
         _, created = Task.objects.get_or_create(

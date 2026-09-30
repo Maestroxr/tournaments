@@ -109,10 +109,88 @@ def start_scheduled_tournaments(*, heartbeat):
     return started
 
 
+def expire_tournament_entry_deadlines(*, heartbeat):
+    """Resolve tournament fixtures whose 10-minute entry deadline expired.
+
+    Request-independent: covers fixtures where neither player ever opens the
+    match (no heartbeat/request ever arrives). Reuses the existing resolvers
+    so single-fresh still yields opponent_no_show and zero-fresh yields
+    double_no_show; both-fresh is left alone. Idempotent under row locks.
+    """
+    from gamelink.views import (
+        TOURNAMENT_ENTRY_WINDOW,
+        _entry_deadline_fields,
+        _resolve_double_no_show_locked,
+        _try_resolve_no_show,
+    )
+    from tournaments.models import Fixture, Tournament
+
+    now = timezone.now()
+    cutoff = now - TOURNAMENT_ENTRY_WINDOW
+    candidate_ids = list(
+        Fixture.objects.filter(
+            playable_at__lte=cutoff,
+            playable_at__isnull=False,
+            player1__isnull=False,
+            player2__isnull=False,
+            admin_result='',
+            score1__isnull=True,
+            score2__isnull=True,
+        ).order_by('playable_at').values_list('pk', flat=True)[:200]
+    )
+    resolved = 0
+    for fixture_id in candidate_ids:
+        if heartbeat is not None:
+            heartbeat()
+        try:
+            with transaction.atomic():
+                try:
+                    fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
+                except Fixture.DoesNotExist:
+                    continue
+                if fixture.is_confirmed or fixture.admin_result:
+                    continue
+                if fixture.playable_at is None:
+                    continue
+                if fixture.player1_id is None or fixture.player2_id is None:
+                    continue
+                entry_deadline, _ = _entry_deadline_fields(fixture, now)
+                if entry_deadline is None or now < entry_deadline:
+                    continue
+                try:
+                    tournament = Tournament.objects.select_for_update().get(
+                        pk=fixture.mode.tournament_id,
+                    )
+                except Tournament.DoesNotExist:
+                    continue
+                if tournament.state != 'active':
+                    continue
+                from gamelink.models import GameLink
+
+                try:
+                    game_link = GameLink.objects.select_for_update().filter(
+                        fixture_id=fixture.pk,
+                    ).first()
+                except Exception:
+                    continue
+                if game_link is not None:
+                    outcome = _try_resolve_no_show(fixture, game_link, now)
+                    if outcome is not None:
+                        resolved += 1
+                else:
+                    if _resolve_double_no_show_locked(fixture, None, now):
+                        resolved += 1
+        except Exception:
+            logger.exception('Tournament entry expiry failed fixture=%s', fixture_id)
+            continue
+    return resolved
+
+
 HANDLERS = {
     Task.NAME_DELIVER_ADMIN_COMMAND: deliver_admin_command,
     Task.NAME_EXPIRE_UNSTARTED_GAMES: expire_unstarted_games,
     Task.NAME_START_SCHEDULED_TOURNAMENTS: start_scheduled_tournaments,
+    Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES: expire_tournament_entry_deadlines,
 }
 
 
@@ -179,7 +257,7 @@ def run_task(task_id):
         'last_finished_at': finished_at,
         'updated_at': finished_at,
     }
-    if task.name in (Task.NAME_EXPIRE_UNSTARTED_GAMES, Task.NAME_START_SCHEDULED_TOURNAMENTS):
+    if task.name in (Task.NAME_EXPIRE_UNSTARTED_GAMES, Task.NAME_START_SCHEDULED_TOURNAMENTS, Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES):
         changes.update(
             status=Task.STATUS_PENDING,
             run_at=finished_at + timedelta(seconds=EXPIRY_INTERVAL_SECONDS),
