@@ -1367,11 +1367,15 @@ class Knockout(Mode):
         else:
             setattr(dst_fixture, dst_attr, player)
             # Write-once transition to playability: stamp the first moment the
-            # destination fixture holds both players. Never reset afterwards.
+            # destination fixture holds both players AND is actually allowed
+            # to be played (its level is current). Future-level fixtures keep
+            # playable_at=None until update_fixtures activates them.
+            # Never reset afterwards.
             became_playable = (
                 dst_fixture.player1_id is not None
                 and dst_fixture.player2_id is not None
                 and dst_fixture.playable_at is None
+                and dst_fixture.level == dst_fixture.mode.current_level
             )
             if became_playable:
                 dst_fixture.playable_at = timezone.now()
@@ -1403,6 +1407,21 @@ class Knockout(Mode):
             if fixture.is_confirmed:
                 if self.propagate(fixture):
                     updates_performed = True
+        # Activate newly-current fixtures: both players arrived early while
+        # a previous level was still open, so playable_at stayed None.
+        # Stamp once now that their level is actually allowed to be played.
+        for fixture in self.fixtures.filter(level=self.current_level):
+            if fixture.is_confirmed:
+                continue
+            if (
+                fixture.player1_id is not None
+                and fixture.player2_id is not None
+                and fixture.playable_at is None
+            ):
+                fixture.playable_at = timezone.now()
+                fixture.save()
+                _notify_match_ready(fixture)
+                updates_performed = True
         return updates_performed
 
     def check_fixture(self, fixture):
