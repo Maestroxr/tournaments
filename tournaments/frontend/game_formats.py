@@ -198,6 +198,116 @@ def reserve(table, user, amount):
                                    head_to_head_table=table, note=f'Reserved for {table.game_format} table {table.code}')
 
 
+def create_rematch_table(source):
+    from .api import _new_table_code
+
+    if source.status != HeadToHeadTable.STATUS_COMPLETED:
+        raise ValidationError(
+            'Source table must be completed before creating a rematch.')
+
+    if not source.host_id or not source.guest_id:
+        raise ValidationError('Rematch requires two players.')
+
+    host = source.host
+    guest = source.guest
+
+    settlement = {}
+
+    if source.game_format == 'money':
+        host_balance = money(
+            WalletTransaction.balance_for_user(host)
+        )
+        guest_balance = money(
+            WalletTransaction.balance_for_user(guest)
+        )
+
+        host_params = calculate_dynamic_params(
+            host_balance,
+            source.amount,
+            source.rules_snapshot,
+            mars_enabled=True,
+            is_quick=True,
+        )
+
+        guest_params = calculate_dynamic_params(
+            guest_balance,
+            source.amount,
+            source.rules_snapshot,
+            mars_enabled=True,
+            is_quick=True,
+        )
+
+        if not host_params['can_join']:
+            raise ValidationError(
+                'Host can no longer afford the rematch.'
+            )
+
+        if not guest_params['can_join']:
+            raise ValidationError(
+                'Guest can no longer afford the rematch.'
+            )
+
+        shared_max_cube = min(
+            host_params['max_cube'],
+            guest_params['max_cube'],
+        )
+
+        shared_reserve_multiplier = 2 * shared_max_cube
+
+        shared_max_exposure = money(
+            source.amount * shared_reserve_multiplier
+        )
+
+        settlement = {
+            'dynamic_max_cube': shared_max_cube,
+            'dynamic_reserve_multiplier': shared_reserve_multiplier,
+            'dynamic_max_exposure': str(shared_max_exposure),
+        }
+
+    new_table = HeadToHeadTable.objects.create(
+        code=_new_table_code(),
+
+        game_format=source.game_format,
+        rules_snapshot=copy.deepcopy(source.rules_snapshot or {}),
+
+        settlement=settlement,
+
+        mode=source.mode,
+
+        host=host,
+        guest=guest,
+
+        amount=source.amount,
+        fee_percent=source.fee_percent,
+        fee_per_player=source.fee_per_player,
+
+        target_points=source.target_points,
+        time_control=source.time_control,
+        doubling_enabled=source.doubling_enabled,
+
+        status=HeadToHeadTable.STATUS_READY,
+
+        is_quick_match=source.is_quick_match,
+        quick_stakes=copy.deepcopy(source.quick_stakes or []),
+    )
+
+    reserve_amount = required_reserve(new_table)
+
+    reserve(
+        new_table,
+        host,
+        reserve_amount,
+    )
+
+    reserve(
+        new_table,
+        guest,
+        reserve_amount,
+    )
+
+    return new_table
+
+
 def quote(settings, data, quick, match_search=False):
     name = data.get('game_format')
     if name not in ('match', 'money'):

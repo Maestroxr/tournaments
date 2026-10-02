@@ -35,7 +35,7 @@ from django.views.generic import View
 from channels.layers import get_channel_layer
 from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, RatingResult, Tournament, WalletTransaction
 
-from .models import GameLink, IssuedTicket, SeenNonce
+from .models import DirectPlayRematch, GameLink, IssuedTicket, SeenNonce
 from .signing import SEATS, issue_direct_play_ticket, issue_ticket, redact, verify_result_signature
 
 logger = logging.getLogger(__name__)
@@ -65,11 +65,83 @@ class StartDirectPlayView(LoginRequiredMixin, View):
         if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING):
             return HttpResponse(status=412)
         if request.user.id == table.host_id:
+
             seat = 'p1'
+            logger.info(
+                'DIRECT_PLAY_REQUEST code=%s table=%s user=%s seat=%s status=%s '
+                'host_ready_at=%s guest_ready_at=%s external_room_id=%s',
+                table.code,
+                table.pk,
+                request.user.pk,
+                seat,
+                table.status,
+                table.host_ready_at,
+                table.guest_ready_at,
+                table.external_room_id or '',
+            )
         elif request.user.id == table.guest_id:
             seat = 'p2'
+            logger.info(
+                'DIRECT_PLAY_REQUEST code=%s table=%s user=%s seat=%s status=%s '
+                'host_ready_at=%s guest_ready_at=%s external_room_id=%s',
+                table.code,
+                table.pk,
+                request.user.pk,
+                seat,
+                table.status,
+                table.host_ready_at,
+                table.guest_ready_at,
+                table.external_room_id or '',
+            )
         else:
             return HttpResponse(status=403)
+
+        now = timezone.now()
+        host_ready, guest_ready = _direct_play_readiness(table, now)
+        both_ready = host_ready and guest_ready
+        logger.warning(
+            'DIRECT_READY code=%s table=%s user=%s seat=%s status=%s '
+            'host_ready=%s guest_ready=%s both_ready=%s '
+            'host_ready_at=%s guest_ready_at=%s',
+            table.code,
+            table.pk,
+            request.user.pk,
+            seat,
+            table.status,
+            host_ready,
+            guest_ready,
+            both_ready,
+            table.host_ready_at,
+            table.guest_ready_at,
+        )
+
+        if table.status == HeadToHeadTable.STATUS_READY:
+            if not both_ready:
+                logger.warning(
+                    'DIRECT_PLAY_REFUSED reason=not_both_ready '
+                    'code=%s user=%s seat=%s host_ready=%s guest_ready=%s',
+                    table.code,
+                    request.user.pk,
+                    seat,
+                    host_ready,
+                    guest_ready,
+                )
+                return HttpResponse(status=412)
+
+        elif table.status == HeadToHeadTable.STATUS_PLAYING:
+            # Once a real room already exists, allow either participant to re-enter.
+            # The initial entry was already protected by the readiness gate.
+            if not table.external_room_id and not both_ready:
+                logger.warning(
+                    'DIRECT_PLAY_REFUSED reason=not_both_ready '
+                    'code=%s user=%s seat=%s host_ready=%s guest_ready=%s',
+                    table.code,
+                    request.user.pk,
+                    seat,
+                    host_ready,
+                    guest_ready,
+                )
+                return HttpResponse(status=412)
 
         try:
             token, _ = issue_direct_play_ticket(request.user, table, seat)
@@ -239,7 +311,8 @@ class StartTournamentGameView(LoginRequiredMixin, View):
                 pk, request.user.pk)
             return _start_refusal(412, 'disabled')
 
-        tournament, fixture, seat, refusal = _resolve_current_fixture(request, pk)
+        tournament, fixture, seat, refusal = _resolve_current_fixture(
+            request, pk)
         if refusal is not None:
             status, reason, detail = refusal
             if reason == 'tournament_does_not_exist':
@@ -385,7 +458,8 @@ def _resolve_double_no_show_locked(fixture, locked_link, now):
     fixture.admin_result = 'double_no_show'
     fixture.admin_winner = None
     fixture.admin_resolved_at = now
-    fixture.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+    fixture.save(update_fields=['admin_result',
+                 'admin_winner', 'admin_resolved_at'])
     FixtureAudit.objects.create(
         fixture=fixture,
         action='double_no_show',
@@ -440,7 +514,8 @@ def _try_resolve_no_show(fixture, game_link, now):
     fixture.admin_result = 'advance'
     fixture.admin_winner = winner
     fixture.admin_resolved_at = now
-    fixture.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+    fixture.save(update_fields=['admin_result',
+                 'admin_winner', 'admin_resolved_at'])
     FixtureAudit.objects.create(
         fixture=fixture,
         action='opponent_no_show',
@@ -513,9 +588,9 @@ def _double_no_show_after_resolution(request, tournament_pk):
     except Tournament.DoesNotExist:
         return None
     candidates = (Fixture.objects.select_related('mode__tournament', 'player1__user', 'player2__user')
-        .filter(mode__tournament_id=tournament_pk, admin_result='double_no_show')
-        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
-        .order_by('-pk'))
+                  .filter(mode__tournament_id=tournament_pk, admin_result='double_no_show')
+                  .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+                  .order_by('-pk'))
     now = timezone.now()
     for fixture in candidates:
         if not _is_double_no_show(fixture):
@@ -543,9 +618,9 @@ def _no_show_after_resolution(request, tournament_pk):
     except Tournament.DoesNotExist:
         return None
     candidates = (Fixture.objects.select_related('mode__tournament', 'player1__user', 'player2__user')
-        .filter(mode__tournament_id=tournament_pk, admin_result='advance')
-        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
-        .order_by('-pk'))
+                  .filter(mode__tournament_id=tournament_pk, admin_result='advance')
+                  .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
+                  .order_by('-pk'))
     now = timezone.now()
     for fixture in candidates:
         winner_seat = _no_show_winner_seat(fixture)
@@ -644,6 +719,130 @@ def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_f
     return resolved
 
 
+def _direct_play_readiness(table, now):
+    cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+
+    host_ready = (
+        table.host_ready_at is not None
+        and table.host_ready_at >= cutoff
+    )
+    guest_ready = (
+        table.guest_ready_at is not None
+        and table.guest_ready_at >= cutoff
+    )
+
+    return host_ready, guest_ready
+
+
+class DirectPlayReadyView(LoginRequiredMixin, View):
+    """
+    Record one player's readiness heartbeat for a direct-play table.
+    """
+
+    http_method_names = ['get', 'post']
+
+    def get(self, request, code):
+        if not settings.GAMELINK_ENABLED:
+            return _start_refusal(412, 'disabled')
+
+        try:
+            table = HeadToHeadTable.objects.get(code=code.upper())
+        except HeadToHeadTable.DoesNotExist:
+            return HttpResponse(status=404)
+
+        if table.status not in (
+            HeadToHeadTable.STATUS_READY,
+            HeadToHeadTable.STATUS_PLAYING,
+        ):
+            return HttpResponse(status=412)
+
+        if request.user.id == table.host_id:
+            seat = 'p1'
+        elif request.user.id == table.guest_id:
+            seat = 'p2'
+        else:
+            return HttpResponse(status=403)
+
+        if table.guest_id is None:
+            return HttpResponse(status=412)
+
+        now = timezone.now()
+        host_ready, guest_ready = _direct_play_readiness(table, now)
+        both_ready = host_ready and guest_ready
+
+        opponent = table.guest if seat == 'p1' else table.host
+        opponent_ready = guest_ready if seat == 'p1' else host_ready
+
+        return JsonResponse({
+            'table_id': table.pk,
+            'code': table.code,
+            'seat': seat,
+            'both_ready': both_ready,
+            'entry_status': 'ready' if both_ready else 'waiting',
+            'opponent': {
+                'username': opponent.username,
+                'is_waiting': opponent_ready,
+            },
+        })
+
+    @transaction.atomic
+    def post(self, request, code):
+        if not settings.GAMELINK_ENABLED:
+            return _start_refusal(412, 'disabled')
+
+        try:
+            table = HeadToHeadTable.objects.select_for_update().get(
+                code=code.upper()
+            )
+        except HeadToHeadTable.DoesNotExist:
+            return HttpResponse(status=404)
+
+        if table.status not in (
+            HeadToHeadTable.STATUS_READY,
+            HeadToHeadTable.STATUS_PLAYING,
+        ):
+            return HttpResponse(status=412)
+
+        if request.user.id == table.host_id:
+            seat = 'p1'
+            field = 'host_ready_at'
+        elif request.user.id == table.guest_id:
+            seat = 'p2'
+            field = 'guest_ready_at'
+        else:
+            return HttpResponse(status=403)
+
+        if table.guest_id is None:
+            return HttpResponse(status=412)
+
+        now = timezone.now()
+
+        setattr(table, field, now)
+        table.save(update_fields=[field])
+
+        table.refresh_from_db(
+            fields=['host_ready_at', 'guest_ready_at']
+        )
+
+        host_ready, guest_ready = _direct_play_readiness(table, now)
+        both_ready = host_ready and guest_ready
+
+        opponent = table.guest if seat == 'p1' else table.host
+        opponent_ready = guest_ready if seat == 'p1' else host_ready
+
+        return JsonResponse({
+            'table_id': table.pk,
+            'code': table.code,
+            'seat': seat,
+            'both_ready': both_ready,
+            'entry_status': 'ready' if both_ready else 'waiting',
+            'opponent': {
+                'username': opponent.username,
+                'is_waiting': opponent_ready,
+            },
+        })
+
+
 class TournamentGameReadyView(LoginRequiredMixin, View):
     """
     Record one player's readiness heartbeat for their current tournament fixture.
@@ -676,7 +875,8 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             defaults=dict(
                 target_points=fixture.mode.tournament.target_points,
                 doubling_enabled=fixture.mode.tournament.doubling_enabled,
-                expires_at=now + datetime.timedelta(seconds=settings.GAMELINK_LINK_TTL),
+                expires_at=now +
+                datetime.timedelta(seconds=settings.GAMELINK_LINK_TTL),
             ),
         )
 
@@ -686,7 +886,8 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
         if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
             # Already underway and this player entered before: straight back in. Anyone
             # else falls through to the readiness check below instead of bypassing it.
-            entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
+            entry_deadline, remaining_seconds = _entry_deadline_fields(
+                fixture, now)
             return JsonResponse({
                 'fixture_id': fixture.pk,
                 'seat': seat,
@@ -721,7 +922,8 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             )
         both_ready = _readiness_fresh(game_link, now)
         if both_ready:
-            entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
+            entry_deadline, remaining_seconds = _entry_deadline_fields(
+                fixture, now)
             return JsonResponse({
                 'fixture_id': fixture.pk,
                 'seat': seat,
@@ -742,7 +944,8 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             )
         except Exception:
             pass
-        entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, now)
+        entry_deadline, remaining_seconds = _entry_deadline_fields(
+            fixture, now)
         return JsonResponse({
             'fixture_id': fixture.pk,
             'seat': seat,
@@ -1349,30 +1552,40 @@ def _direct_play_response(table, status):
                 'change': rr.player2_after - rr.player2_before,
             },
         }
-    # Money payload - only for money format
-    money = None
-    if table.game_format == 'money':
+
+        # Coin delta comes from the authoritative wallet ledger for every
+        # direct-play table, not only money-format games.
         from django.db.models import Sum
+
         p1_total = table.wallet_transactions.filter(
-            user_id=table.host_id).aggregate(total=Sum('amount'))['total']
-        p2_total = table.wallet_transactions.filter(user_id=table.guest_id).aggregate(
-            total=Sum('amount'))['total'] if table.guest_id else None
+            user_id=table.host_id
+        ).aggregate(total=Sum('amount'))['total']
+
+        p2_total = (
+            table.wallet_transactions.filter(
+                user_id=table.guest_id
+            ).aggregate(total=Sum('amount'))['total']
+            if table.guest_id
+            else None
+        )
+
         if p1_total is None:
             p1_total = Decimal('0')
+
         if p2_total is None:
             p2_total = Decimal('0')
 
-        def _to_number(d):
-            # Return JSON number: int when integral, else float
-            if d == int(d):
-                return int(d)
-            return float(d)
+        def _to_number(value):
+            if value == int(value):
+                return int(value)
+            return float(value)
 
         money = {
             'stake': str(table.amount),
             'p1Change': _to_number(p1_total),
             'p2Change': _to_number(p2_total),
         }
+
     return JsonResponse({'status': status, 'rating': rating, 'money': money})
 
 
@@ -1444,6 +1657,13 @@ class RematchCallbackView(View):
         table_id = source_table_id
         # Process
         try:
+            logger.info(
+                "REMATCH_ACTION_RECEIVED action=%s source_table_id=%s room_id=%s actor_seat=%s",
+                action,
+                source_table_id,
+                room_id,
+                actor_seat,
+            )
             if action == 'request':
                 return self._handle_request(request, body, table_id, room_id, actor_seat)
             elif action == 'accept':
@@ -1454,13 +1674,54 @@ class RematchCallbackView(View):
                 return self._handle_cancel(request, body, table_id, room_id, actor_seat)
             elif action == 'disconnect':
                 return self._handle_disconnect(request, body, table_id, room_id, actor_seat)
-        except ValidationError as e:
-            return _reject(request, 409, '; '.join(e.messages))
+        except ValidationError as exc:
+            logger.warning(
+                "REMATCH_VALIDATION_ERROR action=%s source_table_id=%s room_id=%s actor_seat=%s error=%s",
+                action,
+                source_table_id,
+                room_id,
+                actor_seat,
+                exc,
+            )
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "code": "rematch_validation_error",
+                },
+                status=409,
+            )
+
         except DirectPlayRematch.DoesNotExist:
-            return _reject(request, 404, 'rematch not found')
-        except Exception as e:
-            logger.exception('rematch error')
-            return _reject(request, 400, str(e))
+            logger.warning(
+                "REMATCH_NOT_FOUND action=%s source_table_id=%s room_id=%s actor_seat=%s",
+                action,
+                source_table_id,
+                room_id,
+                actor_seat,
+            )
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "code": "rematch_not_found",
+                },
+                status=404,
+            )
+
+        except Exception:
+            logger.exception(
+                "REMATCH_INTERNAL_ERROR action=%s source_table_id=%s room_id=%s actor_seat=%s",
+                action,
+                source_table_id,
+                room_id,
+                actor_seat,
+            )
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "code": "rematch_internal_error",
+                },
+                status=500,
+            )
         return _reject(request, 400, 'unhandled')
 
     def _load_source(self, table_id):
@@ -1514,6 +1775,14 @@ class RematchCallbackView(View):
                         bal, source.amount, source.rules_snapshot, mars_enabled=True, is_quick=True)
                     if not params['can_join']:
                         return JsonResponse({'code': code}, status=409)
+                    logger.warning(
+                        "REMATCH_ACCEPT_REJECTED reason=%s source_table_id=%s user_id=%s balance=%s amount=%s",
+                        code,
+                        source.pk,
+                        user.pk,
+                        bal,
+                        source.amount,
+                    )
                 elif source.is_friend_game:
                     req = source.fee_per_player
                     if bal < req:
@@ -1540,10 +1809,31 @@ class RematchCallbackView(View):
         from frontend.game_formats import create_rematch_table
         from .signing import issue_direct_play_ticket
         from tournaments.models import HeadToHeadTable as H
+        logger.info(
+            "REMATCH_ACCEPT_START source_table_id=%s room_id=%s actor_seat=%s",
+            table_id,
+            room_id,
+            actor_seat,
+        )
         with transaction.atomic():
             source = HeadToHeadTable.objects.select_for_update().get(pk=table_id)
             rem = DirectPlayRematch.objects.select_for_update().get(source_table=source)
+            logger.info(
+                "REMATCH_ACCEPT_STATE source_table_id=%s source_status=%s rematch_id=%s rematch_status=%s requester_id=%s responder_id=%s new_table_id=%s",
+                source.pk,
+                source.status,
+                rem.pk,
+                rem.status,
+                rem.requester_id,
+                rem.responder_id,
+                rem.new_table_id,
+            )
             if rem.status != 'pending':
+                logger.warning(
+                    "REMATCH_ACCEPT_REJECTED reason=no_pending source_table_id=%s rematch_status=%s",
+                    source.pk,
+                    rem.status,
+                )
                 return _reject(request, 409, 'no pending rematch')
             # actor must be responder
             p1 = source.host
@@ -1553,8 +1843,18 @@ class RematchCallbackView(View):
                 return _reject(request, 403, 'only responder may accept')
             # recheck settlement and room mismatch separately
             if source.external_room_id != room_id:
+                logger.warning(
+                    "REMATCH_ACCEPT_REJECTED reason=room_mismatch source_table_id=%s room_id=%s",
+                    source.pk,
+                    room_id,
+                )
                 return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
             if source.status != HeadToHeadTable.STATUS_COMPLETED:
+                logger.warning(
+                    "REMATCH_ACCEPT_REJECTED reason=not_settled source_table_id=%s status=%s",
+                    source.pk,
+                    source.status,
+                )
                 return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
             # lock users
             from django.contrib.auth.models import User
@@ -1564,6 +1864,11 @@ class RematchCallbackView(View):
             active = [H.STATUS_OPEN, H.STATUS_READY, H.STATUS_PLAYING]
             for uid in uids:
                 if H.objects.filter(host_id=uid, status__in=active).exists() or H.objects.filter(guest_id=uid, status__in=active).exists():
+                    logger.warning(
+                        "REMATCH_ACCEPT_REJECTED reason=active_game_exists source_table_id=%s user_id=%s",
+                        source.pk,
+                        uid,
+                    )
                     return _reject(request, 409, 'active game exists')
             # recheck funds — actor-relative codes
             other = p2 if actor.id == p1.id else p1
@@ -1581,6 +1886,13 @@ class RematchCallbackView(View):
                 else:
                     if bal < source.amount:
                         return JsonResponse({'code': code}, status=409)
+
+            logger.info(
+                "REMATCH_CREATE_TABLE_START source_table_id=%s host_id=%s guest_id=%s",
+                source.pk,
+                p1.pk,
+                p2.pk,
+            )
             new_table = create_rematch_table(source)
             rem.status = 'created'
             rem.new_table = new_table
@@ -1629,14 +1941,22 @@ class RematchCallbackView(View):
             except HeadToHeadTable.DoesNotExist:
                 return _reject(request, 404, 'source not found')
             if source.external_room_id != room_id:
+                logger.warning(
+                    "REMATCH_DISCONNECT_REJECTED reason=room_mismatch source_table_id=%s room_id=%s", source.pk, room_id)
                 return JsonResponse({"ok": False, "code": "source_room_mismatch"}, status=409)
             if source.status != HeadToHeadTable.STATUS_COMPLETED:
+                logger.warning(
+                    "REMATCH_DISCONNECT_REJECTED reason=not_settled source_table_id=%s status=%s", source.pk, source.status)
                 return JsonResponse({"ok": False, "code": "source_not_settled"}, status=409)
             rem = DirectPlayRematch.objects.select_for_update().filter(
                 source_table=source).first()
             if not rem:
+                logger.warning(
+                    "REMATCH_DISCONNECT_REJECTED reason=no_pending source_table_id=%s", source.pk)
                 return JsonResponse({'status': 'no_pending'})
             if rem.status != 'pending':
+                logger.warning(
+                    "REMATCH_DISCONNECT_REJECTED reason=not_pending source_table_id=%s rematch_status=%s", source.pk, rem.status)
                 return JsonResponse({'status': rem.status})
             rem.status = 'cancelled'
             rem.save(update_fields=['status', 'updated_at'])

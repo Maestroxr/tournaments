@@ -17,7 +17,8 @@ from polymorphic.models import PolymorphicModel
 class PlayerRating(models.Model):
     """Canonical public rating; game-server Player.rating is a legacy field."""
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='competitive_rating')
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='competitive_rating')
     value = models.IntegerField(default=1000)
     games_played = models.PositiveIntegerField(default=0)
 
@@ -25,11 +26,16 @@ class PlayerRating(models.Model):
 class RatingResult(models.Model):
     """Immutable explanation of a single rated fixture or direct-play table."""
 
-    fixture = models.OneToOneField('Fixture', null=True, blank=True, on_delete=models.PROTECT, related_name='rating_result')
-    table = models.OneToOneField('HeadToHeadTable', null=True, blank=True, on_delete=models.PROTECT, related_name='rating_result')
-    player1 = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_results_as_p1')
-    player2 = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_results_as_p2')
-    winner = models.ForeignKey(User, on_delete=models.PROTECT, related_name='rating_wins')
+    fixture = models.OneToOneField(
+        'Fixture', null=True, blank=True, on_delete=models.PROTECT, related_name='rating_result')
+    table = models.OneToOneField('HeadToHeadTable', null=True, blank=True,
+                                 on_delete=models.PROTECT, related_name='rating_result')
+    player1 = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='rating_results_as_p1')
+    player2 = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='rating_results_as_p2')
+    winner = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='rating_wins')
     player1_before = models.IntegerField()
     player1_after = models.IntegerField()
     player2_before = models.IntegerField()
@@ -42,9 +48,12 @@ class RatingResult(models.Model):
     class Meta:
         ordering = ['-played_at', '-pk']
         constraints = [
-            models.CheckConstraint(check=(Q(fixture__isnull=False, table__isnull=True) | Q(fixture__isnull=True, table__isnull=False)), name='rating_exactly_one_source'),
-            models.CheckConstraint(check=~Q(player1=models.F('player2')), name='rating_distinct_players'),
-            models.CheckConstraint(check=Q(winner=models.F('player1')) | Q(winner=models.F('player2')), name='rating_winner_is_player'),
+            models.CheckConstraint(check=(Q(fixture__isnull=False, table__isnull=True) | Q(
+                fixture__isnull=True, table__isnull=False)), name='rating_exactly_one_source'),
+            models.CheckConstraint(check=~Q(player1=models.F(
+                'player2')), name='rating_distinct_players'),
+            models.CheckConstraint(check=Q(winner=models.F('player1')) | Q(
+                winner=models.F('player2')), name='rating_winner_is_player'),
         ]
 
 
@@ -57,21 +66,25 @@ class Tournament(models.Model):
         ("slow", "Slow"),
     ]
 
-    name = models.CharField(blank = False, max_length = 100)
-    definition = models.TextField(null = True, blank = True)  # noqa: DJ001
+    name = models.CharField(blank=False, max_length=100)
+    definition = models.TextField(null=True, blank=True)  # noqa: DJ001
     podium_spec = models.JSONField()
-    published = models.BooleanField(default = False)
-    creator = models.ForeignKey('auth.User', on_delete = models.SET_NULL, related_name = 'tournaments', null = True, blank = True)
+    published = models.BooleanField(default=False)
+    creator = models.ForeignKey(
+        'auth.User', on_delete=models.SET_NULL, related_name='tournaments', null=True, blank=True)
     # New easy fields — keep YAML for knockout/groups/division structure, add UI-friendly metadata
     created_at = models.DateTimeField(auto_now_add=True)
     starts_at = models.DateTimeField()
     min_players = models.PositiveSmallIntegerField(default=6)
     max_players = models.PositiveSmallIntegerField(null=True, blank=True)
-    target_points = models.PositiveSmallIntegerField(default=5, help_text="Points / games to win")
-    time_control = models.CharField(max_length=20, choices=TIME_CHOICES, default="normal")
+    target_points = models.PositiveSmallIntegerField(
+        default=5, help_text="Points / games to win")
+    time_control = models.CharField(
+        max_length=20, choices=TIME_CHOICES, default="normal")
     doubling_enabled = models.BooleanField(default=True)
     entry_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    prize_money = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    prize_money = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
     prize_type = models.CharField(
         max_length=8,
         choices=[
@@ -86,9 +99,11 @@ class Tournament(models.Model):
         default='',
     )
     gift_received_at = models.DateTimeField(null=True, blank=True)
-    platform_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
+    platform_fee_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("10.00"))
     registration_closed_at = models.DateTimeField(null=True, blank=True)
-    registration_closed_reason = models.CharField(max_length=20, blank=True, default='')
+    registration_closed_reason = models.CharField(
+        max_length=20, blank=True, default='')
     draw_order = models.JSONField(default=list, blank=True)
     draw_generated_at = models.DateTimeField(null=True, blank=True)
     draw_confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -97,7 +112,8 @@ class Tournament(models.Model):
     class Meta:
         constraints = [
             CheckConstraint(
-                check=Q(platform_fee_percent__gte=8, platform_fee_percent__lte=10),
+                check=Q(platform_fee_percent__gte=8,
+                        platform_fee_percent__lte=10),
                 name="tournament_platform_fee_percent_range",
             ),
         ]
@@ -118,13 +134,15 @@ class Tournament(models.Model):
         if len(definition['podium']) == 0:
             raise ValidationError('No podium definition given.')
 
-        tournament = Tournament.objects.create(name = name, podium_spec = definition['podium'], definition = definition_str, **kwargs)
+        tournament = Tournament.objects.create(
+            name=name, podium_spec=definition['podium'], definition=definition_str, **kwargs)
 
         for stage in definition['stages']:
-            stage = {key.replace('-', '_'): value for key, value in stage.items()}
+            stage = {key.replace('-', '_'): value for key,
+                     value in stage.items()}
             stage['tournament'] = tournament
 
-            if 'id' in stage.keys( ):
+            if 'id' in stage.keys():
                 stage['identifier'] = stage.pop('id')
 
             mode_type = stage.pop('mode')
@@ -137,7 +155,8 @@ class Tournament(models.Model):
 
             elif mode_type == 'division':
                 stage['min_group_size'] = 2
-                stage['max_group_size'] = 32767 ## https://docs.djangoproject.com/en/5.0/ref/models/fields/#positivesmallintegerfield
+                # https://docs.djangoproject.com/en/5.0/ref/models/fields/#positivesmallintegerfield
+                stage['max_group_size'] = 32767
                 Groups.objects.create(**stage)
 
             else:
@@ -147,37 +166,39 @@ class Tournament(models.Model):
 
     @property
     def participants(self):
-        return Participant.objects.filter(participations__tournament = self).order_by('participations__slot_id')
+        return Participant.objects.filter(participations__tournament=self).order_by('participations__slot_id')
 
     @property
     def participating_users(self):
-        return User.objects.filter(participant__participations__tournament = self).order_by('participant__participations__slot_id')
-    
-    def get_participant(self, *, user = None, name = None):
+        return User.objects.filter(participant__participations__tournament=self).order_by('participant__participations__slot_id')
+
+    def get_participant(self, *, user=None, name=None):
         assert (user is None) != (name is None)
         if user is not None:
-            return self.participants.get(user = user)
+            return self.participants.get(user=user)
         else:
-            return self.participants.get(name = name)
+            return self.participants.get(name=name)
 
     @property
     def current_stage(self):
         for stage in self.stages.all():
             if not stage.is_finished:
                 return stage
-        return None ## indicates that the tournament is finished
+        return None  # indicates that the tournament is finished
 
     @transaction.atomic
     def shuffle_participants(self):
         count = self.participations.count()
         if count == 0:
-            return ## early out, so that min/max operations below are well defined
+            return  # early out, so that min/max operations below are well defined
         new_slot_ids = list(range(count))
         random.shuffle(new_slot_ids)
 
         # SQLite does not support deferred unique constraints, therefore we need to work around.
-        min_slot_id = self.participations.aggregate(Min('slot_id'))['slot_id__min']
-        max_slot_id = self.participations.aggregate(Max('slot_id'))['slot_id__max']
+        min_slot_id = self.participations.aggregate(Min('slot_id'))[
+            'slot_id__min']
+        max_slot_id = self.participations.aggregate(Max('slot_id'))[
+            'slot_id__max']
 
         # If any value of `new_slot_ids` is already taken, add an offset to establish uniqueness.
         if min_slot_id < count:
@@ -205,7 +226,8 @@ class Tournament(models.Model):
         from django.utils import timezone
         self.registration_closed_at = timezone.now()
         self.registration_closed_reason = 'capacity'
-        self.save(update_fields=['registration_closed_at', 'registration_closed_reason'])
+        self.save(update_fields=[
+                  'registration_closed_at', 'registration_closed_reason'])
         return True
 
     @property
@@ -241,9 +263,11 @@ class Tournament(models.Model):
             for participation in self.participations.select_for_update()
         }
         if len(participant_ids) != len(participations) or set(participant_ids) != set(participations):
-            raise ValidationError('The confirmed draw no longer matches the registered players.')
+            raise ValidationError(
+                'The confirmed draw no longer matches the registered players.')
 
-        offset = max((participation.slot_id for participation in participations.values()), default=-1) + len(participations) + 1
+        offset = max((participation.slot_id for participation in participations.values(
+        )), default=-1) + len(participations) + 1
         for index, participant_id in enumerate(participant_ids):
             participation = participations[participant_id]
             participation.slot_id = offset + index
@@ -258,9 +282,11 @@ class Tournament(models.Model):
 
             # If the tournament is finished, update the podium positions.
             podium = self._get_podium()
-            eligible_podium = [p for p in podium if p is not None and not self.participations.filter(participant=p, disqualified_at__isnull=False).exists()]
+            eligible_podium = [p for p in podium if p is not None and not self.participations.filter(
+                participant=p, disqualified_at__isnull=False).exists()]
             for position, participant in enumerate(eligible_podium):
-                participation = self.participations.get(participant = participant)
+                participation = self.participations.get(
+                    participant=participant)
                 participation.podium_position = position
                 participation.save()
             self.award_prize_money()
@@ -278,7 +304,8 @@ class Tournament(models.Model):
         prize_amount = self.effective_prize_money
         if prize_amount <= 0:
             return
-        winner = self.participations.filter(podium_position=0).select_related('participant__user').first()
+        winner = self.participations.filter(
+            podium_position=0).select_related('participant__user').first()
         if winner is None or winner.participant.user is None:
             return
         if WalletTransaction.objects.filter(
@@ -319,7 +346,7 @@ class Tournament(models.Model):
     def state(self):
         if not self.published:
             return 'draft'
-        if Fixture.objects.filter(mode__tournament = self).count() == 0:
+        if Fixture.objects.filter(mode__tournament=self).count() == 0:
             return 'open'
         if self.current_stage is not None:
             return 'active'
@@ -328,16 +355,18 @@ class Tournament(models.Model):
 
     @property
     def podium(self):
-        return Participant.objects.filter(participations__tournament = self, participations__podium_position__isnull = False).order_by('participations__podium_position')
+        return Participant.objects.filter(participations__tournament=self, participations__podium_position__isnull=False).order_by('participations__podium_position')
 
     def _get_podium(self):
         podium = list()
         for identifier, position in parse_participants_str_list(self.podium_spec):
 
             try:
-                podium_chunk = unwrap_list(self.stages.get(identifier = identifier).placements[position])
+                podium_chunk = unwrap_list(self.stages.get(
+                    identifier=identifier).placements[position])
             except IndexError as error:
-                raise ValueError(f'insufficient participants: {identifier}[{position}] is out of range') from error
+                raise ValueError(
+                    f'insufficient participants: {identifier}[{position}] is out of range') from error
 
             if isinstance(podium_chunk, list):
                 podium += podium_chunk
@@ -350,24 +379,30 @@ class Tournament(models.Model):
         try:
             for identifier, _ in parse_participants_str_list(self.podium_spec):
                 try:
-                    self.stages.get(identifier = identifier)
+                    self.stages.get(identifier=identifier)
                 except Mode.DoesNotExist as error:
-                    raise ValueError(f'stage "{identifier}" does not exist') from error
+                    raise ValueError(
+                        f'stage "{identifier}" does not exist') from error
         except Exception as error:
-            raise ValidationError(f'Error parsing "podium" definition ({error}).') from error
+            raise ValidationError(
+                f'Error parsing "podium" definition ({error}).') from error
 
     @transaction.atomic
     def test(self):
-        tournament = Tournament.load(definition = self.definition, name = 'Test', starts_at = self.starts_at)
+        tournament = Tournament.load(
+            definition=self.definition, name='Test', starts_at=self.starts_at)
         for participating_name in (f'--testuser-{pidx}' for pidx in range(len(self.participants))):
-            participant = Participant.objects.get_or_create(name = participating_name)[0]
-            Participation.objects.create(participant = participant, tournament = tournament, slot_id = Participation.next_slot_id(tournament))
+            participant = Participant.objects.get_or_create(
+                name=participating_name)[0]
+            Participation.objects.create(
+                participant=participant, tournament=tournament, slot_id=Participation.next_slot_id(tournament))
 
         # Initialize the tournament.
         try:
             tournament.update_state()
         except Exception as error:
-            raise ValidationError(f'Error while initializing tournament ({error}).') from error
+            raise ValidationError(
+                f'Error while initializing tournament ({error}).') from error
 
         # Play through the tournament, always make the participant with the higher ID win.
         while tournament.current_stage is not None:
@@ -380,11 +415,11 @@ class Tournament(models.Model):
 
                     # If there are only virtual participants...
                     if tournament.participating_users.count() == 0:
-                        
+
                         # ...and the tournament has a creator, then the creator will confirm the fixture.
                         if self.creator is not None:
                             fixture.confirmations.add(self.creator)
-                        
+
                         # ...and the tournament has no creator, then the fixture will be confirmed by an arbitrary user.
                         else:
                             fixture.confirmations.add(User.objects.first())
@@ -401,9 +436,11 @@ class Tournament(models.Model):
 
             except Exception as error:
                 if tournament.current_stage is None:
-                    raise ValidationError(f'Error while validating podium ({error}).') from error
+                    raise ValidationError(
+                        f'Error while validating podium ({error}).') from error
                 else:
-                    raise ValidationError(f'Error while validating "{tournament.current_stage.identifier}" stage ({error}).') from error
+                    raise ValidationError(
+                        f'Error while validating "{tournament.current_stage.identifier}" stage ({error}).') from error
 
         transaction.set_rollback(True)
 
@@ -414,29 +451,31 @@ def delete_tournament_stages(sender, instance, **kwargs):
 
 
 class Participant(models.Model):
-    user = models.ForeignKey('auth.User', on_delete = models.SET_NULL, related_name = 'participant', null = True, blank = True)
-    name = models.CharField(max_length = 100, unique = True)
+    user = models.ForeignKey('auth.User', on_delete=models.SET_NULL,
+                             related_name='participant', null=True, blank=True)
+    name = models.CharField(max_length=100, unique=True)
 
     def __str__(self):
         return self.name
-    
+
     def __repr__(self):
         return f'<Participant: {self.name} ({self.id})>'
 
     @staticmethod
     def create_for_user(user):
-        return Participant.objects.create(user = user, name = user.username)
-    
+        return Participant.objects.create(user=user, name=user.username)
+
     @staticmethod
     def get_or_create_for_user(user):
         try:
-            participant = Participant.objects.get(user = user)
+            participant = Participant.objects.get(user=user)
             if participant.name != user.username and not Participant.objects.filter(name=user.username).exclude(pk=participant.pk).exists():
                 participant.name = user.username
                 participant.save(update_fields=['name'])
             return participant
         except Participant.DoesNotExist:
-            participant = Participant.objects.filter(name=user.username, user__isnull=True).first()
+            participant = Participant.objects.filter(
+                name=user.username, user__isnull=True).first()
             if participant is not None:
                 participant.user = user
                 participant.save(update_fields=['user'])
@@ -446,10 +485,12 @@ class Participant(models.Model):
 
 class Participation(models.Model):
 
-    participant = models.ForeignKey('Participant', on_delete = models.CASCADE, related_name = 'participations')
-    tournament = models.ForeignKey('Tournament', on_delete = models.CASCADE, related_name = 'participations')
+    participant = models.ForeignKey(
+        'Participant', on_delete=models.CASCADE, related_name='participations')
+    tournament = models.ForeignKey(
+        'Tournament', on_delete=models.CASCADE, related_name='participations')
     slot_id = models.PositiveIntegerField()
-    podium_position = models.PositiveIntegerField(null = True, blank = True)
+    podium_position = models.PositiveIntegerField(null=True, blank=True)
     disqualified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -465,7 +506,7 @@ class Participation(models.Model):
 
     @staticmethod
     def next_slot_id(tournament):
-        return Participation.objects.filter(tournament = tournament).aggregate(Max('slot_id', default = -1))['slot_id__max'] + 1
+        return Participation.objects.filter(tournament=tournament).aggregate(Max('slot_id', default=-1))['slot_id__max'] + 1
 
 
 class TournamentRegistration(models.Model):
@@ -503,7 +544,8 @@ class TournamentRegistration(models.Model):
         'Tournament', on_delete=models.CASCADE, related_name='registrations')
     participant = models.ForeignKey(
         'Participant', on_delete=models.CASCADE, related_name='tournament_registrations')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_REGISTERED)
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_REGISTERED)
     payment_status = models.CharField(
         max_length=20, choices=PAYMENT_CHOICES, default=PAYMENT_PAID)
     checked_in_at = models.DateTimeField(null=True, blank=True)
@@ -555,7 +597,8 @@ def validate_stake_amounts(value):
     if (not isinstance(value, list) or len(value) > 100
             or any(type(amount) is not int or not 100 <= amount <= 99999999 for amount in value)
             or len(value) != len(set(value))):
-        raise ValidationError("Use up to 100 unique whole-coin amounts between 100 and 99999999.")
+        raise ValidationError(
+            "Use up to 100 unique whole-coin amounts between 100 and 99999999.")
 
 
 def default_game_rules():
@@ -569,12 +612,14 @@ def default_game_rules():
 
 def validate_game_rules(value):
     if not isinstance(value, dict) or set(value) != {'match', 'friend', 'quick'}:
-        raise ValidationError('Provide rules for match, friend and quick games.')
+        raise ValidationError(
+            'Provide rules for match, friend and quick games.')
     for mode, rule in value.items():
         if (not isinstance(rule, dict)
                 or set(rule) != {'enabled', 'target_points', 'time_controls', 'doubling_options'}
                 or type(rule['enabled']) is not bool):
-            raise ValidationError('Each game mode needs enabled, target_points, time_controls and doubling_options.')
+            raise ValidationError(
+                'Each game mode needs enabled, target_points, time_controls and doubling_options.')
         points = rule['target_points']
         clocks = rule['time_controls']
         doubling = rule['doubling_options']
@@ -582,15 +627,18 @@ def validate_game_rules(value):
         if (not isinstance(points, list) or not points or len(points) > 25
                 or any(type(point) is not int or point not in allowed_points for point in points)
                 or len(points) != len(set(points))):
-            raise ValidationError('Choose unique supported target points for each mode (1–25; friend: 1, 3, 5, 7, 9).')
+            raise ValidationError(
+                'Choose unique supported target points for each mode (1–25; friend: 1, 3, 5, 7, 9).')
         if (not isinstance(clocks, list) or not clocks or len(clocks) > 4
                 or any(type(clock) is not str or clock not in ('none', 'normal', 'fast', 'slow') for clock in clocks)
                 or len(clocks) != len(set(clocks))):
-            raise ValidationError('Choose at least one unique supported clock per game mode.')
+            raise ValidationError(
+                'Choose at least one unique supported clock per game mode.')
         if (not isinstance(doubling, list) or not doubling or len(doubling) > 2
                 or any(type(option) is not bool for option in doubling)
                 or len(doubling) != len(set(doubling))):
-            raise ValidationError('Choose at least one doubling option per game mode.')
+            raise ValidationError(
+                'Choose at least one doubling option per game mode.')
 
 
 def default_format_profiles():
@@ -614,8 +662,10 @@ def validate_format_profiles(value):
         if any(type(profile[key]) is not bool for key in ('enabled', 'public', 'private', 'quick', 'jacoby')):
             raise ValidationError('Format switches must be booleans.')
         validate_stake_amounts(profile['stake_amounts'])
-        rule = {key: profile[key] for key in ('enabled', 'target_points', 'time_controls', 'doubling_options')}
-        validate_game_rules({'match': rule, 'quick': rule, 'friend': default_game_rules()['friend']})
+        rule = {key: profile[key] for key in (
+            'enabled', 'target_points', 'time_controls', 'doubling_options')}
+        validate_game_rules({'match': rule, 'quick': rule,
+                            'friend': default_game_rules()['friend']})
         if name == 'money' and profile['target_points'] != [1]:
             raise ValidationError('Money games settle one game at a time.')
         if name == 'match' and profile['jacoby']:
@@ -623,7 +673,8 @@ def validate_format_profiles(value):
         if type(profile['max_cube']) is not int or profile['max_cube'] not in (2, 4, 8, 16, 32, 64):
             raise ValidationError('Cube limit must be 2, 4, 8, 16, 32 or 64.')
         if type(profile['loss_limit_multiplier']) is not int or not 1 <= profile['loss_limit_multiplier'] <= 192:
-            raise ValidationError('Loss limit must be between 1 and 192 times the base stake.')
+            raise ValidationError(
+                'Loss limit must be between 1 and 192 times the base stake.')
         fee = profile['fee_percent']
         if type(fee) not in (int, float) or not math.isfinite(fee) or not 0 <= fee <= 100:
             raise ValidationError('Fee must be between 0 and 100 percent.')
@@ -631,22 +682,31 @@ def validate_format_profiles(value):
             raise ValidationError('Fee supports at most two decimal places.')
         multiplier = profile['loss_limit_multiplier'] if name == 'money' else 1
         if any(amount * multiplier * 2 > 99999999 for amount in profile['stake_amounts']):
-            raise ValidationError('The configured stake and loss limit exceed the wallet transaction limit.')
+            raise ValidationError(
+                'The configured stake and loss limit exceed the wallet transaction limit.')
 
 
 class DirectPlaySettings(models.Model):
     """Admin-controlled commercial rules for one-on-one games."""
 
     enabled = models.BooleanField(default=True)
-    stake_amounts = models.JSONField(default=default_stake_amounts, blank=True, validators=[validate_stake_amounts])
-    game_rules = models.JSONField(default=default_game_rules, validators=[validate_game_rules])
-    format_profiles = models.JSONField(default=default_format_profiles, validators=[validate_format_profiles])
-    friend_game_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
-    ai_game_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("50.00"))
-    head_to_head_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("5.00"))
-    tournament_fee_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("10.00"))
+    stake_amounts = models.JSONField(
+        default=default_stake_amounts, blank=True, validators=[validate_stake_amounts])
+    game_rules = models.JSONField(
+        default=default_game_rules, validators=[validate_game_rules])
+    format_profiles = models.JSONField(
+        default=default_format_profiles, validators=[validate_format_profiles])
+    friend_game_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("50.00"))
+    ai_game_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("50.00"))
+    head_to_head_fee_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("5.00"))
+    tournament_fee_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("10.00"))
     coin_grant_enabled = models.BooleanField(default=True)
-    coin_grant_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("400.00"))
+    coin_grant_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("400.00"))
     coin_grant_interval_hours = models.PositiveSmallIntegerField(default=12)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -654,12 +714,18 @@ class DirectPlaySettings(models.Model):
         verbose_name = "Direct play settings"
         verbose_name_plural = "Direct play settings"
         constraints = [
-            CheckConstraint(check=Q(friend_game_fee__gt=0), name="direct_play_friend_game_fee_positive"),
-            CheckConstraint(check=Q(ai_game_fee__gte=0), name="ai_game_fee_nonnegative"),
-            CheckConstraint(check=Q(head_to_head_fee_percent__gte=0, head_to_head_fee_percent__lte=100), name="direct_play_fee_percent_range"),
-            CheckConstraint(check=Q(tournament_fee_percent__gte=8, tournament_fee_percent__lte=10), name="tournament_fee_percent_range"),
-            CheckConstraint(check=Q(coin_grant_amount__gt=0), name="coin_grant_amount_positive"),
-            CheckConstraint(check=Q(coin_grant_interval_hours__gt=0), name="coin_grant_interval_positive"),
+            CheckConstraint(check=Q(friend_game_fee__gt=0),
+                            name="direct_play_friend_game_fee_positive"),
+            CheckConstraint(check=Q(ai_game_fee__gte=0),
+                            name="ai_game_fee_nonnegative"),
+            CheckConstraint(check=Q(head_to_head_fee_percent__gte=0,
+                            head_to_head_fee_percent__lte=100), name="direct_play_fee_percent_range"),
+            CheckConstraint(check=Q(tournament_fee_percent__gte=8,
+                            tournament_fee_percent__lte=10), name="tournament_fee_percent_range"),
+            CheckConstraint(check=Q(coin_grant_amount__gt=0),
+                            name="coin_grant_amount_positive"),
+            CheckConstraint(check=Q(coin_grant_interval_hours__gt=0),
+                            name="coin_grant_interval_positive"),
         ]
 
     @classmethod
@@ -694,38 +760,47 @@ class DirectPlaySettings(models.Model):
         rule = self.game_rules[mode]
         if (target_points not in rule['target_points'] or time_control not in rule['time_controls']
                 or doubling_enabled not in rule['doubling_options']):
-            raise ValidationError('These game settings are no longer available. Please choose the available options.')
+            raise ValidationError(
+                'These game settings are no longer available. Please choose the available options.')
 
 
 class HeadToHeadTable(models.Model):
-    game_format = models.CharField(max_length=12, default='legacy', choices=[('legacy', 'Legacy'), ('match', 'Match'), ('money', 'Money')])
+    game_format = models.CharField(max_length=12, default='legacy', choices=[
+                                   ('legacy', 'Legacy'), ('match', 'Match'), ('money', 'Money')])
     rules_snapshot = models.JSONField(default=dict, blank=True)
     settlement = models.JSONField(default=dict, blank=True)
     MODE_MATCH = "match"
     MODE_FRIEND = "friend"
-    MODE_CHOICES = [(MODE_MATCH, "Match play"), (MODE_FRIEND, "Play with a friend")]
+    MODE_CHOICES = [(MODE_MATCH, "Match play"),
+                    (MODE_FRIEND, "Play with a friend")]
     STATUS_OPEN = "open"
     STATUS_READY = "ready"
     STATUS_PLAYING = "playing"
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
     STATUS_CHOICES = [
-        (STATUS_OPEN, "Open"), (STATUS_READY, "Ready"), (STATUS_PLAYING, "Playing"),
+        (STATUS_OPEN, "Open"), (STATUS_READY,
+                                "Ready"), (STATUS_PLAYING, "Playing"),
         (STATUS_COMPLETED, "Completed"), (STATUS_CANCELLED, "Cancelled"),
     ]
 
     code = models.CharField(max_length=6, unique=True)
     mode = models.CharField(max_length=16, choices=MODE_CHOICES)
-    host = models.ForeignKey('auth.User', on_delete=models.PROTECT, related_name='hosted_head_to_head_tables')
-    guest = models.ForeignKey('auth.User', on_delete=models.PROTECT, related_name='joined_head_to_head_tables', null=True, blank=True)
-    winner = models.ForeignKey('auth.User', on_delete=models.SET_NULL, related_name='won_head_to_head_tables', null=True, blank=True)
+    host = models.ForeignKey(
+        'auth.User', on_delete=models.PROTECT, related_name='hosted_head_to_head_tables')
+    guest = models.ForeignKey('auth.User', on_delete=models.PROTECT,
+                              related_name='joined_head_to_head_tables', null=True, blank=True)
+    winner = models.ForeignKey('auth.User', on_delete=models.SET_NULL,
+                               related_name='won_head_to_head_tables', null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     fee_percent = models.DecimalField(max_digits=5, decimal_places=2)
     fee_per_player = models.DecimalField(max_digits=10, decimal_places=2)
     target_points = models.PositiveSmallIntegerField(default=1)
-    time_control = models.CharField(max_length=20, choices=Tournament.TIME_CHOICES, default="normal")
+    time_control = models.CharField(
+        max_length=20, choices=Tournament.TIME_CHOICES, default="normal")
     doubling_enabled = models.BooleanField(default=True)
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    status = models.CharField(
+        max_length=16, choices=STATUS_CHOICES, default=STATUS_OPEN)
     external_room_id = models.CharField(max_length=64, blank=True)
     live_snapshot = models.JSONField(null=True, blank=True)
     live_updated_at = models.DateTimeField(null=True, blank=True)
@@ -734,12 +809,16 @@ class HeadToHeadTable(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     is_quick_match = models.BooleanField(default=False)
     quick_stakes = models.JSONField(default=list, blank=True)
+    host_ready_at = models.DateTimeField(null=True, blank=True)
+    guest_ready_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ('-created_at',)
         constraints = [
-            CheckConstraint(check=Q(amount__gt=0), name="head_to_head_amount_positive"),
-            CheckConstraint(check=Q(fee_per_player__gte=0), name="head_to_head_fee_nonnegative"),
+            CheckConstraint(check=Q(amount__gt=0),
+                            name="head_to_head_amount_positive"),
+            CheckConstraint(check=Q(fee_per_player__gte=0),
+                            name="head_to_head_fee_nonnegative"),
         ]
 
     @property
@@ -774,10 +853,14 @@ class WalletTransaction(models.Model):
         (KIND_RECURRING_BONUS, "Recurring coin bonus"),
     ]
 
-    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='wallet_transactions')
-    tournament = models.ForeignKey('Tournament', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
-    head_to_head_table = models.ForeignKey('HeadToHeadTable', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
-    actor = models.ForeignKey('auth.User', on_delete=models.SET_NULL, related_name='wallet_transactions_created', null=True, blank=True)
+    user = models.ForeignKey(
+        'auth.User', on_delete=models.CASCADE, related_name='wallet_transactions')
+    tournament = models.ForeignKey('Tournament', on_delete=models.SET_NULL,
+                                   related_name='wallet_transactions', null=True, blank=True)
+    head_to_head_table = models.ForeignKey(
+        'HeadToHeadTable', on_delete=models.SET_NULL, related_name='wallet_transactions', null=True, blank=True)
+    actor = models.ForeignKey('auth.User', on_delete=models.SET_NULL,
+                              related_name='wallet_transactions_created', null=True, blank=True)
     kind = models.CharField(max_length=32, choices=KIND_CHOICES)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     balance_after = models.DecimalField(max_digits=10, decimal_places=2)
@@ -787,7 +870,8 @@ class WalletTransaction(models.Model):
     class Meta:
         ordering = ('-created_at', '-id')
         constraints = [
-            CheckConstraint(check=~Q(amount=Decimal("0")), name="wallet_transaction_amount_not_zero"),
+            CheckConstraint(check=~Q(amount=Decimal("0")),
+                            name="wallet_transaction_amount_not_zero"),
         ]
 
     def __str__(self):
@@ -795,7 +879,8 @@ class WalletTransaction(models.Model):
 
     @staticmethod
     def balance_for_user(user):
-        total = WalletTransaction.objects.filter(user=user).aggregate(models.Sum('amount'))['amount__sum']
+        total = WalletTransaction.objects.filter(
+            user=user).aggregate(models.Sum('amount'))['amount__sum']
         return total or Decimal("0.00")
 
     @staticmethod
@@ -822,7 +907,8 @@ class WalletTransaction(models.Model):
 
 
 def parse_participants_str_list(participants_str_list):
-    participants = [parse_placements_str(participants_str) for participants_str in participants_str_list]
+    participants = [parse_placements_str(
+        participants_str) for participants_str in participants_str_list]
 
     # Convert list of (identifier, slice) pairs into list of (identifier, position) pairs.
     references = list()
@@ -839,7 +925,8 @@ def parse_participants_str_list(participants_str_list):
 
 def parse_placements_str(placement_str):
     try:
-        m = re.match(r'^([a-zA-Z_0-9]+)\.placements\[([-0-9:]+)\]$', placement_str)
+        m = re.match(
+            r'^([a-zA-Z_0-9]+)\.placements\[([-0-9:]+)\]$', placement_str)
         identifier = m.group(1)
         slice_str = m.group(2)
         parts = slice_str.split(':')
@@ -850,7 +937,8 @@ def parse_placements_str(placement_str):
         placements_slice = slice(*parts)
         return identifier, placements_slice
     except Exception as error:
-        raise ValueError(f'cannot parse placement: "{placement_str}"') from error
+        raise ValueError(
+            f'cannot parse placement: "{placement_str}"') from error
 
 
 def unwrap_list(items):
@@ -863,20 +951,23 @@ def unwrap_list(items):
 class Mode(PolymorphicModel):
 
     identifier = models.SlugField()
-    name       = models.CharField(max_length = 100, blank = True)
-    tournament = models.ForeignKey('Tournament', on_delete = models.CASCADE, related_name = 'stages')
-    played_by  = models.JSONField(default = list, blank = True)
+    name = models.CharField(max_length=100, blank=True)
+    tournament = models.ForeignKey(
+        'Tournament', on_delete=models.CASCADE, related_name='stages')
+    played_by = models.JSONField(default=list, blank=True)
 
     def clean(self):
         super(Mode, self).clean()
         try:
             for identifier, _ in parse_participants_str_list(self.played_by):
                 try:
-                    self.tournament.stages.get(identifier = identifier)
+                    self.tournament.stages.get(identifier=identifier)
                 except Mode.DoesNotExist as error:
-                    raise ValueError(f'stage "{identifier}" does not exist') from error
+                    raise ValueError(
+                        f'stage "{identifier}" does not exist') from error
         except Exception as error:
-            raise ValidationError(f'Error parsing "played_by" definition of "{self.identifier}" stage ({error}).') from error
+            raise ValidationError(
+                f'Error parsing "played_by" definition of "{self.identifier}" stage ({error}).') from error
 
     def create_fixtures(self, participants):
         raise NotImplementedError()
@@ -901,9 +992,11 @@ class Mode(PolymorphicModel):
         for identifier, position in parse_participants_str_list(self.played_by):
 
             try:
-                participants_chunk = unwrap_list(self.tournament.stages.get(identifier = identifier).placements[position])
+                participants_chunk = unwrap_list(self.tournament.stages.get(
+                    identifier=identifier).placements[position])
             except IndexError as error:
-                raise ValueError(f'insufficient participants: {identifier}[{position}] is out of range') from error
+                raise ValueError(
+                    f'insufficient participants: {identifier}[{position}] is out of range') from error
 
             if isinstance(participants_chunk, list):
                 participants += participants_chunk
@@ -921,7 +1014,7 @@ class Mode(PolymorphicModel):
     @property
     def current_level(self):
         for level in range(self.levels):
-            fixtures = self.fixtures.filter(level = level)
+            fixtures = self.fixtures.filter(level=level)
             if not all((fixture.is_confirmed for fixture in fixtures)):
                 return level
         return self.levels
@@ -934,7 +1027,7 @@ class Mode(PolymorphicModel):
         if self.is_finished:
             return None
         else:
-            return self.fixtures.filter(level = self.current_level)
+            return self.fixtures.filter(level=self.current_level)
 
     @property
     def is_finished(self):
@@ -977,7 +1070,7 @@ def split_into_groups(items, min_group_size, max_group_size):
     return groups
 
 
-def create_division_schedule(participants, with_returns = False):
+def create_division_schedule(participants, with_returns=False):
     """
     Return list of match days, where each match day is a list of pairings of the participants (tuples).
 
@@ -986,12 +1079,14 @@ def create_division_schedule(participants, with_returns = False):
     if len(participants) % 2 == 1:
         plist = np.arange(len(participants) + 1)
         schedule = list()
-        for pairings in create_division_schedule(plist, with_returns = with_returns):
-            schedule.append([(participants[p1], participants[p2]) for p1, p2 in pairings if p1 < len(participants) and p2 < len(participants)])
+        for pairings in create_division_schedule(plist, with_returns=with_returns):
+            schedule.append([(participants[p1], participants[p2]) for p1, p2 in pairings if p1 < len(
+                participants) and p2 < len(participants)])
         return schedule
     else:
         if with_returns:
-            schedule = create_division_schedule(participants, with_returns = False)
+            schedule = create_division_schedule(
+                participants, with_returns=False)
             return schedule + [[(p2, p1) for p1, p2 in matchday] for matchday in schedule]
         else:
             n = len(participants)
@@ -1004,16 +1099,18 @@ def create_division_schedule(participants, with_returns = False):
                     pidx1 = (step + level) % (n - 1)
                     pidx2 = (n - 1 - step + level) % (n - 1)
                     pairing = (participants[pidx1], participants[pidx2])
-                    pairings.append(pairing if step % 2 == 0 else pairing[::-1])
+                    pairings.append(pairing if step %
+                                    2 == 0 else pairing[::-1])
                 schedule.append(pairings)
             return schedule
 
 
-def get_stats(participant, filters = None):
+def get_stats(participant, filters=None):
     if filters is None:
         filters = dict()
 
-    row = dict(participant = participant, win_count = 0, loss_count = 0, draw_count = 0, matches = 0, balance = 0)
+    row = dict(participant=participant, win_count=0,
+               loss_count=0, draw_count=0, matches=0, balance=0)
     for fixture in participant.fixtures1.filter(**filters) | participant.fixtures2.filter(**filters):
 
         # Only account for confirmed scores.
@@ -1065,7 +1162,8 @@ def _notify_match_ready(fixture):
         # ``from frontend.push import ...`` pattern in gamelink/views.py and
         # keeps any import cycle with the tournaments app impossible.
         from frontend.push import notify_tournament_match_ready
-        fresh = Fixture.objects.select_related('mode__tournament').get(pk=fixture_id)
+        fresh = Fixture.objects.select_related(
+            'mode__tournament').get(pk=fixture_id)
         for recipient_id in recipients:
             notify_tournament_match_ready(fresh, recipient_id=recipient_id)
 
@@ -1076,38 +1174,40 @@ class Groups(Mode):
 
     min_group_size = models.PositiveSmallIntegerField()
     max_group_size = models.PositiveSmallIntegerField()
-    with_returns   = models.BooleanField(default = False)
-    groups_info    = models.JSONField(null = True, blank = True)
+    with_returns = models.BooleanField(default=False)
+    groups_info = models.JSONField(null=True, blank=True)
 
     def create_fixtures(self, participants):
         assert len(participants) >= 2
 
         # Create groups.
-        groups = split_into_groups(participants, self.min_group_size, self.max_group_size)
-        self.groups_info = [[participant.id for participant in group] for group in groups]
+        groups = split_into_groups(
+            participants, self.min_group_size, self.max_group_size)
+        self.groups_info = [
+            [participant.id for participant in group] for group in groups]
         self.save()
 
         max_group_size = max((len(group) for group in groups))
-        for level, pairings in enumerate(create_division_schedule(np.arange(max_group_size), with_returns = self.with_returns)):
+        for level, pairings in enumerate(create_division_schedule(np.arange(max_group_size), with_returns=self.with_returns)):
 
             # Schedule fixtures for each group.
             for group in groups:
                 for pidx1, pidx2 in pairings:
 
-                    if pidx1 >= len(group) or pidx2 >= len(group): 
+                    if pidx1 >= len(group) or pidx2 >= len(group):
                         continue
 
                     fixture = Fixture.objects.create(
-                        mode     = self,
-                        level    = level,
-                        player1  = group[pidx1],
-                        player2  = group[pidx2],
-                        playable_at = timezone.now(),
+                        mode=self,
+                        level=level,
+                        player1=group[pidx1],
+                        player2=group[pidx2],
+                        playable_at=timezone.now(),
                     )
                     _notify_match_ready(fixture)
 
     def get_standings(self, participant):
-        row = get_stats(participant, dict(mode = self))
+        row = get_stats(participant, dict(mode=self))
         row['points'] = 3 * row['win_count'] + 1 * row['draw_count']
         return row
 
@@ -1117,8 +1217,10 @@ class Groups(Mode):
             return None
         standings = list()
         for group in self.groups_info:
-            group_standings = [self.get_standings(participant) for participant in self.tournament.participants.filter(id__in = group)]
-            group_standings.sort(key = lambda row: (row['points'], row['balance'], row['matches'], row['participant'].id), reverse = True)
+            group_standings = [self.get_standings(
+                participant) for participant in self.tournament.participants.filter(id__in=group)]
+            group_standings.sort(key=lambda row: (
+                row['points'], row['balance'], row['matches'], row['participant'].id), reverse=True)
             standings.append(group_standings)
         return standings
 
@@ -1131,7 +1233,7 @@ class Groups(Mode):
         return [[group[position]['participant'] for group in standings if position < len(group)] for position in range(max_group_size)]
 
 
-def is_power_of_two(val, ret_floor = False):
+def is_power_of_two(val, ret_floor=False):
     if np.issubdtype(type(val), np.integer):
         val = int(val)
     assert isinstance(val, int), type(val)
@@ -1146,7 +1248,7 @@ def is_power_of_two(val, ret_floor = False):
 
 class Knockout(Mode):
 
-    double_elimination = models.BooleanField(default = False)
+    double_elimination = models.BooleanField(default=False)
 
     @staticmethod
     def reorder_participants(participants, account_for_playoffs):
@@ -1161,7 +1263,8 @@ class Knockout(Mode):
             return list()
 
         # Check whether the number of participants is a power of 2.
-        power_of_two, power_of_two_floor = is_power_of_two(len(participants), ret_floor = True)
+        power_of_two, power_of_two_floor = is_power_of_two(
+            len(participants), ret_floor=True)
 
         # Account for playoffs.
         if account_for_playoffs and not power_of_two:
@@ -1174,8 +1277,10 @@ class Knockout(Mode):
                 participants = list(participants)
 
             # Allocate the participants.
-            playoffs_part = Knockout.reorder_participants(participants[-n:], account_for_playoffs = False)
-            complete_part = Knockout.reorder_participants(participants[:-n], account_for_playoffs = False)
+            playoffs_part = Knockout.reorder_participants(
+                participants[-n:], account_for_playoffs=False)
+            complete_part = Knockout.reorder_participants(
+                participants[:-n], account_for_playoffs=False)
             return playoffs_part + complete_part
 
         # Establish the order so that the first are matched against the last.
@@ -1183,7 +1288,7 @@ class Knockout(Mode):
         participants = list(participants)
         for pidx in range(len(participants)):
             i = pidx // 2
-            j = pidx %  2
+            j = pidx % 2
             result[pidx] = participants[i if j == 0 else -i - 1]
         return result
 
@@ -1217,18 +1322,21 @@ class Knockout(Mode):
         levels = math.ceil(math.log2(len(participants)))
 
         # Re-order the participants so that the first (highest ranked) are matched against the last (lowest ranked), also accounting for playoffs.
-        participants = Knockout.reorder_participants(participants, account_for_playoffs = True)
+        participants = Knockout.reorder_participants(
+            participants, account_for_playoffs=True)
 
         # In double elimination mode, add the additional root node.
         last_fixture_position = len(participants) - 1
-        first_complete_level  = Knockout.get_first_complete_level(last_fixture_position)
+        first_complete_level = Knockout.get_first_complete_level(
+            last_fixture_position)
         if self.double_elimination and len(participants) >= 4:
             double_elimination_root_fixture = Fixture.objects.create(
-                mode    = self,
-                level   = first_complete_level + 1 + (levels - 1 - first_complete_level) * 2,
-                player1 = None,
-                player2 = None,
-                extras  = dict(position = 0),
+                mode=self,
+                level=first_complete_level + 1 +
+                (levels - 1 - first_complete_level) * 2,
+                player1=None,
+                player2=None,
+                extras=dict(position=0),
             )
 
         # Build the main tree (embedding the corresponding propagation graph).
@@ -1242,26 +1350,29 @@ class Knockout(Mode):
                 tree1_levels.insert(0, list())
                 first_tree1_level = level
 
-            player1 = None if fixture_position * 2 <= last_fixture_position else remaining_participants.pop()
-            player2 = None if fixture_position * 2 <  last_fixture_position else remaining_participants.pop()
+            player1 = None if fixture_position * \
+                2 <= last_fixture_position else remaining_participants.pop()
+            player2 = None if fixture_position * \
+                2 < last_fixture_position else remaining_participants.pop()
 
-            extras = dict(tree = 1, position = fixture_position)
+            extras = dict(tree=1, position=fixture_position)
             parent_fixture = self.get_main_parent_fixture(fixture_position)
             if parent_fixture is not None:
                 extras['propagate'] = dict(
-                    winner = dict(
-                        fixture_id  = parent_fixture.id,
-                        player_slot = 2 if parent_fixture.extras['position'] == 0 else 1 + fixture_position % 2,
+                    winner=dict(
+                        fixture_id=parent_fixture.id,
+                        player_slot=2 if parent_fixture.extras['position'] == 0 else 1 +
+                        fixture_position % 2,
                     ),
                 )
 
             fixture = Fixture.objects.create(
-                mode    = self,
-                level   = level,
-                player1 = player1,
-                player2 = player2,
-                extras  = extras,
-                playable_at = timezone.now() if player1 is not None and player2 is not None else None,
+                mode=self,
+                level=level,
+                player1=player1,
+                player2=player2,
+                extras=extras,
+                playable_at=timezone.now() if player1 is not None and player2 is not None else None,
             )
             if fixture.playable_at is not None:
                 _notify_match_ready(fixture)
@@ -1275,7 +1386,7 @@ class Knockout(Mode):
 
             # For each complete level, except the first, add two levels of the second tree.
             complete_tree1_levels = tree1_levels[first_complete_level:]
-            previous_tree2_level  = [double_elimination_root_fixture]
+            previous_tree2_level = [double_elimination_root_fixture]
             for tree1_level in complete_tree1_levels[1:][::-1]:
 
                 # For each fixture of the main tree, create two fixtures in the second tree.
@@ -1284,44 +1395,46 @@ class Knockout(Mode):
 
                     # Create the first fixture (second tree vs. main tree).
                     tree2_fixture1_extras = dict(
-                        tree = 2,
-                        propagate = dict(
-                            winner = dict(
-                                fixture_id  = previous_tree2_level[fidx // 2].id,
-                                player_slot = 1 + fidx % 2,
+                        tree=2,
+                        propagate=dict(
+                            winner=dict(
+                                fixture_id=previous_tree2_level[fidx // 2].id,
+                                player_slot=1 + fidx % 2,
                             ),
                         ),
                     )
 
                     tree2_fixture1 = Fixture.objects.create(
-                        mode   = self,
-                        level  = first_complete_level + (tree1_fixture.level - first_complete_level) * 2,
-                        extras = tree2_fixture1_extras,
+                        mode=self,
+                        level=first_complete_level +
+                        (tree1_fixture.level - first_complete_level) * 2,
+                        extras=tree2_fixture1_extras,
                     )
 
                     # Add propagation from the main to the second tree (and update the level).
-                    tree1_fixture.level = first_complete_level - 1 + (tree1_fixture.level - first_complete_level) * 2
+                    tree1_fixture.level = first_complete_level - 1 + \
+                        (tree1_fixture.level - first_complete_level) * 2
                     tree1_fixture.extras['propagate']['loser'] = dict(
-                        fixture_id  = tree2_fixture1.id,
-                        player_slot = 2,
+                        fixture_id=tree2_fixture1.id,
+                        player_slot=2,
                     )
                     tree1_fixture.save()
 
                     # Create the second fixture (second tree vs. second tree, main tree vs. main tree if it is the first level of the second tree).
                     tree2_fixture2_extras = dict(
-                        tree = 2,
-                        propagate = dict(
-                            winner = dict(
-                                fixture_id  = tree2_fixture1.id,
-                                player_slot = 1,
+                        tree=2,
+                        propagate=dict(
+                            winner=dict(
+                                fixture_id=tree2_fixture1.id,
+                                player_slot=1,
                             ),
                         ),
                     )
 
                     tree2_fixture2 = Fixture.objects.create(
-                        mode   = self,
-                        level  = tree1_fixture.level,
-                        extras = tree2_fixture2_extras,
+                        mode=self,
+                        level=tree1_fixture.level,
+                        extras=tree2_fixture2_extras,
                     )
                     tree2_level.append(tree2_fixture2)
 
@@ -1331,8 +1444,8 @@ class Knockout(Mode):
             # Add propagation from the main to the top-most level of the second tree.
             for fidx, tree1_fixture in enumerate(complete_tree1_levels[0]):
                 tree1_fixture.extras['propagate']['loser'] = dict(
-                    fixture_id  = previous_tree2_level[fidx // 2].id,
-                    player_slot = 1 + fidx % 2,
+                    fixture_id=previous_tree2_level[fidx // 2].id,
+                    player_slot=1 + fidx % 2,
                 )
                 tree1_fixture.save()
 
@@ -1344,13 +1457,13 @@ class Knockout(Mode):
         # In double elimination mode, there can be an extra root node.
         if fixture_position == 1:
             try:
-                return self.fixtures.get(extras = dict(position = 0))
+                return self.fixtures.get(extras=dict(position=0))
             except Fixture.DoesNotExist:
                 return None
 
         # Other parent nodes are directly obtained due to the binary tree structure.
         else:
-            return self.fixtures.get(extras__tree = 1, extras__position = fixture_position // 2)
+            return self.fixtures.get(extras__tree=1, extras__position=fixture_position // 2)
 
     @staticmethod
     def _propagate(src_fixture, src_slot, dst_fixture, dst_player_slot):
@@ -1387,7 +1500,6 @@ class Knockout(Mode):
             if became_playable:
                 _notify_match_ready(dst_fixture)
             return True
-        
 
     def propagate(self, fixture):
         assert fixture.mode.id == self.id
@@ -1398,9 +1510,11 @@ class Knockout(Mode):
         # Propagate along the propagation graph.
         propagate = fixture.extras.get('propagate', dict())
         for slot_name in propagate.keys():
-            dst_fixture = self.fixtures.get(id = propagate[slot_name]['fixture_id'])
-            _propagated = Knockout._propagate(fixture, slot_name, dst_fixture, propagate[slot_name]['player_slot'])
-            propagated  = propagated or _propagated
+            dst_fixture = self.fixtures.get(
+                id=propagate[slot_name]['fixture_id'])
+            _propagated = Knockout._propagate(
+                fixture, slot_name, dst_fixture, propagate[slot_name]['player_slot'])
+            propagated = propagated or _propagated
 
         # Return whether any updates were performed.
         return propagated
@@ -1434,7 +1548,8 @@ class Knockout(Mode):
         """All (src_fixture, src_slot) pairs whose propagate graph targets dst."""
         inbound = []
         for src in self.fixtures.all():
-            propagate = (src.extras or {}).get('propagate', {}) if isinstance(src.extras, dict) else {}
+            propagate = (src.extras or {}).get('propagate', {}
+                                               ) if isinstance(src.extras, dict) else {}
             for slot_name, target in propagate.items():
                 if isinstance(target, dict) and target.get('fixture_id') == dst_fixture.id:
                     inbound.append((src, slot_name))
@@ -1475,13 +1590,16 @@ class Knockout(Mode):
                 dst.admin_result = 'no_show_bye'
                 dst.admin_winner = winner
                 dst.admin_resolved_at = tz.now()
-                dst.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+                dst.save(update_fields=['admin_result',
+                         'admin_winner', 'admin_resolved_at'])
                 FixtureAudit.objects.create(
                     fixture=dst,
                     action='no_show_bye',
                     reason='Opposite branch empty; winner advances without a match.',
-                    before={'score': [dst.score1, dst.score2], 'admin_result': ''},
-                    after={'admin_result': 'no_show_bye', 'winner_participant_id': winner.pk},
+                    before={'score': [dst.score1, dst.score2],
+                            'admin_result': ''},
+                    after={'admin_result': 'no_show_bye',
+                           'winner_participant_id': winner.pk},
                 )
                 self._cancel_link(dst)
                 changed = True
@@ -1489,12 +1607,14 @@ class Knockout(Mode):
                 dst.admin_result = 'double_no_show'
                 dst.admin_winner = None
                 dst.admin_resolved_at = tz.now()
-                dst.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+                dst.save(update_fields=['admin_result',
+                         'admin_winner', 'admin_resolved_at'])
                 FixtureAudit.objects.create(
                     fixture=dst,
                     action='double_no_show',
                     reason='Both inbound branches empty; fixture resolved without a winner.',
-                    before={'score': [dst.score1, dst.score2], 'admin_result': ''},
+                    before={'score': [dst.score1, dst.score2],
+                            'admin_result': ''},
                     after={'admin_result': 'double_no_show'},
                 )
                 self._cancel_link(dst)
@@ -1524,12 +1644,13 @@ class Knockout(Mode):
     def placements(self):
         if self.fixtures.count() == 0:
             return None
-        final_match = self.fixtures.get(level = self.levels - 1)
+        final_match = self.fixtures.get(level=self.levels - 1)
         if not self.double_elimination:
             return [final_match.winner] + [fixture.loser for fixture in self.fixtures.order_by('-level')]
         else:
             chunk1 = [final_match.winner, final_match.loser]
-            chunk2 = [fixture.loser for fixture in self.fixtures.filter(extras__tree = 1) if fixture.loser not in chunk1]
+            chunk2 = [fixture.loser for fixture in self.fixtures.filter(
+                extras__tree=1) if fixture.loser not in chunk1]
             return chunk1 + chunk2
 
     def get_level_size(self, level):
@@ -1546,7 +1667,8 @@ class Knockout(Mode):
             return pow(2, rlevel // 2)
 
     def get_level_name(self, level):
-        first_complete_level = Knockout.get_first_complete_level(self.fixtures.filter(extras__tree = 1).count())
+        first_complete_level = Knockout.get_first_complete_level(
+            self.fixtures.filter(extras__tree=1).count())
         if level < first_complete_level:
             return 'Playoffs'
 
@@ -1571,23 +1693,30 @@ class Knockout(Mode):
                 prefix = {3: '1st', 2: '2nd', 1: '3rd'}[rlevel]
                 return f'{prefix} Final Round'
             else:
-                prefix = {1: '1st', 0: '2nd'}[(level + first_complete_level) % 2]
+                prefix = {1: '1st', 0: '2nd'}[
+                    (level + first_complete_level) % 2]
                 return f'{prefix} {base_level_name}'
 
 
 class Fixture(models.Model):
 
-    mode    = models.ForeignKey('Mode', on_delete = models.CASCADE, related_name = 'fixtures')
-    level   = models.PositiveSmallIntegerField()
-    extras  = models.JSONField(default = list, blank = True)
-    player1 = models.ForeignKey('Participant', on_delete = models.PROTECT, related_name = 'fixtures1', null = True)
-    player2 = models.ForeignKey('Participant', on_delete = models.PROTECT, related_name = 'fixtures2', null = True)
-    score1  = models.PositiveSmallIntegerField(null = True)
-    score2  = models.PositiveSmallIntegerField(null = True)
-    confirmations = models.ManyToManyField('auth.User', related_name = 'fixture_confirmations')
-    auto_confirmed = models.BooleanField(default = False)  # result reported by a trusted game server
+    mode = models.ForeignKey(
+        'Mode', on_delete=models.CASCADE, related_name='fixtures')
+    level = models.PositiveSmallIntegerField()
+    extras = models.JSONField(default=list, blank=True)
+    player1 = models.ForeignKey(
+        'Participant', on_delete=models.PROTECT, related_name='fixtures1', null=True)
+    player2 = models.ForeignKey(
+        'Participant', on_delete=models.PROTECT, related_name='fixtures2', null=True)
+    score1 = models.PositiveSmallIntegerField(null=True)
+    score2 = models.PositiveSmallIntegerField(null=True)
+    confirmations = models.ManyToManyField(
+        'auth.User', related_name='fixture_confirmations')
+    # result reported by a trusted game server
+    auto_confirmed = models.BooleanField(default=False)
     admin_result = models.CharField(max_length=20, blank=True)
-    admin_winner = models.ForeignKey('Participant', null=True, blank=True, on_delete=models.PROTECT, related_name='administrative_wins')
+    admin_winner = models.ForeignKey(
+        'Participant', null=True, blank=True, on_delete=models.PROTECT, related_name='administrative_wins')
     admin_resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # First moment both players were assigned and the fixture became actually
@@ -1599,8 +1728,9 @@ class Fixture(models.Model):
     class Meta:
         constraints = [
             CheckConstraint(
-                check = (Q(score1__isnull = True) & Q(score2__isnull = True)) | (Q(score1__isnull = False) & Q(score2__isnull = False)),
-                name = 'score1 and score2 must be both null or neither')
+                check=(Q(score1__isnull=True) & Q(score2__isnull=True)) | (
+                    Q(score1__isnull=False) & Q(score2__isnull=False)),
+                name='score1 and score2 must be both null or neither')
         ]
 
     def __repr__(self):
@@ -1614,7 +1744,7 @@ class Fixture(models.Model):
             f'confirmations={self.confirmations.count()} / {self.required_confirmations_count}',
         ])
         return f'<{data}>'
-    
+
     def __str__(self):
         return f'{self.player1} vs. {self.player2}'
 
@@ -1641,13 +1771,13 @@ class Fixture(models.Model):
     @property
     def players(self):
         return User.objects.filter(
-        Q(participant__fixtures1=self) |
-        Q(participant__fixtures2=self)
-    )
+            Q(participant__fixtures1=self) |
+            Q(participant__fixtures2=self)
+        )
 
     @property
     def required_confirmations_count(self):
-        return 1 + self.mode.tournament.participations.filter(participant__user__isnull = False).count() // 2
+        return 1 + self.mode.tournament.participations.filter(participant__user__isnull=False).count() // 2
 
     @property
     def is_confirmed(self):
@@ -1691,14 +1821,17 @@ class Fixture(models.Model):
 
 
 class FixtureAdminState(models.Model):
-    fixture = models.OneToOneField(Fixture, on_delete=models.CASCADE, related_name='admin_state')
+    fixture = models.OneToOneField(
+        Fixture, on_delete=models.CASCADE, related_name='admin_state')
     note = models.TextField(blank=True)
     revision = models.PositiveIntegerField(default=0)
 
 
 class FixtureAudit(models.Model):
-    fixture = models.ForeignKey(Fixture, on_delete=models.CASCADE, related_name='audit_events')
-    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    fixture = models.ForeignKey(
+        Fixture, on_delete=models.CASCADE, related_name='audit_events')
+    actor = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL)
     action = models.CharField(max_length=32)
     reason = models.TextField(blank=True)
     before = models.JSONField(default=dict)
