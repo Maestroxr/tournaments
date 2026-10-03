@@ -636,6 +636,61 @@ def _no_show_after_resolution(request, tournament_pk):
     return _double_no_show_after_resolution(request, tournament_pk)
 
 
+def _tournament_finished_entry_response(request, tournament_pk):
+    """
+    Terminal finished-game state for a player whose tournament game is already
+    over and who therefore no longer resolves to a playable fixture.
+
+    The persisted ``GameLink.raw_result`` is the source of truth for the winner —
+    never inferred from the current UI state — and only fixtures the signed-in
+    user is one of the two players of are ever described. Returns a
+    JsonResponse, or `None` when no completed game applies (the caller then
+    returns the original refusal).
+    """
+    try:
+        Tournament.objects.select_for_update().get(pk=tournament_pk)
+    except Tournament.DoesNotExist:
+        return None
+    candidates = (GameLink.objects.select_related(
+        'fixture__mode__tournament', 'fixture__player1__user', 'fixture__player2__user')
+        .filter(status='completed')
+        .filter(raw_result__isnull=False)
+        .filter(fixture__mode__tournament_id=tournament_pk)
+        .filter(Q(fixture__player1__user=request.user) | Q(fixture__player2__user=request.user))
+        .order_by('-pk'))
+    for game_link in candidates:
+        raw_result = game_link.raw_result
+        if not isinstance(raw_result, dict):
+            continue
+        winner_seat = raw_result.get('winner_seat')
+        if winner_seat not in ('p1', 'p2'):
+            continue
+        fixture = game_link.fixture
+        if fixture.player1 is not None and fixture.player1.user_id == request.user.id:
+            seat = 'p1'
+        elif fixture.player2 is not None and fixture.player2.user_id == request.user.id:
+            seat = 'p2'
+        else:
+            continue
+        opponent = fixture.player2 if seat == 'p1' else fixture.player1
+        opponent_user = opponent.user if opponent is not None else None
+        return JsonResponse({
+            'fixture_id': fixture.pk,
+            'seat': seat,
+            'both_ready': False,
+            'entry_status': 'won' if winner_seat == seat else 'lost',
+            'winner_seat': winner_seat,
+            'reason': raw_result.get('end_reason'),
+            'entry_deadline': None,
+            'remaining_seconds': 0,
+            'opponent': {
+                'username': opponent_user.username if opponent_user is not None else '',
+                'is_waiting': False,
+            },
+        })
+    return None
+
+
 def _readiness_fresh(game_link, now):
     """True only when both seats heartbeated no earlier than the freshness window."""
     if game_link.p1_ready_at is None or game_link.p2_ready_at is None:
@@ -866,6 +921,9 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             terminal = _no_show_after_resolution(request, pk)
             if terminal is not None:
                 return terminal
+            finished = _tournament_finished_entry_response(request, pk)
+            if finished is not None:
+                return finished
             status, reason, _ = refusal
             return _start_refusal(status, reason)
 
@@ -1185,7 +1243,10 @@ class ResultCallbackView(View):
             # same 200 the first one earned — anything else and the sender retries until it gives
             # up on a result that was in fact recorded.
             if game_link.status == STATUS_COMPLETED:
-                return _accepted('already_recorded')
+                return _tournament_result_response(
+                    locked_fixture,
+                    'already_recorded',
+                )
 
             if game_link.status == STATUS_CANCELLED:
                 if body['status'] == STATUS_CANCELLED:
@@ -1369,7 +1430,10 @@ class ResultCallbackView(View):
 
         logger.info('gamelink result recorded: fixture %s completed %s-%s',
                     fixture.pk, fixture.score1, fixture.score2)
-        return _accepted('recorded')
+        return _tournament_result_response(
+            fixture,
+            'recorded',
+        )
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1531,14 +1595,15 @@ def _accepted(status):
     return JsonResponse({'status': status})
 
 
-def _direct_play_response(table, status):
-    """Authoritative direct-play response with persisted rating and ledger deltas."""
-    # Rating payload - p1 = host, p2 = guest
+def _tournament_result_response(fixture, status):
+    """Return the persisted tournament rating created for this fixture."""
     rating = None
+
     try:
-        rr = RatingResult.objects.filter(table=table).first()
+        rr = RatingResult.objects.filter(fixture=fixture).first()
     except Exception:
         rr = None
+
     if rr is not None:
         rating = {
             'p1': {
@@ -1553,40 +1618,74 @@ def _direct_play_response(table, status):
             },
         }
 
-        # Coin delta comes from the authoritative wallet ledger for every
-        # direct-play table, not only money-format games.
-        from django.db.models import Sum
+    return JsonResponse({
+        'status': status,
+        'rating': rating,
+    })
 
-        p1_total = table.wallet_transactions.filter(
-            user_id=table.host_id
-        ).aggregate(total=Sum('amount'))['total']
 
-        p2_total = (
-            table.wallet_transactions.filter(
-                user_id=table.guest_id
-            ).aggregate(total=Sum('amount'))['total']
-            if table.guest_id
-            else None
-        )
+def _direct_play_response(table, status):
+    """Authoritative direct-play response with persisted rating and ledger deltas."""
+    # Rating payload - p1 = host, p2 = guest
+    rating = None
 
-        if p1_total is None:
-            p1_total = Decimal('0')
+    try:
+        rr = RatingResult.objects.filter(table=table).first()
+    except Exception:
+        rr = None
 
-        if p2_total is None:
-            p2_total = Decimal('0')
-
-        def _to_number(value):
-            if value == int(value):
-                return int(value)
-            return float(value)
-
-        money = {
-            'stake': str(table.amount),
-            'p1Change': _to_number(p1_total),
-            'p2Change': _to_number(p2_total),
+    if rr is not None:
+        rating = {
+            'p1': {
+                'before': rr.player1_before,
+                'after': rr.player1_after,
+                'change': rr.player1_after - rr.player1_before,
+            },
+            'p2': {
+                'before': rr.player2_before,
+                'after': rr.player2_after,
+                'change': rr.player2_after - rr.player2_before,
+            },
         }
 
-    return JsonResponse({'status': status, 'rating': rating, 'money': money})
+    # Coin delta comes from the authoritative wallet ledger for every
+    # direct-play table, independently of whether the table is rated.
+    from django.db.models import Sum
+
+    p1_total = table.wallet_transactions.filter(
+        user_id=table.host_id
+    ).aggregate(total=Sum('amount'))['total']
+
+    p2_total = (
+        table.wallet_transactions.filter(
+            user_id=table.guest_id
+        ).aggregate(total=Sum('amount'))['total']
+        if table.guest_id
+        else None
+    )
+
+    if p1_total is None:
+        p1_total = Decimal('0')
+
+    if p2_total is None:
+        p2_total = Decimal('0')
+
+    def _to_number(value):
+        if value == int(value):
+            return int(value)
+        return float(value)
+
+    money = {
+        'stake': str(table.amount),
+        'p1Change': _to_number(p1_total),
+        'p2Change': _to_number(p2_total),
+    }
+
+    return JsonResponse({
+        'status': status,
+        'rating': rating,
+        'money': money,
+    })
 
 
 def _broadcast_live_snapshot(tournament_id, fixture_id, snapshot):

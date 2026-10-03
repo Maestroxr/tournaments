@@ -1,5 +1,40 @@
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.db.models import Q
+
+from tournaments.models import Fixture, Tournament
+
+
+@database_sync_to_async
+def _player_fixture_for_tournament(user_id, tournament_id):
+    try:
+        tournament = Tournament.objects.get(pk=tournament_id)
+    except Tournament.DoesNotExist:
+        return None
+
+    fixtures = (
+        Fixture.objects
+        .select_related('player1__user', 'player2__user', 'mode__tournament')
+        .filter(mode__tournament_id=tournament_id)
+        .filter(
+            Q(player1__user_id=user_id) |
+            Q(player2__user_id=user_id)
+        )
+        .order_by('-pk')
+    )
+
+    fixture = fixtures.first()
+    if fixture is None:
+        return None
+
+    if fixture.player1 is not None and fixture.player1.user_id == user_id:
+        seat = 'p1'
+    elif fixture.player2 is not None and fixture.player2.user_id == user_id:
+        seat = 'p2'
+    else:
+        return None
+
+    return fixture.pk, seat
 
 
 class AdminTournamentProgressConsumer(AsyncJsonWebsocketConsumer):
@@ -26,3 +61,45 @@ class AdminTournamentProgressConsumer(AsyncJsonWebsocketConsumer):
     def _can_view_progress(self):
         user = self.scope.get('user')
         return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+
+class TournamentEntryConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        self.tournament_id = int(
+            self.scope['url_route']['kwargs']['tournament_id']
+        )
+
+        user = self.scope.get('user')
+        if user is None or not user.is_authenticated:
+            await self.close(code=4401)
+            return
+
+        resolved = await _player_fixture_for_tournament(
+            user.id,
+            self.tournament_id,
+        )
+
+        if resolved is None:
+            await self.close(code=4403)
+            return
+
+        self.fixture_id, self.seat = resolved
+        self.user_id = user.id
+
+        self.group_name = f'tournament_entry_user_{self.user_id}'
+
+        await self.channel_layer.group_add(
+            self.group_name,
+            self.channel_name,
+        )
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'group_name'):
+            await self.channel_layer.group_discard(
+                self.group_name,
+                self.channel_name,
+            )
+
+    async def tournament_entry(self, event):
+        await self.send_json(event['payload'])
