@@ -1833,6 +1833,9 @@ def api_admin_tournament_progress(request, pk):
                             if game_link and game_link.raw_result
                             else None
                         ),
+                        "external_room_id": (
+                            game_link.external_room_id if game_link else None
+                        ),
                         "live": live_snapshot,
                     }
                     fixtures.append(fixture_payload)
