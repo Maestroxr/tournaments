@@ -5,7 +5,7 @@ from django.test import TestCase
 from django.contrib.auth.models import User
 from django.utils import timezone
 from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransaction
-from frontend.entry_lifecycle import expire_unstarted_tables
+from frontend.entry_lifecycle import expire_unstarted_tables, mark_entry_ready, touch_open_searches
 
 
 class EntryLifecycleTests(TestCase):
@@ -85,3 +85,96 @@ class EntryLifecycleTests(TestCase):
         expire_unstarted_tables()
         table.refresh_from_db()
         self.assertEqual(table.status, 'cancelled')
+
+    def test_search_expires_at_five_minutes_and_refunds_once(self):
+        table = self.old_table()
+        created = timezone.now()
+        HeadToHeadTable.objects.filter(pk=table.pk).update(created_at=created)
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=299)):
+            touch_open_searches(self.user.pk)
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=300)):
+            expire_unstarted_tables()
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'cancelled')
+        self.assertEqual(table.settlement['reason'], 'search_timeout')
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), 10000)
+
+    def test_pairing_starts_a_new_five_minute_window_and_refunds_both_players(self):
+        table = self.old_table()
+        guest = User.objects.create_user('entry-guest')
+        WalletTransaction.create_entry(user=guest, amount=10000, kind=WalletTransaction.KIND_DEPOSIT)
+        WalletTransaction.create_entry(user=guest, amount=-100,
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
+        table.guest = guest
+        matched = timezone.now().replace(microsecond=0)
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=matched):
+            mark_entry_ready(table)
+            table.save()
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'ready')
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=matched + timedelta(seconds=300)):
+            expire_unstarted_tables()
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'cancelled')
+        self.assertEqual(table.settlement['reason'], 'entry_timeout')
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), 10000)
+        self.assertEqual(WalletTransaction.balance_for_user(guest), 10000)
+
+    def test_existing_day_long_deadline_is_shortened_from_original_pairing_time(self):
+        table = self.old_table('ready')
+        matched = timezone.now() - timedelta(minutes=6)
+        table.settlement = {'entry_deadline': int((matched + timedelta(days=1)).timestamp())}
+        table.save(update_fields=['settlement'])
+        expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'cancelled')
+
+    def test_confirmed_game_is_never_expired(self):
+        table = self.old_table('playing')
+        table.settlement = {'entry_confirmed': True}
+        table.save(update_fields=['settlement'])
+        with patch('frontend.entry_lifecycle.remote_expiry') as remote:
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'playing')
+        remote.assert_not_called()
+
+    def test_disconnected_public_search_expires_after_presence_grace_and_refunds_once(self):
+        table = self.old_table()
+        created = timezone.now().replace(microsecond=0)
+        HeadToHeadTable.objects.filter(pk=table.pk).update(created_at=created)
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=89)):
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=90)):
+            expire_unstarted_tables()
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'cancelled')
+        self.assertEqual(table.settlement['reason'], 'search_offline')
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), 10000)
+
+    def test_lobby_heartbeat_keeps_search_visible_without_resetting_five_minute_deadline(self):
+        table = self.old_table()
+        created = timezone.now().replace(microsecond=0)
+        HeadToHeadTable.objects.filter(pk=table.pk).update(created_at=created)
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=80)):
+            touch_open_searches(self.user.pk)
+        with patch('frontend.entry_lifecycle.timezone.now', return_value=created + timedelta(seconds=100)):
+            expire_unstarted_tables()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+        self.assertEqual(int(table.created_at.timestamp()), int(created.timestamp()))
+
+    def test_other_player_cannot_refresh_owners_presence(self):
+        table = self.old_table()
+        touch_open_searches(User.objects.create_user('presence-outsider').pk)
+        table.refresh_from_db()
+        self.assertNotIn('search_seen_at', table.settlement or {})

@@ -148,6 +148,11 @@ class StartDirectPlayView(LoginRequiredMixin, View):
         except ValueError:
             return HttpResponse(status=412)
 
+        # Cancellation must not refund a funded game after a ticket was issued,
+        # even before the game server's room callback arrives.
+        table.settlement = {**(table.settlement or {}), 'entry_ticket_issued': True}
+        table.save(update_fields=['settlement'])
+
         if request.user.id == table.host_id:
             from frontend.push import queue_host_entered_push
             queue_host_entered_push(table)

@@ -1,4 +1,4 @@
-"""One active direct game per player, with a ten-minute arrival deadline."""
+"""One active direct game per player, with five-minute search/arrival deadlines."""
 import json
 import logging
 from decimal import Decimal
@@ -15,13 +15,27 @@ logger = logging.getLogger(__name__)
 ACTIVE = ('open', 'ready', 'playing')
 
 
-ENTRY_WINDOW_SECONDS = 24 * 60 * 60
+ENTRY_WINDOW_SECONDS = 5 * 60
+SEARCH_PRESENCE_SECONDS = 90
+
+
+def touch_open_searches(user_id):
+    """Visible lobby polling keeps only the owner's unmatched searches alive."""
+    with transaction.atomic():
+        searches = HeadToHeadTable.objects.select_for_update().filter(
+            host_id=user_id, status=HeadToHeadTable.STATUS_OPEN, guest__isnull=True,
+        ).filter(Q(mode=HeadToHeadTable.MODE_MATCH) | Q(is_quick_match=True))
+        for table in searches:
+            table.settlement = {**(table.settlement or {}),
+                                'search_seen_at': int(timezone.now().timestamp())}
+            table.save(update_fields=['settlement'])
 
 
 def mark_entry_ready(table):
     settlement = dict(table.settlement or {})
     settlement['entry_deadline'] = int(
         timezone.now().timestamp()) + ENTRY_WINDOW_SECONDS
+    settlement['entry_window_seconds'] = ENTRY_WINDOW_SECONDS
     settlement.pop('entry_confirmed', None)
 
     table.settlement = settlement
@@ -75,7 +89,12 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             continue
 
         if observed.status == HeadToHeadTable.STATUS_OPEN:
-            if observed.created_at > open_cutoff:
+            last_seen = (observed.settlement or {}).get('search_seen_at')
+            if type(last_seen) is not int:
+                last_seen = int(observed.created_at.timestamp())
+            search_offline = (observed.mode == HeadToHeadTable.MODE_MATCH or observed.is_quick_match) and (
+                now_ts - last_seen >= SEARCH_PRESENCE_SECONDS)
+            if observed.created_at > open_cutoff and not search_offline:
                 continue
         else:
             entry_deadline = (observed.settlement or {}).get('entry_deadline')
@@ -86,6 +105,9 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
                     int(observed.updated_at.timestamp()) +
                     ENTRY_WINDOW_SECONDS
                 )
+            elif (observed.settlement or {}).get('entry_window_seconds') is None:
+                # Existing paired tables used a 24-hour deadline.
+                entry_deadline = entry_deadline - 24 * 60 * 60 + ENTRY_WINDOW_SECONDS
 
             if entry_deadline > now_ts:
                 continue
@@ -114,6 +136,10 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
                 continue
             if table.status != observed.status or table.external_room_id != observed.external_room_id:
                 continue
+            if (table.settlement or {}).get('entry_confirmed'):
+                continue
+            if table.settlement != observed.settlement:
+                continue
             from django.contrib.auth.models import User
             players = list(User.objects.select_for_update().filter(
                 pk__in=[table.host_id, table.guest_id]).order_by('pk'))
@@ -128,5 +154,9 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
                                                    head_to_head_table=table, note=f'Entry deadline expired: {table.code}')
             table.status = 'cancelled'
             table.completed_at = timezone.now()
-            table.save(update_fields=['status', 'completed_at', 'updated_at'])
+            table.settlement = {**(table.settlement or {}),
+                                'reason': ('search_timeout' if observed.created_at <= open_cutoff else 'search_offline')
+                                if observed.status == 'open' else 'entry_timeout',
+                                'reservation_released': True}
+            table.save(update_fields=['status', 'completed_at', 'settlement', 'updated_at'])
     return True

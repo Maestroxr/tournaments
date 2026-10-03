@@ -377,6 +377,38 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal("1000.00"))
         self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal("1000.00"))
 
+    def test_joining_player_can_cancel_before_start_and_refunds_are_not_repeated(self):
+        table = self.legacy_table({"mode": "match", "amount": "100", "doubling_enabled": True})
+        self.client.force_login(self.guest)
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/join").status_code, 200)
+        response = self.client.post(f"/api/head-to-head/tables/{table.code}/cancel")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'cancelled')
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/cancel").status_code, 409)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal("1000.00"))
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), Decimal("1000.00"))
+
+    def test_outsider_cannot_cancel_another_players_table(self):
+        table = self.legacy_table({"mode": "match", "amount": "100"})
+        self.client.force_login(self.guest)
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/cancel").status_code, 403)
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+
+    def test_joining_player_cannot_cancel_a_table_with_a_game_room(self):
+        table = self.legacy_table({"mode": "match", "amount": "100"})
+        self.client.force_login(self.guest)
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/join").status_code, 200)
+        HeadToHeadTable.objects.filter(pk=table.pk).update(external_room_id='existing-room')
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/cancel").status_code, 409)
+
+    def test_joining_player_cannot_cancel_after_a_ticket_was_issued(self):
+        table = self.legacy_table({"mode": "match", "amount": "100"})
+        self.client.force_login(self.guest)
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/join").status_code, 200)
+        HeadToHeadTable.objects.filter(pk=table.pk).update(settlement={'entry_ticket_issued': True})
+        self.assertEqual(self.client.post(f"/api/head-to-head/tables/{table.code}/cancel").status_code, 409)
+
     def test_legacy_friend_result_records_winner_without_awarding_coins(self):
         table = self.legacy_table({"mode": "friend", "time_control": "none"})
         self.client.force_login(self.guest)

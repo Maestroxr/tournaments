@@ -855,8 +855,9 @@ def api_head_to_head_tables(request):
     if request.method == "GET":
         from .search_lifecycle import reconcile_searches_locked
         reconcile_searches_locked(host_id=request.user.pk)
-        from .entry_lifecycle import expire_unstarted_tables
+        from .entry_lifecycle import expire_unstarted_tables, touch_open_searches
         expire_unstarted_tables(user_id=request.user.pk)
+        touch_open_searches(request.user.pk)
         settings_row.refresh_from_db()
         tables = models.HeadToHeadTable.objects.filter(
             mode=models.HeadToHeadTable.MODE_MATCH,
@@ -893,6 +894,8 @@ def api_head_to_head_table(request, code):
     """Preview every table rule before the player commits coins."""
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
+    from .entry_lifecycle import expire_unstarted_tables
+    expire_unstarted_tables(user_id=request.user.pk)
     table = get_object_or_404(
         models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner'),
         code=code.upper(),
@@ -1049,9 +1052,11 @@ def api_head_to_head_cancel(request, code):
         return JsonResponse({"detail": "Authentication required"}, status=401)
     with transaction.atomic():
         table = get_object_or_404(models.HeadToHeadTable.objects.select_for_update(), code=code.upper())
-        if table.host_id != request.user.id:
-            return JsonResponse({"detail": "Only the table owner can cancel it."}, status=403)
+        if request.user.id not in (table.host_id, table.guest_id):
+            return JsonResponse({"detail": "Only a player at this table can cancel it."}, status=403)
         if table.status not in (models.HeadToHeadTable.STATUS_OPEN, models.HeadToHeadTable.STATUS_READY):
+            return JsonResponse({"detail": "This table can no longer be cancelled."}, status=409)
+        if table.external_room_id or (table.settlement or {}).get('entry_confirmed') or (table.settlement or {}).get('entry_ticket_issued'):
             return JsonResponse({"detail": "This table can no longer be cancelled."}, status=409)
         _refund_head_to_head(table)
         table.status = models.HeadToHeadTable.STATUS_CANCELLED
