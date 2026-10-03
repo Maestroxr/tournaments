@@ -722,6 +722,32 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(table.fee_per_player, Decimal('250.00'))
         self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('750.00'))
 
+    def test_versioned_friend_fee_is_owned_by_server(self):
+        settings_row = DirectPlaySettings.load()
+        settings_row.friend_game_fee = Decimal('60.00')
+        settings_row.save()
+        response = self.create_table({
+            'mode': 'friend', 'game_format': 'match', 'amount': 100,
+            'target_points': 5, 'time_control': 'normal', 'doubling_enabled': True,
+        })
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Decimal(response.json()['fee_per_player']), Decimal('300.00'))
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('700.00'))
+
+    def test_versioned_friend_insufficient_fee_creates_no_table(self):
+        settings_row = DirectPlaySettings.load()
+        settings_row.friend_game_fee = Decimal('300.00')
+        settings_row.save()
+        response = self.create_table({
+            'mode': 'friend', 'game_format': 'match',
+            'target_points': 5, 'time_control': 'normal', 'doubling_enabled': True,
+        })
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json()['code'], 'insufficient_coins')
+        self.assertEqual(Decimal(response.json()['shortfall']), Decimal('500.00'))
+        self.assertFalse(HeadToHeadTable.objects.exists())
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('1000.00'))
+
     def test_versioned_friend_join_reserves_correct_amount(self):
         self.client.force_login(self.host)
         payload = {

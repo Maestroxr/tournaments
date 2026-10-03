@@ -333,10 +333,17 @@ def quote(settings, data, quick, match_search=False):
         points = data.get('target_points', 5)
         clock = data.get('time_control', 'normal')
         doubling = data.get('doubling_enabled', True)
+    if access == 'private' and points == 1:
+        doubling = False
     if (type(points) is not int or points not in profile['target_points']
             or clock not in profile['time_controls'] or type(doubling) is not bool
             or doubling not in profile['doubling_options']):
         raise ValidationError('Select the available rules for this format.')
+    if access == 'private':
+        profile = copy.deepcopy(profile)
+        profile['friend_fee_only'] = True
+        profile['fee_percent'] = 0
+        return name, profile, [settings.friend_fee_for(points)], points, clock, doubling
     raw = data.get('amounts', [data.get('amount')]
                    ) if quick else [data.get('amount')]
     if not isinstance(raw, list) or not raw or len(raw) > 100:
@@ -520,6 +527,8 @@ def create_or_match(request, *, quick=False, match_search=False):
                           fee_per_player=money(
                               stakes[0] * money(profile['fee_percent']) / 100),
                           rules_snapshot=snapshot)
+            if snapshot.get('friend_fee_only'):
+                fields['fee_per_player'] = stakes[0]
             table = _create_friend_table(
                 **fields) if fields['mode'] == 'friend' else HeadToHeadTable.objects.create(code=_new_table_code(), **fields)
             # store dynamic values for later shared calc (in settlement, not snapshot)
@@ -605,7 +614,7 @@ def settle(table, body):
             'winner_seat') == 'p2' else None
         if winner is None:
             raise ValidationError('Missing winner.')
-        transfer = money(table.amount)
+        transfer = Decimal('0.00') if table.rules_snapshot.get('friend_fee_only') else money(table.amount)
         if table.game_format == 'money':
             if not isinstance(result, dict) or result.get('format') != 'money':
                 raise ValidationError(
@@ -629,7 +638,10 @@ def settle(table, body):
     for player in players:
         # Returning the winner's own reservation is not winnings. Only the loser
         # transfers the settled stake. Combined wallet change equals minus fee.
-        release = reserves[player.pk] if cancelled or player == winner else reserves[player.pk] - transfer
+        if not cancelled and table.rules_snapshot.get('friend_fee_only'):
+            release = Decimal('0.00')
+        else:
+            release = reserves[player.pk] if cancelled or player == winner else reserves[player.pk] - transfer
         if release:
             WalletTransaction.create_entry(user=player, amount=release, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
                                            head_to_head_table=table, note='Unused game reservation released')
