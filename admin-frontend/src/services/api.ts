@@ -1,3 +1,5 @@
+import { t } from '@/i18n'
+
 const BASE = '/tournaments-api'
 export const ADMIN_NOTIFICATIONS_CHANGED_EVENT = 'admin-notifications-changed'
 
@@ -45,6 +47,9 @@ export function formatApiError(e: unknown): string {
     if (!e.body.trim() || looksLikeHtml(e.body)) return fallback
     try {
       const data = JSON.parse(e.body) as Record<string, unknown>
+      if (data.code === 'tournament_start_too_early') {
+        return t('tournamentActions.startTooEarly')
+      }
       const raw = (data.detail ?? data.errors ?? e.body) as unknown
       const detail = formatErrorValue(raw)
       return `${fallback}: ${detail}`

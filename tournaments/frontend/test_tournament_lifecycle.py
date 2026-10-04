@@ -37,6 +37,7 @@ class TournamentLifecycleTests(TestCase):
             "Lifecycle cup",
             creator=self.staff,
             published=True,
+            starts_at=timezone.now() - timedelta(minutes=1),
             min_players=2,
             max_players=2,
         )
@@ -270,6 +271,8 @@ class TournamentLifecycleTests(TestCase):
         self.assertEqual(response.json()["detail"], "Registration is closed")
 
     def test_filling_capacity_closes_registration_without_starting(self):
+        self.tournament.starts_at = timezone.now() + timedelta(hours=1)
+        self.tournament.save(update_fields=["starts_at"])
         self.add_player(self.players[0])
         self.client.force_login(self.players[1])
 
@@ -279,6 +282,62 @@ class TournamentLifecycleTests(TestCase):
         self.tournament.refresh_from_db()
         self.assertEqual(self.tournament.lifecycle_state, "registration_closed")
         self.assertEqual(self.tournament.state, "open")
+        self.assertFalse(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+        from .task_runner import start_scheduled_tournaments
+
+        start_scheduled_tournaments(heartbeat=None)
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "open")
+        self.assertFalse(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+        self.tournament.starts_at = timezone.now() - timedelta(minutes=1)
+        self.tournament.save(update_fields=["starts_at"])
+        start_scheduled_tournaments(heartbeat=None)
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "active")
+        self.assertTrue(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+    def test_manual_start_rejects_future_start_time(self):
+        self.tournament.starts_at = timezone.now() + timedelta(hours=1)
+        self.tournament.save(update_fields=["starts_at"])
+        for user in self.players[:2]:
+            self.add_player(user)
+
+        response = self.post("api-admin-tournament-start")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["code"], "tournament_start_too_early")
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "open")
+        self.assertIsNone(self.tournament.draw_generated_at)
+        self.assertFalse(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+    def test_scheduled_start_uses_minimum_without_requiring_full_capacity(self):
+        from .task_runner import start_scheduled_tournaments
+
+        self.tournament.max_players = 4
+        self.tournament.save(update_fields=["max_players"])
+        for user in self.players[:2]:
+            self.add_player(user)
+
+        start_scheduled_tournaments(heartbeat=None)
+
+        self.tournament.refresh_from_db()
+        self.assertEqual(self.tournament.state, "active")
+        self.assertTrue(Fixture.objects.filter(mode__tournament=self.tournament).exists())
+
+    def test_scheduled_start_cancels_below_minimum(self):
+        from .task_runner import start_scheduled_tournaments
+
+        self.add_player(self.players[0])
+
+        start_scheduled_tournaments(heartbeat=None)
+
+        self.tournament.refresh_from_db()
+        self.assertFalse(self.tournament.published)
+        self.assertEqual(self.tournament.registration_closed_reason, "insufficient_players")
+        self.assertFalse(self.tournament.participations.exists())
         self.assertFalse(Fixture.objects.filter(mode__tournament=self.tournament).exists())
 
     def test_draw_rejects_missing_players_and_changes_after_confirmation(self):

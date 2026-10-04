@@ -741,8 +741,7 @@ def api_join(request, pk):
                 _add_to_active_roster(t, registration, request.user)
             except ValidationError:
                 return JsonResponse({"detail": "Insufficient funds to join this tournament."}, status=412)
-            if t.close_registration_if_full():
-                _start_tournament_at_capacity(t)
+            t.close_registration_if_full()
     except models.Tournament.DoesNotExist:
         return JsonResponse({"detail": "Not found"}, status=404)
     except ValidationError as error:
@@ -1536,8 +1535,7 @@ def api_admin_tournament_attendees(request, pk):
                     'registration_closed_at', 'registration_closed_reason', 'draw_order',
                     'draw_generated_at', 'draw_confirmed_at',
                 ])
-            if t.close_registration_if_full():
-                _start_tournament_at_capacity(t)
+            t.close_registration_if_full()
             return JsonResponse({'detail': 'Added', 'status': registration.status})
         except (User.DoesNotExist, ValueError):
             return JsonResponse({'detail': 'User not found'}, status=404)
@@ -1652,8 +1650,7 @@ def api_admin_tournament_attendees(request, pk):
                 'registration_closed_at', 'registration_closed_reason', 'draw_order',
                 'draw_generated_at', 'draw_confirmed_at',
             ])
-        if t.close_registration_if_full():
-            _start_tournament_at_capacity(t)
+        t.close_registration_if_full()
     else:
         return JsonResponse({'detail': 'Unsupported attendee action'}, status=400)
 
@@ -2074,11 +2071,15 @@ def api_admin_tournament_confirm_draw(request, pk):
 
 
 def _start_tournament_at_capacity(t):
-    """Create the draw and fixtures once a capped tournament reaches capacity.
+    """Create the draw and fixtures after the scheduled start time.
 
-    Callers hold the tournament row lock, so only the request that fills the
-    final seat can start it.
+    Callers hold the tournament row lock to prevent concurrent starts.
     """
+    if t.starts_at is None or t.starts_at > timezone.now():
+        raise ValidationError(
+            "The tournament cannot start before its scheduled start time.",
+            code="tournament_start_too_early",
+        )
     required = t.min_players
     participant_ids = list(t.participations.values_list("participant_id", flat=True))
     if len(participant_ids) < required:
@@ -2120,7 +2121,10 @@ def api_admin_tournament_start(request, pk):
     try:
         _start_tournament_at_capacity(t)
     except ValidationError as error:
-        return JsonResponse({"detail": "; ".join(error.messages)}, status=400)
+        payload = {"detail": "; ".join(error.messages)}
+        if any(item.code == "tournament_start_too_early" for item in error.error_list):
+            payload["code"] = "tournament_start_too_early"
+        return JsonResponse(payload, status=400)
     return JsonResponse(_serialize_tournament(t, request))
 
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import Dialog from 'primevue/dialog'
 import Button from 'primevue/button'
+import AppAlert from '@/components/AppAlert.vue'
 import { useI18n } from '@/i18n'
 
 const props = defineProps<{ name: string; participantCount: number; busy?: boolean; error?: string }>()
@@ -31,7 +32,7 @@ function confirm() { if (!props.busy) emit('confirm') }
       <li><i class="bi bi-lock" aria-hidden="true"></i><span>{{ t('tournamentActions.registrationWillClose') }}</span></li>
       <li><i class="bi bi-diagram-3" aria-hidden="true"></i><span>{{ t('tournamentActions.pairingsWillBeCreated') }}</span></li>
     </ul>
-    <p v-if="error" role="alert" class="start-tournament-dialog__error">{{ error }}</p>
+    <AppAlert v-if="error" type="error" :message="error" class="mt-4" />
     <template #footer>
       <div class="start-tournament-dialog__footer">
         <Button :label="t('common.cancel')" severity="secondary" outlined :disabled="busy" autofocus @click="cancel" />
@@ -50,7 +51,6 @@ function confirm() { if (!props.busy) emit('confirm') }
 .start-tournament-dialog__changes { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; color: #d4e0f2; font-size: 14px; }
 .start-tournament-dialog__changes li { display: flex; align-items: center; gap: 10px; }
 .start-tournament-dialog__changes i { color: #79d4ff; }
-.start-tournament-dialog__error { margin-top: 16px; padding: 12px; border-radius: 10px; background: #3a202a; color: #ffb4be; font-size: 13px; }
 .start-tournament-dialog__footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; width: 100%; padding-top: 8px; }
 @media (max-width: 480px) { .start-tournament-dialog__footer :deep(.p-button) { flex: 1; } }
 </style>

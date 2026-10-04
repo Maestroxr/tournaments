@@ -63,7 +63,7 @@ def start_scheduled_tournaments(*, heartbeat):
 
     One recurring scanner: each due tournament is locked and re-checked before
     the existing start flow runs, so concurrent workers cannot double-start.
-    Tournaments without enough players yet are skipped and retried next cycle.
+    Tournaments below the minimum are cancelled and their entry fees refunded.
     """
     from tournaments.models import Tournament
 

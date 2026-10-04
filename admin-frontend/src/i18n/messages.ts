@@ -270,6 +270,7 @@ export const messages = {
     },
     tournamentActions: {
       title: 'Quick actions',
+      startTooEarly: 'The tournament start time has not arrived yet. It will start automatically at the scheduled time if there are enough participants.',
       nextStep: 'Next step',
       completeSetup: 'Complete the tournament setup',
       completeSetupHint: 'The tournament format must be valid before registration can open.',
@@ -1505,6 +1506,7 @@ export const messages = {
     },
     tournamentActions: {
       title: 'פעולות מהירות',
+      startTooEarly: 'עדיין לא הגיעה שעת ההתחלה של הטורניר. הטורניר יתחיל אוטומטית במועד שנקבע, אם יהיו מספיק משתתפים.',
       nextStep: 'השלב הבא',
       completeSetup: 'משלימים את הגדרת הטורניר',
       completeSetupHint: 'מבנה הטורניר חייב להיות תקין לפני פתיחת ההרשמה.',
