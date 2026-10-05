@@ -17,8 +17,9 @@ class DatabaseWrapper(SQLiteDatabaseWrapper):
         self._incident_writer_started = monotonic()
 
     def _commit(self):
+        commit_started = monotonic()
         result = self._observe_transaction('commit', super()._commit)
-        self._report_writer_end('commit')
+        self._report_writer_end('commit', commit_ms=(monotonic() - commit_started) * 1000)
         return result
 
     def _rollback(self):
@@ -27,7 +28,7 @@ class DatabaseWrapper(SQLiteDatabaseWrapper):
         finally:
             self._report_writer_end('rollback')
 
-    def _report_writer_end(self, operation):
+    def _report_writer_end(self, operation, commit_ms=0):
         started = getattr(self, '_incident_writer_started', None)
         self._incident_writer_started = None
         if started is None:
@@ -35,7 +36,9 @@ class DatabaseWrapper(SQLiteDatabaseWrapper):
         duration = (monotonic() - started) * 1000
         if duration >= 1000:
             incident_event('sqlite_writer_held', level=logging.WARNING,
-                           operation=operation, alias=self.alias, duration_ms=round(duration, 1))
+                           operation=operation, alias=self.alias, duration_ms=round(duration, 1),
+                           commit_ms=round(commit_ms, 1),
+                           work_ms=round(max(0, duration - commit_ms), 1))
 
     def _observe_transaction(self, operation, callback):
         started = monotonic()

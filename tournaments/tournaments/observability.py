@@ -68,6 +68,11 @@ class IncidentDiagnosticsMiddleware:
         # request.path excludes ?ticket= and ?token= and is never a body/URL.
         token = request_context.set({'request_id': request.incident_request_id,
                                      'method': request.method, 'path': request.path})
+        # Sender-generated UUID only; never log arbitrary headers or signatures.
+        snapshot_id = request.headers.get('X-Snapshot-ID', '')
+        if request.path == '/api/gamelink/live/' and len(snapshot_id) == 32 \
+                and all(char in '0123456789abcdef' for char in snapshot_id):
+            request_context.set({**request_context.get(), 'snapshot_id': snapshot_id})
         started = monotonic()
         diagnostics = QueryDiagnostics()
         response = None

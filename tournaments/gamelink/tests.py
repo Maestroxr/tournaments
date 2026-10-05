@@ -1194,6 +1194,22 @@ class ResultCallbackTestBase(TestCase):
 
 @gamelink_settings
 class LiveSnapshotCallbackViewTest(ResultCallbackTestBase):
+    def test_identical_snapshot_preserves_update_time(self):
+        body = self.live_body()
+        self.assertEqual(self.deliver_live(body).status_code, 200)
+        self.game_link.refresh_from_db()
+        updated_at = self.game_link.live_updated_at
+        self.assertEqual(self.deliver_live(body).status_code, 200)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.live_updated_at, updated_at)
+
+    def test_changed_state_at_same_sequence_is_still_recorded(self):
+        self.deliver_live(self.live_body(sequence=5, state={'phase': 'playing', 'turn': 'white'}))
+        body = self.live_body(sequence=5, state={'phase': 'playing', 'turn': 'black'})
+        self.assertEqual(self.deliver_live(body).status_code, 200)
+        self.game_link.refresh_from_db()
+        self.assertEqual(self.game_link.live_snapshot['state']['turn'], 'black')
+
     def test_a_signed_live_snapshot_is_saved_on_the_game_link(self):
         response = self.deliver_live()
 

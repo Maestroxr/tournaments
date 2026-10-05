@@ -324,6 +324,16 @@ def run_task(task_id):
 
 def run_task_with_outcome(task_id):
     """Distinguish a failed claimed attempt from a concurrent worker's task."""
+    from tournaments.observability import request_context
+
+    token = request_context.set({**(request_context.get() or {}), 'task_id': str(task_id)})
+    try:
+        return _run_task_with_outcome(task_id)
+    finally:
+        request_context.reset(token)
+
+
+def _run_task_with_outcome(task_id):
     started_at = time.perf_counter()
     now = timezone.now()
     lease_token = uuid.uuid4()
@@ -343,6 +353,8 @@ def run_task_with_outcome(task_id):
     if task is None:
         logger.warning('event=task_lease_lost task_id=%s reason=claim_replaced', task_id)
         return TaskRunOutcome.NOT_OWNED
+    from tournaments.observability import request_context
+    request_context.set({**(request_context.get() or {}), 'task_name': task.name})
     logger.debug('event=task_claimed task_id=%s task_name=%s attempt=%s', task.pk, task.name, task.attempts)
     try:
         handler = HANDLERS[task.name]

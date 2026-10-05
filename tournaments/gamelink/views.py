@@ -1614,7 +1614,7 @@ class LiveSnapshotCallbackView(View):
                                  link=link, reason='status_regression')
                     return JsonResponse({'status': 'already_recorded'})
                 previous = (link.live_snapshot or {}).get('sequence', -1)
-                if sequence >= previous:
+                if sequence >= previous and body != link.live_snapshot:
                     link.live_snapshot = body
                     link.live_updated_at = timezone.now()
                     link.external_room_id = room_id
@@ -1630,7 +1630,7 @@ class LiveSnapshotCallbackView(View):
                             fixture_id=fixture_id, action='live_started')
                     transaction.on_commit(lambda: _broadcast_live_snapshot(
                         tournament_id, fixture_id, body))
-                else:
+                elif sequence < previous:
                     logger.info(
                         'event=snapshot_ignored request_id=%s tournament_id=%s fixture_id=%s '
                         'reason=stale_sequence sequence=%s previous_sequence=%s',
