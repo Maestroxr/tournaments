@@ -28,7 +28,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         try:
             Tournament.objects.select_for_update().get(pk=options['tournament_id'])
-            fixture = Fixture.objects.select_for_update().select_related(
+            # The optional participant/user joins are read for validation;
+            # PostgreSQL cannot lock the nullable side of an outer join.
+            fixture = Fixture.objects.select_for_update(of=('self',)).select_related(
                 'mode__tournament', 'player1__user', 'player2__user',
             ).get(pk=options['fixture_id'], mode__tournament_id=options['tournament_id'])
             link = GameLink.objects.select_for_update().get(fixture=fixture)

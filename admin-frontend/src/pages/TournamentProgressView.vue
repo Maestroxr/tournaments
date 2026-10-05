@@ -2,6 +2,7 @@
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, ApiError, formatApiError } from '@/services/api'
+import { applyFixtureSnapshot, isStatusEvent } from '@/services/tournamentStatusEvents'
 import AppAlert from '@/components/AppAlert.vue'
 import TournamentMatchSummary from '@/components/tournament/TournamentMatchSummary.vue'
 import TournamentMatchesPanel from '@/components/tournament/TournamentMatchesPanel.vue'
@@ -35,6 +36,7 @@ const COALESCE_DELAY_MS = 2500
 let coalescedTimer: ReturnType<typeof setTimeout> | null = null
 let lastFetchStartedAt = 0
 let needsRefresh = false
+let statusEventVersion = 0
 const selectedView = computed(() => {
   if (route.name === 'tournament-bracket') return 'matches'
   if (route.name === 'tournament-standings' || route.name === 'tournament-results') return 'standings'
@@ -109,6 +111,7 @@ async function load(initial = false, opts: { force?: boolean } = {}) {
   lastFetchStartedAt = Date.now()
   needsRefresh = false
   refreshing.value = true
+  const statusVersionAtStart = statusEventVersion
   if (initial) loading.value = true
   else refreshing.value = true
   try {
@@ -116,6 +119,10 @@ async function load(initial = false, opts: { force?: boolean } = {}) {
     const previousLifecycleState = data.value?.tournament.lifecycle_state
     const result = await apiFetch<TournamentProgressData>(`/api/admin/tournaments/${id}/progress`)
     if (disposed) return
+    if (statusVersionAtStart !== statusEventVersion) {
+      requestCoalescedRefresh()
+      return
+    }
     data.value = result
     if (!initial && (previousState !== result.tournament.state || previousLifecycleState !== result.tournament.lifecycle_state)) {
       await workspace?.refresh()
@@ -182,21 +189,18 @@ function applyLiveSnapshot(payload: unknown) {
     return
   }
   const previousStatus = operationalStatus(fixture)
-  fixture.live = event.live ?? null
-  if (!fixture.is_confirmed && fixture.score1 == null && fixture.score2 == null && event.live?.status === 'playing') {
-    fixture.operational_status = 'playing'
-    fixture.stalled = false
-    fixture.last_activity_at = new Date().toISOString()
-    fixture.started_at ||= fixture.last_activity_at
-    fixture.duration_seconds ||= 0
-    if (data.value?.control_room && previousStatus !== 'playing') {
-      data.value.control_room.counts[previousStatus] = Math.max(0, data.value.control_room.counts[previousStatus] - 1)
-      data.value.control_room.counts.playing += 1
-    }
-  } else if (event.live?.status === 'completed') {
+  const receivedAt = new Date()
+  if (!applyFixtureSnapshot(fixture, event.live ?? null, receivedAt)) return
+  if (isStatusEvent(event.live ?? null)) statusEventVersion += 1
+  const nextStatus = operationalStatus(fixture)
+  if (data.value?.control_room && previousStatus !== nextStatus) {
+    data.value.control_room.counts[previousStatus] = Math.max(0, data.value.control_room.counts[previousStatus] - 1)
+    data.value.control_room.counts[nextStatus] += 1
+  }
+  if (event.live?.status === 'completed' || event.live?.status === 'cancelled') {
     requestCoalescedRefresh()
   }
-  lastUpdatedAt.value = new Date()
+  lastUpdatedAt.value = receivedAt
 }
 
 function closeSocket() {

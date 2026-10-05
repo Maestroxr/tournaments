@@ -4,6 +4,7 @@ import time
 import uuid
 from datetime import timedelta
 from enum import Enum
+from functools import partial
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -11,18 +12,28 @@ from django.db.models import Count, Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from .models import Task
+from .task_ownership import fence_task_ownership, task_ownership
 
 logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 EXPIRY_INTERVAL_SECONDS = 60
 MAX_RETRY_SECONDS = 300
 ENTRY_EXPIRY_BATCH_SIZE = 200
+START_BATCH_SIZE = 10
+BATCH_SECONDS = 8
 
 
 class TaskRunOutcome(Enum):
     COMPLETED = 'completed'
     RETRY_SCHEDULED = 'failed; retry scheduled'
     NOT_OWNED = 'deferred; not owned'
+
+
+class RetryTaskBatch(RuntimeError):
+    """Keep committed page progress; revisit failed items on the next scan."""
+    def __init__(self, message, checkpoint):
+        super().__init__(message)
+        self.checkpoint = checkpoint
 
 
 def deliver_admin_command(*, command_id, heartbeat):
@@ -34,17 +45,20 @@ def deliver_admin_command(*, command_id, heartbeat):
     return deliver(command_id)
 
 
-def expire_unstarted_games(*, heartbeat):
+def expire_unstarted_games(*, heartbeat, cursor=0, stop_id=None):
     from .entry_lifecycle import expire_unstarted_tables
-    from .search_lifecycle import reconcile_searches_locked
 
     if heartbeat is not None and not heartbeat():
         logger.warning('event=task_lease_lost handler=expire_unstarted_games')
         return False
-    # Cleanup used to run from lobby GETs. Keep unmatched searches compatible
-    # with current rules in the worker, without changing paired game contracts.
-    reconcile_searches_locked()
-    return expire_unstarted_tables(heartbeat=heartbeat)
+    return expire_unstarted_tables(heartbeat=heartbeat, cursor=cursor, stop_id=stop_id,
+                                  max_items=20, max_seconds=8)
+
+
+def reconcile_searches(*, heartbeat, cursor=0, stop_id=None):
+    from .search_lifecycle import reconcile_searches_locked
+    return reconcile_searches_locked(heartbeat=heartbeat, cursor=cursor,
+                                    stop_id=stop_id, max_batches=2)
 
 
 def _cancel_tournament_for_insufficient_players(tournament):
@@ -56,12 +70,10 @@ def _cancel_tournament_for_insufficient_players(tournament):
     the tournament reads as a draft, so the recurring scanner never picks it
     up again. Generates no fixtures, stamps no ``playable_at``, sends no push.
     """
-    from .api import _ensure_registration, _refund_registration
+    from .api import _refund_tournament_roster
 
     if tournament.entry_fee > 0:
-        for participation in tournament.participations.select_related('participant__user'):
-            registration = _ensure_registration(tournament, participation.participant)
-            _refund_registration(tournament, registration, None)
+        _refund_tournament_roster(tournament, None)
     tournament.published = False
     tournament.registration_closed_at = None
     # 'insufficient_players_at_start' does not fit the 20-char reason field;
@@ -77,7 +89,7 @@ def _cancel_tournament_for_insufficient_players(tournament):
     ])
 
 
-def start_scheduled_tournaments(*, heartbeat):
+def start_scheduled_tournaments(*, heartbeat, cursor=0, stop_id=None, bounded=False):
     """Start published tournaments whose scheduled start time has been reached.
 
     One recurring scanner: each due tournament is locked and re-checked before
@@ -89,25 +101,35 @@ def start_scheduled_tournaments(*, heartbeat):
     from .api import _start_tournament_at_capacity
 
     now = timezone.now()
-    candidate_ids = list(
+    batch_started = time.perf_counter()
+    candidates = (
         Tournament.objects.filter(
             published=True, starts_at__lte=now, results_confirmed_at__isnull=True,
         ).annotate(
             has_fixtures=Exists(Fixture.objects.filter(mode__tournament_id=OuterRef('pk'))),
-        ).filter(has_fixtures=False).order_by('starts_at', 'pk').values_list('pk', flat=True)
+        ).filter(has_fixtures=False)
     )
+    stop_id = stop_id or candidates.order_by('-pk').values_list('pk', flat=True).first()
+    candidate_ids = list(candidates.filter(pk__gt=cursor, pk__lte=stop_id).order_by('pk')
+                         .values_list('pk', flat=True)[:START_BATCH_SIZE]) if stop_id is not None else []
     started = 0
     deferred_ids = []
-    for tournament_id in candidate_ids:
+    continuation = None
+    for index, tournament_id in enumerate(candidate_ids):
+        if bounded and index > 0 and time.perf_counter() - batch_started >= BATCH_SECONDS:
+            continuation = {'cursor': cursor, 'stop_id': stop_id}
+            break
         if heartbeat is not None and not heartbeat():
             logger.warning('event=task_lease_lost handler=start_scheduled_tournaments tournament_id=%s', tournament_id)
             return False
+        cursor = tournament_id
         try:
             with transaction.atomic():
                 try:
                     tournament = Tournament.objects.select_for_update().get(pk=tournament_id)
                 except Tournament.DoesNotExist:
                     continue
+                fence_task_ownership()
                 if (
                     not tournament.published
                     or tournament.starts_at is None
@@ -135,8 +157,17 @@ def start_scheduled_tournaments(*, heartbeat):
         started += 1
         logger.info('event=tournament_start_processed tournament_id=%s outcome=%s',
                     tournament_id, 'started' if tournament.published else 'cancelled_insufficient_players')
+    if bounded and continuation is None and stop_id is not None and candidates.filter(pk__gt=cursor, pk__lte=stop_id).exists():
+        continuation = {'cursor': cursor, 'stop_id': stop_id}
     if deferred_ids:
-        raise RuntimeError(f'Tournament start validation failed for tournaments: {deferred_ids}')
+        message = f'Tournament start validation failed for tournaments: {deferred_ids}'
+        if bounded:
+            raise RetryTaskBatch(message, continuation or {})
+        raise RuntimeError(message)
+    if bounded:
+        logger.debug('event=tournament_start_batch processed=%s continuation=%s duration_ms=%s',
+                     started, bool(continuation), int((time.perf_counter() - batch_started) * 1000))
+        return {'processed': started, 'continuation': continuation}
     return started
 
 
@@ -159,7 +190,7 @@ def _personally_ready_fixture_ids(tournament_id):
     )
 
 
-def expire_tournament_entry_deadlines(*, heartbeat):
+def expire_tournament_entry_deadlines(*, heartbeat, cursor=0, stop_id=None, bounded=False):
     """Resolve tournament fixtures whose 10-minute entry deadline expired.
 
     Request-independent: covers fixtures where neither player ever opens the
@@ -178,7 +209,7 @@ def expire_tournament_entry_deadlines(*, heartbeat):
     batch_started = time.perf_counter()
     now = timezone.now()
     cutoff = now - TOURNAMENT_ENTRY_WINDOW
-    potential_candidates = list(
+    potential_query = (
         Fixture.objects.filter(
             mode__tournament__published=True,
             mode__tournament__results_confirmed_at__isnull=True,
@@ -196,33 +227,33 @@ def expire_tournament_entry_deadlines(*, heartbeat):
                 game_link__external_room_id='',
                 game_link__entry_authorized_at__isnull=True,
             ),
-        ).order_by('playable_at', 'pk').values_list(
-            'pk', 'mode__tournament_id',
         )
     )
-    # Legacy schedules may have clocks on every future group fixture. Exclude
-    # personally blocked rows before the bounded mutation batch, otherwise
-    # they can occupy every slot and starve eligible matches indefinitely.
+    stop_id = stop_id or potential_query.order_by('-pk').values_list('pk', flat=True).first()
+    potential_candidates = list(potential_query.filter(pk__gt=cursor, pk__lte=stop_id).order_by('pk')
+                                .values_list('pk', 'mode__tournament_id')[:ENTRY_EXPIRY_BATCH_SIZE]) if stop_id is not None else []
+    # Cursor progress includes personally blocked rows. Every candidate page
+    # yields the writer, even if legacy clocks cover future group matches.
     eligible_by_tournament = {}
-    candidates = []
-    for fixture_id, tournament_id in potential_candidates:
-        if tournament_id not in eligible_by_tournament:
-            if heartbeat is not None and heartbeat() is False:
-                return False
-            eligible_by_tournament[tournament_id] = _personally_ready_fixture_ids(tournament_id)
-        if fixture_id in eligible_by_tournament[tournament_id]:
-            candidates.append((fixture_id, tournament_id))
-            if len(candidates) >= ENTRY_EXPIRY_BATCH_SIZE:
-                break
+    candidates = potential_candidates
+    continuation = None
     resolved = 0
     failed_ids = []
-    for fixture_id, tournament_id in candidates:
+    for index, (fixture_id, tournament_id) in enumerate(candidates):
+        if bounded and index > 0 and time.perf_counter() - batch_started >= BATCH_SECONDS:
+            continuation = {'cursor': cursor, 'stop_id': stop_id}
+            break
+        cursor = fixture_id
         if heartbeat is not None and not heartbeat():
             logger.warning(
                 'event=task_lease_lost handler=expire_tournament_entry_deadlines '
                 'tournament_id=%s fixture_id=%s resolved=%s', tournament_id, fixture_id, resolved,
             )
             return False
+        if tournament_id not in eligible_by_tournament:
+            eligible_by_tournament[tournament_id] = _personally_ready_fixture_ids(tournament_id)
+        if fixture_id not in eligible_by_tournament[tournament_id]:
+            continue
         try:
             with transaction.atomic():
                 # Admission and administrative results take these locks in the
@@ -231,12 +262,13 @@ def expire_tournament_entry_deadlines(*, heartbeat):
                     tournament = Tournament.objects.select_for_update().get(pk=tournament_id)
                 except Tournament.DoesNotExist:
                     continue
+                fence_task_ownership()
                 if tournament.entry_deadline_paused or tournament.state != 'active':
                     logger.debug('event=entry_expiry_skipped tournament_id=%s fixture_id=%s reason=paused_or_inactive',
                                  tournament_id, fixture_id)
                     continue
                 try:
-                    fixture = Fixture.objects.select_for_update().select_related('mode').get(
+                    fixture = Fixture.objects.select_for_update(of=('self',)).select_related('mode').get(
                         pk=fixture_id, mode__tournament_id=tournament.pk,
                     )
                 except Fixture.DoesNotExist:
@@ -287,18 +319,26 @@ def expire_tournament_entry_deadlines(*, heartbeat):
         len(candidates), resolved, len(failed_ids), len(candidates) - resolved - len(failed_ids),
         int((time.perf_counter() - batch_started) * 1000),
     )
+    if bounded and continuation is None and stop_id is not None and potential_query.filter(pk__gt=cursor, pk__lte=stop_id).exists():
+        continuation = {'cursor': cursor, 'stop_id': stop_id}
     if failed_ids:
         # Successful fixtures remain committed, but this batch must retain its
         # attempts/error and retry instead of looking like a successful no-op.
-        raise RuntimeError(f'Tournament entry expiry failed for fixtures: {failed_ids}')
+        message = f'Tournament entry expiry failed for fixtures: {failed_ids}'
+        if bounded:
+            raise RetryTaskBatch(message, continuation or {})
+        raise RuntimeError(message)
+    if bounded:
+        return {'processed': resolved, 'continuation': continuation}
     return resolved
 
 
 HANDLERS = {
+    Task.NAME_RECONCILE_SEARCHES: reconcile_searches,
     Task.NAME_DELIVER_ADMIN_COMMAND: deliver_admin_command,
     Task.NAME_EXPIRE_UNSTARTED_GAMES: expire_unstarted_games,
-    Task.NAME_START_SCHEDULED_TOURNAMENTS: start_scheduled_tournaments,
-    Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES: expire_tournament_entry_deadlines,
+    Task.NAME_START_SCHEDULED_TOURNAMENTS: partial(start_scheduled_tournaments, bounded=True),
+    Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES: partial(expire_tournament_entry_deadlines, bounded=True),
 }
 
 
@@ -358,16 +398,18 @@ def _run_task_with_outcome(task_id):
     logger.debug('event=task_claimed task_id=%s task_name=%s attempt=%s', task.pk, task.name, task.attempts)
     try:
         handler = HANDLERS[task.name]
-        result = handler(
-            **task.kwargs,
-            heartbeat=lambda: refresh_lease(task_id, lease_token),
-        )
+        with task_ownership(owned):
+            result = handler(
+                **task.kwargs,
+                heartbeat=lambda: refresh_lease(task_id, lease_token),
+            )
         if result is False:
             raise RuntimeError('Task handler did not complete')
     except Exception as error:
         finished_at = timezone.now()
         retry_seconds = min(5 * 2 ** min(task.attempts - 1, 6), MAX_RETRY_SECONDS)
         retried = owned.update(
+            kwargs=error.checkpoint if isinstance(error, RetryTaskBatch) else task.kwargs,
             status=Task.STATUS_PENDING,
             run_at=finished_at + timedelta(seconds=retry_seconds),
             lease_token=None,
@@ -392,12 +434,11 @@ def _run_task_with_outcome(task_id):
         'last_finished_at': finished_at,
         'updated_at': finished_at,
     }
-    if task.name in (Task.NAME_EXPIRE_UNSTARTED_GAMES, Task.NAME_START_SCHEDULED_TOURNAMENTS, Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES):
-        changes.update(
-            status=Task.STATUS_PENDING,
-            run_at=finished_at + timedelta(seconds=EXPIRY_INTERVAL_SECONDS),
-            attempts=0,
-        )
+    if task.name in (Task.NAME_RECONCILE_SEARCHES, Task.NAME_EXPIRE_UNSTARTED_GAMES,
+                     Task.NAME_START_SCHEDULED_TOURNAMENTS, Task.NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES):
+        continuation = result.get('continuation') if isinstance(result, dict) else None
+        changes.update(status=Task.STATUS_PENDING, kwargs=continuation or {}, attempts=0,
+                       run_at=finished_at + timedelta(seconds=1 if continuation else EXPIRY_INTERVAL_SECONDS))
     completed = bool(owned.update(**changes))
     if not completed:
         logger.warning('event=task_lease_lost task_id=%s task_name=%s phase=completion', task.pk, task.name)

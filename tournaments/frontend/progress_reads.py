@@ -1,4 +1,6 @@
 """Serialize fixtures using one response's already loaded tournament state."""
+from django.utils.dateparse import parse_datetime
+
 from tournaments.models import Knockout
 
 
@@ -26,14 +28,21 @@ def serialize_fixture(fixture, snapshot, user, now, playability):
             if len(personal) != 1 or personal[0].pk != fixture.pk:
                 pair_ready = False
                 break
-    started_at = fixture.read_started_at or (
+    status_started_at = parse_datetime(live['started_at']) if isinstance(live, dict) and live.get('started_at') else None
+    started_at = status_started_at or fixture.read_started_at or (
         game_link.created_at if game_link and game_link.status in ('playing', 'completed') else None
     )
     ended_at = fixture.admin_resolved_at or (game_link.completed_at if game_link else None)
     last_activity_at = (game_link.live_updated_at if game_link else None) or started_at or fixture.created_at
+    if isinstance(live, dict) and 'event_revision' in live:
+        # A status transition says nothing about the latest accepted game action.
+        last_activity_at = None
     live_status = live.get('status') if isinstance(live, dict) else None
-    live_playing = bool(game_link and (game_link.status == 'playing' or live_status == 'playing'))
-    stalled = bool(live_playing and last_activity_at and (now - last_activity_at).total_seconds() >= 120)
+    live_playing = bool(game_link and game_link.status in ('pending', 'playing')
+                        and (game_link.status == 'playing' or live_status == 'playing'))
+    live_state = (live.get('state') or {}) if isinstance(live, dict) else {}
+    presence = live_state.get('presence') or {}
+    stalled = bool(not is_confirmed and live_playing and presence.get('needsAdminAdjudication'))
     if is_confirmed:
         operational_status = 'completed'
     elif fixture.score1 is not None or fixture.read_confirmation_count:
@@ -70,6 +79,7 @@ def serialize_fixture(fixture, snapshot, user, now, playability):
         'ready_at': fixture.created_at.isoformat(),
         'started_at': started_at.isoformat() if started_at else None,
         'last_activity_at': last_activity_at.isoformat() if last_activity_at else None,
+        'last_status_at': game_link.live_updated_at.isoformat() if game_link and game_link.live_updated_at else None,
         'ended_at': ended_at.isoformat() if ended_at else None,
         'duration_seconds': max(0, int(((ended_at or now) - started_at).total_seconds())) if started_at else None,
         'stalled': stalled, 'admin_resolution': fixture.admin_result,

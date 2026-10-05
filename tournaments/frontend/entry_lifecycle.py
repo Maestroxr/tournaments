@@ -1,14 +1,15 @@
 """One active direct game per player, with five-minute search/arrival deadlines."""
 import json
 import logging
-from decimal import Decimal
+import time
 from datetime import timedelta
 from urllib.request import Request, urlopen
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Q
 from django.utils import timezone
 from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransaction
+from .task_ownership import fence_task_ownership
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,39 @@ def remote_expiry(table):
         return json.load(response).get('status')
 
 
-def expire_unstarted_tables(user_id=None, heartbeat=None):
+def open_search_expired(table, now=None):
+    """Read-only admission check; cleanup and refunds are separate operations."""
+    now = now or timezone.now()
+    if table.created_at <= now - timedelta(seconds=ENTRY_WINDOW_SECONDS):
+        return True
+    last_seen = (table.settlement or {}).get('search_seen_at')
+    if type(last_seen) is not int:
+        last_seen = int(table.created_at.timestamp())
+    return (table.mode == HeadToHeadTable.MODE_MATCH or table.is_quick_match) and (
+        int(now.timestamp()) - last_seen >= SEARCH_PRESENCE_SECONDS)
+
+
+def _candidate_ids(tables, batch_size=50, *, cursor=0, stop_id=None):
+    """Keyset pages close each read cursor before taking a writer lock."""
+    last_id = stop_id if stop_id is not None else tables.order_by('-pk').values_list('pk', flat=True).first()
+    while last_id is not None:
+        ids = list(tables.filter(pk__gt=cursor, pk__lte=last_id).order_by('pk')
+                   .values_list('pk', flat=True)[:batch_size])
+        if not ids:
+            return
+        yield from ids
+        cursor = ids[-1]
+
+
+def expire_unstarted_tables(user_id=None, heartbeat=None, *, allow_remote=True,
+                            cursor=0, stop_id=None, max_items=None, max_seconds=None):
+    if max_items is not None and max_items < 1:
+        raise ValueError('max_items must be positive')
+    if max_seconds is not None and max_seconds <= 0:
+        raise ValueError('max_seconds must be positive')
+    bounded = max_items is not None or max_seconds is not None
+    batch_started = time.monotonic()
+    checked = 0
     now = timezone.now()
     now_ts = int(now.timestamp())
     open_cutoff = now - timedelta(seconds=ENTRY_WINDOW_SECONDS)
@@ -86,10 +119,19 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             Q(guest_id=user_id)
         )
 
-    ids = list(tables.values_list('pk', flat=True))
     failed_ids = []
-
-    for pk in ids:
+    stop_id = stop_id if stop_id is not None else tables.order_by('-pk').values_list('pk', flat=True).first()
+    continuation = None
+    for pk in _candidate_ids(tables, cursor=cursor, stop_id=stop_id):
+        # Finish the current item's remote request and transaction before
+        # yielding; never interrupt a refund halfway through. At most one
+        # bounded remote request can overrun this soft wall-time budget.
+        if ((max_items is not None and checked >= max_items)
+                or (max_seconds is not None and time.monotonic() - batch_started >= max_seconds)):
+            continuation = {'cursor': cursor, 'stop_id': stop_id}
+            break
+        cursor = pk
+        checked += 1
         if heartbeat is not None and not heartbeat():
             logger.warning('event=task_lease_lost handler=expire_unstarted_tables table_id=%s phase=before_item', pk)
             return False
@@ -126,6 +168,11 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
                 continue
         result = None
         if observed.status == 'playing' or observed.external_room_id:
+            if not allow_remote:
+                # Requests cannot decide whether a remote room already started.
+                # Keep its reservation and active-game guard until the worker
+                # receives an authoritative response; never refund speculatively.
+                continue
             try:
                 result = remote_expiry(observed)
             except Exception:
@@ -140,6 +187,7 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             if result == 'started':
                 with transaction.atomic():
                     current = HeadToHeadTable.objects.select_for_update().get(pk=pk)
+                    fence_task_ownership()
                     current.settlement = {
                         **(current.settlement or {}), 'entry_confirmed': True}
                     current.save(update_fields=['settlement'])
@@ -150,6 +198,7 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
         with transaction.atomic():
             DirectPlaySettings.objects.select_for_update().get(pk=1)
             table = HeadToHeadTable.objects.select_for_update().get(pk=pk)
+            fence_task_ownership()
             if table.status not in ACTIVE:
                 continue
             if table.status != observed.status or table.external_room_id != observed.external_room_id:
@@ -162,14 +211,8 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             players = list(User.objects.select_for_update().filter(
                 pk__in=[table.host_id, table.guest_id]).order_by('pk'))
             for player in players:
-                net = table.wallet_transactions.filter(user=player).filter(
-                    Q(amount__lt=0) | Q(
-                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND)
-                ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                if net < 0:
-                    WalletTransaction.create_entry(user=player, amount=-net,
-                                                   kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-                                                   head_to_head_table=table, note=f'Entry deadline expired: {table.code}')
+                WalletTransaction.refund_entry_fees(
+                    user=player, head_to_head_table=table, note=f'Entry deadline expired: {table.code}')
             table.status = 'cancelled'
             table.completed_at = timezone.now()
             table.settlement = {**(table.settlement or {}),
@@ -182,4 +225,8 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             ))
     if failed_ids:
         raise RuntimeError(f'Direct game entry expiry failed for tables: {failed_ids}')
+    if bounded:
+        logger.debug('event=direct_entry_expiry_batch checked=%s continuation=%s duration_ms=%s',
+                     checked, bool(continuation), int((time.monotonic() - batch_started) * 1000))
+        return {'checked': checked, 'continuation': continuation}
     return True

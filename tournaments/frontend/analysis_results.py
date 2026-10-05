@@ -1,6 +1,8 @@
 """Session-authenticated bridge to the analysis service."""
 import json
 import os
+import logging
+import time
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -12,6 +14,24 @@ from django.views.decorators.http import require_http_methods
 
 from gamelink.models import GameLink, PracticePurchase
 from tournaments.models import HeadToHeadTable
+
+logger = logging.getLogger(__name__)
+_unavailable_until = {}
+
+
+class AnalysisUnavailable(ValueError):
+    def __init__(self, reason, *, retryable=True):
+        self.reason = reason
+        self.retryable = retryable
+        super().__init__('Analysis service unavailable.')
+
+
+def unavailable_response(reason='analysis_service_unavailable', *, retryable=True):
+    response = JsonResponse({'detail': 'Analysis service unavailable.',
+                             'code': reason, 'retryable': retryable}, status=503)
+    response['Retry-After'] = '30'
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 def allowed_rooms(user):
@@ -28,13 +48,29 @@ def read_results(path, params=None, *, payload=None):
     token = getattr(settings, "ANALYSIS_API_TOKEN", "") or os.environ.get("ANALYSIS_API_TOKEN", "")
     base = getattr(settings, "ANALYSIS_SERVICE_URL", "") or os.environ.get("ANALYSIS_SERVICE_URL", "http://127.0.0.1:8002")
     if not token:
-        raise ValueError("Analysis connection is not configured.")
+        raise AnalysisUnavailable('analysis_not_configured', retryable=False)
+    if time.monotonic() < _unavailable_until.get(base, 0):
+        raise AnalysisUnavailable('analysis_service_cooldown')
     url = f"{base.rstrip('/')}/api/v1/internal/results/{path}"
     if params:
         url += "?" + urlencode(params)
     body = json.dumps(payload).encode() if payload is not None else None
-    with urlopen(Request(url, data=body, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}), timeout=15) as response:
-        return json.load(response)
+    started = time.monotonic()
+    try:
+        with urlopen(Request(url, data=body, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}),
+                     timeout=getattr(settings, 'ANALYSIS_READ_TIMEOUT_SECONDS', 3)) as response:
+            result = json.load(response)
+        _unavailable_until.pop(base, None)
+        return result
+    except HTTPError as exc:
+        if exc.code >= 500 or exc.code == 429:
+            _unavailable_until[base] = time.monotonic() + 30
+        raise
+    except (URLError, TimeoutError, OSError):
+        _unavailable_until[base] = time.monotonic() + 30
+        logger.warning('event=analysis_provider_unavailable duration_ms=%s',
+                       round((time.monotonic() - started) * 1000, 1))
+        raise
 
 
 @require_http_methods(["GET", "POST"])
@@ -70,12 +106,14 @@ def analysis_results(request, analysis_id=None):
             # Defense in depth: never forward an unrelated match to a player.
             if not request.user.is_staff or room:
                 data["matches"] = [m for m in data["matches"] if m.get("room_id") in rooms]
+    except AnalysisUnavailable as exc:
+        return unavailable_response(exc.reason, retryable=exc.retryable)
     except HTTPError as exc:
         if exc.code == 409:
             return JsonResponse({"detail": "Analysis is already queued or processing."}, status=409)
-        return JsonResponse({"detail": "Analysis not found." if exc.code == 404 else "Analysis service unavailable."}, status=404 if exc.code == 404 else 503)
+        return JsonResponse({'detail': 'Analysis not found.'}, status=404) if exc.code == 404 else unavailable_response()
     except (URLError, TimeoutError, ValueError, OSError):
-        return JsonResponse({"detail": "Analysis service unavailable."}, status=503)
+        return unavailable_response()
     response = JsonResponse(data, status=202 if payload is not None else 200)
     response["Cache-Control"] = "private, no-store"
     return response

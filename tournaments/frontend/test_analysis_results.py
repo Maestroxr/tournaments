@@ -5,6 +5,35 @@ from django.test import SimpleTestCase, RequestFactory, TestCase
 from .analysis_results import analysis_results
 
 
+class AnalysisAvailabilityTests(SimpleTestCase):
+    def test_missing_configuration_stops_automatic_polling(self):
+        from .analysis_results import AnalysisUnavailable
+        request = RequestFactory().get('/api/analyses', {'room': 'mine'})
+        request.user = SimpleNamespace(is_authenticated=True, is_staff=False)
+        with patch('frontend.analysis_results.allowed_rooms', return_value={'mine'}), patch(
+                'frontend.analysis_results.read_results', side_effect=AnalysisUnavailable('analysis_not_configured', retryable=False)):
+            response = analysis_results(request)
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(json.loads(response.content)['retryable'])
+        self.assertEqual(response['Retry-After'], '30')
+
+    def test_provider_failure_opens_short_circuit_without_caching_private_data(self):
+        from urllib.error import URLError
+        from django.test import override_settings
+        from .analysis_results import AnalysisUnavailable, read_results, _unavailable_until
+        _unavailable_until.clear()
+        try:
+            with override_settings(ANALYSIS_API_TOKEN='isolated-token', ANALYSIS_SERVICE_URL='http://analysis.invalid'), patch(
+                    'frontend.analysis_results.urlopen', side_effect=URLError('offline')) as remote:
+                with self.assertRaises(URLError):
+                    read_results('', [('room', 'one')])
+                with self.assertRaises(AnalysisUnavailable):
+                    read_results('', [('room', 'two')])
+                self.assertEqual(remote.call_count, 1)
+        finally:
+            _unavailable_until.clear()
+
+
 class PracticeAnalysisOwnershipTests(TestCase):
     def test_only_own_prepared_ai_rooms_are_visible(self):
         import uuid

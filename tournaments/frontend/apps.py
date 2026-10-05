@@ -7,3 +7,4 @@ class FrontendConfig(AppConfig):
 
     def ready(self):
         from . import checks  # noqa: F401
+        from . import lobby_events  # noqa: F401

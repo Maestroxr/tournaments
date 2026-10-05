@@ -64,6 +64,7 @@ const hint = computed(() => {
   if (props.fixture.score1 != null || props.fixture.score2 != null)
     return 'matchDetails.confirmingHint'
   if (!props.fixture.player1 || !props.fixture.player2) return 'matchDetails.waitingPlayers'
+  if (props.fixture.live?.state.presence?.needsAdminAdjudication) return 'controlRoom.adminRequired'
   if (props.fixture.live?.status === 'playing') return 'matchDetails.playingHint'
   if (!props.fixture.editable) return 'matchDetails.waitingRound'
   return 'matchDetails.waitingStart'

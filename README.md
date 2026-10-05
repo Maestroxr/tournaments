@@ -20,6 +20,74 @@ Each backend owns its background work. Tournament `run_tasks` executes due datab
 
 The exact routes, models and pending migrations in the checked-out code determine behavior. Financial values come from the database/catalog, not old planning documents. [Direct formats](GAME_FORMATS.md), [rating](docs/RATING_POLICY.he.md), [admin UI](admin-frontend/README.md), [deployment](DEPLOY_GAME_AND_CLUB.he.md), [documentation index](../docs/README.md).
 
+## Local PostgreSQL (empty database)
+
+PostgreSQL is opt-in for `tournaments.settings.development` only. The setup creates
+a separate database and login and applies Django migrations. It does not import
+or delete SQLite data. `--isolated` uses installed PostgreSQL binaries to create
+a project-owned server on `127.0.0.1:55432`, independent of the Windows service.
+
+From this repository in PowerShell:
+
+```powershell
+& .\venv\Scripts\python.exe -m pip install psycopg2-binary==2.9.11
+& .\venv\Scripts\python.exe .\deploy\setup_local_postgresql.py --isolated
+```
+
+The isolated setup generates administrator and application passwords privately.
+Omit `--isolated` to use an existing server; this prompts for its administrator password.
+The application login has access to its database and can create disposable
+Django test databases; it is not a superuser. Credentials are saved only in the
+ignored `.env.postgresql.local`. Restart the local server and all its workers
+after setup. The existing `startServersBackgamon.ps1` uses development settings
+and therefore loads this configuration too. It also starts the isolated server
+when its data directory exists. Start it independently with:
+
+```powershell
+& .\venv\Scripts\python.exe .\deploy\setup_local_postgresql.py --isolated --start-only
+```
+
+Local PostgreSQL uses SCRAM password authentication and keeps `fsync`,
+`synchronous_commit` and `full_page_writes` enabled. Django uses
+a generated local secret and loopback allowed hosts. The data directory and
+administrator password are in ignored `.local-postgresql/`. This is a durable
+local database, not a Windows service. The local HTTP/Vite development launcher
+does not reproduce production HTTPS, Nginx or frontend builds.
+
+To stop only this project-owned server (from the repository root):
+
+```powershell
+& 'C:\Program Files\PostgreSQL\18\bin\pg_ctl.exe' -D .\.local-postgresql\data -m fast -w stop
+```
+
+The existing PostgreSQL Windows service on port 5432 is separate and unchanged.
+
+For a local production-like HTTP profile, use
+`--settings=tournaments.settings.local_production`. This requires real local
+HTTPS endpoints in `TOURNAMENTS_LOCAL_FRONTEND_URL` and
+`TOURNAMENTS_LOCAL_GAME_URL`; it enables `DEBUG=False`, secure cookies and HTTPS
+redirects. The existing HTTP launcher keeps development settings/DEBUG enabled
+until HTTPS is configured. No system checks are silenced or skipped.
+
+Use `--port`, `--admin-user`, `--database` and `--role` for a different local
+installation. Re-running with the same configuration only applies migrations;
+existing unrecognized databases/roles are never overwritten. To return to SQLite,
+set `TOURNAMENTS_LOCAL_DATABASE=sqlite` in the private configuration and restart.
+SQLite contains the previous data, not changes made after switching to PostgreSQL.
+Production settings do not load this local file.
+
+User-run verification, from `tournaments/`:
+
+```powershell
+& ..\venv\Scripts\python.exe manage.py check
+& ..\venv\Scripts\python.exe manage.py test frontend.test_game_formats frontend.test_entry_lifecycle frontend.test_search_lifecycle frontend.test_tasks gamelink.test_status_events
+& ..\venv\Scripts\python.exe manage.py createsuperuser
+```
+
+The test command exercises gameplay admission, reservations/refunds and tasks
+against PostgreSQL. Existing SQLite-specific concurrency tests remain checks of
+the SQLite backend rather than PostgreSQL acceptance tests.
+
 ## Business model and legal review
 
 The proposed subscription, tournament, prize, Coins, and existing-wallet transition rules are documented in [the Hebrew business and legal rules draft](BUSINESS_AND_LEGAL_RULES.he.md). Company-funded prizes and free entry do not by themselves establish legality. The new model must not launch payments or prizes before the required Israeli legal and accounting reviews and implementation checks are completed. The draft is not a professional approval or an implemented runtime restriction.

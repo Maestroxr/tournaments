@@ -763,14 +763,13 @@ class DirectPlaySettings(models.Model):
 
     def save(self, *args, **kwargs):
         self.pk = 1
-        # Serialize profile publication with matchmaking. Retire incompatible
-        # unmatched searches and release their reserves in the same transaction.
+        # Matchmaking reads these settings under the same lock. Publish rules
+        # immediately; durable bounded cleanup releases old reserves later.
         with transaction.atomic():
             type(self).objects.select_for_update().filter(pk=1).first()
             result = super().save(*args, **kwargs)
-            from frontend.search_lifecycle import reconcile_searches
-            effective = type(self).objects.get(pk=1)
-            reconcile_searches(effective)
+            from frontend.tasks import schedule_search_reconciliation
+            schedule_search_reconciliation(wake=True)
             return result
 
     def delete(self, *args, **kwargs):
@@ -901,6 +900,14 @@ class WalletTransaction(models.Model):
         constraints = [
             CheckConstraint(check=~Q(amount=Decimal("0")),
                             name="wallet_transaction_amount_not_zero"),
+            models.UniqueConstraint(
+                fields=['tournament'], condition=Q(kind='tournament_prize'),
+                name='wallet_one_tournament_prize',
+            ),
+            models.UniqueConstraint(
+                fields=['head_to_head_table'], condition=Q(kind='head_to_head_prize'),
+                name='wallet_one_table_prize',
+            ),
         ]
 
     def __str__(self):
@@ -915,10 +922,25 @@ class WalletTransaction(models.Model):
     @staticmethod
     @transaction.atomic
     def create_entry(*, user, amount, kind, tournament=None, head_to_head_table=None, actor=None, note=""):
-        User.objects.select_for_update().get(pk=user.pk)
         amount = Decimal(str(amount)).quantize(Decimal("0.01"))
         if amount == 0:
             raise ValidationError("Amount cannot be zero.")
+        prize_scope = None
+        if kind == WalletTransaction.KIND_TOURNAMENT_PRIZE and tournament is not None:
+            Tournament.objects.select_for_update().get(pk=tournament.pk)
+            prize_scope = {'tournament_id': tournament.pk}
+        elif kind == WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE and head_to_head_table is not None:
+            HeadToHeadTable.objects.select_for_update().get(pk=head_to_head_table.pk)
+            prize_scope = {'head_to_head_table_id': head_to_head_table.pk}
+        # Parent -> wallet is the same order as cancellation and settlement.
+        User.objects.select_for_update().get(pk=user.pk)
+        if prize_scope is not None:
+            existing = WalletTransaction.objects.filter(kind=kind, **prize_scope).first()
+            if existing is not None:
+                if existing.user_id != user.pk or existing.amount != amount:
+                    raise ValidationError('A different prize has already been recorded.')
+                logger.info('event=wallet_prize_replayed transaction_id=%s kind=%s', existing.pk, kind)
+                return existing
         current_balance = WalletTransaction.balance_for_user(user)
         new_balance = current_balance + amount
         if new_balance < 0:
@@ -932,6 +954,41 @@ class WalletTransaction(models.Model):
             amount=amount,
             balance_after=new_balance,
             note=note,
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def refund_entry_fees(*, user, tournament=None, head_to_head_table=None, actor=None, note=""):
+        """Release only the unpaid ledger remainder, under parent and wallet locks.
+
+        A new paid registration can be refunded again; a repeated cancellation
+        cannot. Do not use this for game settlement, which releases a calculated
+        portion of the reserve rather than cancelling the entry fee.
+        """
+        if (tournament is None) == (head_to_head_table is None):
+            raise ValueError('A refund requires exactly one tournament or table.')
+        if tournament is not None:
+            Tournament.objects.select_for_update().get(pk=tournament.pk)
+            scope = {'tournament_id': tournament.pk}
+            entry_kinds = (WalletTransaction.KIND_TOURNAMENT_ENTRY,)
+            refund_kind = WalletTransaction.KIND_TOURNAMENT_REFUND
+        else:
+            table = HeadToHeadTable.objects.select_for_update().get(pk=head_to_head_table.pk)
+            if table.status == HeadToHeadTable.STATUS_COMPLETED:
+                raise ValidationError('A completed game cannot be refunded as a cancelled entry.')
+            scope = {'head_to_head_table_id': head_to_head_table.pk}
+            entry_kinds = (WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, WalletTransaction.KIND_FRIEND_GAME_FEE)
+            refund_kind = WalletTransaction.KIND_HEAD_TO_HEAD_REFUND
+        User.objects.select_for_update().get(pk=user.pk)
+        net = WalletTransaction.objects.filter(
+            user_id=user.pk, kind__in=(*entry_kinds, refund_kind), **scope,
+        ).aggregate(total=models.Sum('amount'))['total'] or Decimal('0.00')
+        if net >= 0:
+            logger.debug('event=wallet_refund_skipped user_id=%s scope=%s reason=no_reserve', user.pk, scope)
+            return None
+        return WalletTransaction.create_entry(
+            user=user, amount=-net, kind=refund_kind, tournament=tournament,
+            head_to_head_table=head_to_head_table, actor=actor, note=note,
         )
 
 

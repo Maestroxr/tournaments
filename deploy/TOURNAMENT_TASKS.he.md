@@ -167,3 +167,83 @@ cd /home/dev/backgammon-tournaments-backend/tournaments
   sudo systemctl enable --now backgammon-admin-commands.timer backgammon-expire-games.timer
 )
 ```
+
+## אירועי מצב משחק במקום שידור אחרי כל פעולה
+
+שרת המשחק שומר בתור Task הקיים רק אירוע התחלה ושינוי הדרישה לטיפול מנהל.
+שמירת האירוע נעשית באותה טרנזקציה שבה משתנה החדר; אין פנייה לשרת הטורנירים
+מתוך הטרנזקציה או אחרי כל מהלך וחיבור מחדש. מסירת תוצאות נשארת במסלול ה־outbox הקיים.
+
+המשימה `game.link.live.deliver_status_event` מכילה גוף קבוע, `event_id` קבוע
+ו־`event_revision` עולה לכל חדר. ניסיון חוזר שולח את אותו הגוף עם nonce חדש.
+המקבל מאשר את מזהה האירוע ומתעלם מכפילויות ומאירועים ישנים, גם כשמספר פעולות
+המשחק לא השתנה. משימות snapshot ישנות עדיין ניתנות להרצה, אך אינן דורסות אירוע
+מצב חדש. כשל זמני מתוזמן שוב בהשהיה גדלה; סירוב קבוע נשמר כ־`blocked` לבדיקה.
+
+מסך המנהל מציג מצב משחק ודרישה מפורשת לטיפול מנהל. שקט של 120 שניות אינו
+מסמן משחק כתקוע, ונתוני ניקוד, קובייה ותור שבאירוע אינם מוצגים כנתונים חיים.
+זמן תחילת המשחק מגיע מהאירוע; זמן קבלתו אינו מוצג כזמן פעולה אחרונה.
+
+סדר העדכון: קודם שרת הטורנירים ומסך המנהל, שמקבלים גם snapshots ישנים; אחר כך
+שרת המשחק וה־worker שלו. בשרת המשחק נוספה המיגרציה
+`game.0019_tournamentlink_status_events`. לפני הפעלת הקוד יש לגבות את המסד ולבדוק
+את רשימת המיגרציות הממתינות בסביבה ובמשתמש של השירות, ואז להריץ `manage.py migrate`.
+אין צורך במיגרציה חדשה בשרת הטורנירים עבור אירועי המצב.
+worker המשחק הקיים חייב לפעול; תדירות הפעלתו משפיעה על זמן הגעת האירוע.
+חדר שכבר התחיל לפני העדכון אינו מקבל אירוע התחלה בדיעבד.
+
+פקודות הבדיקה להרצה בסביבת Python תקינה של כל שרת, עם הגדרות GameLink תקינות
+(כולל כתובת משחק HTTPS בשרת הטורנירים):
+
+```powershell
+Set-Location 'C:\Users\User\Desktop\projects\backgammon\Backgammon Game\backend'
+python manage.py test game.link.test_status_events game.link.test_live_snapshot_consistency game.link.tests game.tests.integration.test_presence game.tests.gameplay.test_turn_intents
+
+Set-Location 'C:\Users\User\Desktop\projects\backgammon\backgammon-tournaments-backend\tournaments'
+python manage.py test gamelink.test_status_events gamelink.tests.LiveSnapshotCallbackViewTest gamelink.tests.DirectPlayLiveSnapshotTest gamelink.test_entry_admission frontend.test_control_room frontend.test_match_administration
+
+Set-Location 'C:\Users\User\Desktop\projects\backgammon\backgammon-tournaments-backend\admin-frontend'
+pnpm exec vitest run src/services/tournamentStatusEvents.spec.ts src/pages/TournamentProgressView.spec.ts src/components/TournamentFixtureCard.spec.ts src/components/tournament/TournamentMatchDialog.spec.ts
+pnpm run build
+```
+
+יש לבדוק גם במובייל שמשחק שקט נשאר פעיל, שהיעדרות שמחייבת מנהל מופיעה באזור
+הטיפול, ושמסירת תוצאה מסיימת את המשחק ואינה נדרסת בידי אירוע מצב מאוחר.
+הפקודות והמיגרציה שבסעיף זה לא הורצו במהלך השינוי המקומי.
+
+## התאמת נעילות ל־PostgreSQL
+
+מסלולי הכניסה לטורניר והגשת התוצאה נועלים במפורש את רשומת הטורניר ואת
+רשומת המשחק. קשרים ליוצר, לשחקנים ולחשבונות שיכולים להיות ריקים נקראים
+באמצעות `select_related`, אך אינם נכללים ב־`FOR UPDATE`. גם קליטת תוצאה
+במשחק ישיר נועלת תחילה רק את השולחן; נעילת החשבונות לצורך עדכון יתרות
+ודירוגים נשארת במסלול הסליקה הקיים. השינוי מונע שגיאת PostgreSQL של נעילת
+הצד הריק של `OUTER JOIN` ונעילות נוספות על רשומות שנקראות בלבד.
+
+בשרת המשחק פקודות המנהל ופקודת `cancel_linked_rooms` משתמשות ב־
+`game.link.locking.lock_linked_room`: קודם נעילת החדר ורק אחריה נעילת הקישור.
+כל נעילה של מצב המשחק באותו מסלול מתבצעת אחרי נעילת החדר. הקישור נבדק שוב
+תחת הנעילה, כך שקישור שנמחק או הועבר בזמן ההמתנה אינו משמש לביצוע הפקודה.
+ביטול החדרים עדיין דורש `--execute`; אין לבצע את הפקודה לצורך בדיקת המעבר.
+
+השינוי הזה אינו מוסיף מיגרציה. מיגרציות קודמות, כולל אירועי המצב, עדיין
+נדרשות במסד היעד. הגדרות החיבור ל־PostgreSQL חייבות להיות זהות עבור ה־API,
+ה־WebSocket וה־worker של אותו שרת. מנגנון `BEGIN IMMEDIATE` שייך ל־SQLite
+ואינו מופעל כשה־ENGINE הוא `django.db.backends.postgresql`.
+
+בדיקות המקביליות החדשות משתמשות ב־`TransactionTestCase` ובחיבורים נפרדים.
+הן מסומנות לדילוג ב־SQLite; הרצה עם דילוג אינה מאמתת את המעבר ל־PostgreSQL.
+בדוק תחילה את ה־ENGINE בסביבת השירות, ללא הצגת פרטי החיבור או סודות, ואז הרץ
+את הבדיקות במסד הבדיקות של Django:
+
+```powershell
+Set-Location 'C:\Users\User\Desktop\projects\backgammon\Backgammon Game\backend'
+python manage.py shell -c "from django.conf import settings; print(settings.DATABASES['default']['ENGINE'])"
+python manage.py test game.link.test_postgresql_locking game.link.tests.AdminCommandTests game.link.tests.CancelLinkedRoomsCommandTests game.link.test_status_events
+
+Set-Location 'C:\Users\User\Desktop\projects\backgammon\backgammon-tournaments-backend\tournaments'
+python manage.py shell -c "from django.conf import settings; print(settings.DATABASES['default']['ENGINE'])"
+python manage.py test gamelink.test_postgresql_locking gamelink.test_entry_admission gamelink.test_status_events frontend.tests.ApiTournamentProgressPermissionTests frontend.test_match_administration
+```
+
+לא הורצו בדיקות, מיגרציות או פעולות על מסד PostgreSQL במסגרת התאמת הקוד הזאת.

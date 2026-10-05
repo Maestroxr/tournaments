@@ -9,6 +9,48 @@ from frontend.entry_lifecycle import expire_unstarted_tables, mark_entry_ready, 
 
 
 class EntryLifecycleTests(TestCase):
+    def test_cleanup_budget_visits_later_rows_without_reprocessing_first_page(self):
+        # Fresh rows also consume the scan budget: otherwise a large lobby
+        # could keep a worker scanning forever even when nothing expires.
+        tables = [HeadToHeadTable.objects.create(
+            code=f'PAGE{i:02}', host=self.user, mode='match', amount=100,
+            fee_percent=5, fee_per_player=5,
+        ) for i in range(5)]
+        page = expire_unstarted_tables(max_items=2)
+        self.assertEqual(page['checked'], 2)
+        self.assertEqual(page['continuation']['cursor'], tables[1].pk)
+        stop = page['continuation']['stop_id']
+        # A new row joins the next cycle, rather than extending this scan.
+        HeadToHeadTable.objects.create(code='LATER1', host=self.user, mode='match', amount=100,
+                                       fee_percent=5, fee_per_player=5)
+        second = expire_unstarted_tables(max_items=2, **page['continuation'])
+        self.assertEqual(second['continuation'], {'cursor': tables[3].pk, 'stop_id': stop})
+        last = expire_unstarted_tables(max_items=2, **second['continuation'])
+        self.assertEqual(last, {'checked': 1, 'continuation': None})
+
+    def test_request_cleanup_defers_remote_room_without_refunding(self):
+        table = self.old_table(status='playing')
+        table.external_room_id = 'remote-room'
+        table.save(update_fields=['external_room_id'])
+        balance = WalletTransaction.balance_for_user(self.user)
+        with patch('frontend.entry_lifecycle.remote_expiry') as remote:
+            self.assertTrue(expire_unstarted_tables(user_id=self.user.pk, allow_remote=False))
+        remote.assert_not_called()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'playing')
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), balance)
+
+    def test_join_refuses_expired_other_players_search_without_charging(self):
+        table = self.old_table()
+        guest = User.objects.create_user('expired-search-guest')
+        WalletTransaction.create_entry(user=guest, amount=10000, kind=WalletTransaction.KIND_DEPOSIT)
+        self.client.force_login(guest)
+        response = self.client.post(f'/api/head-to-head/tables/{table.code}/join', {}, content_type='application/json')
+        self.assertEqual(response.status_code, 409, response.content)
+        table.refresh_from_db()
+        self.assertIsNone(table.guest_id)
+        self.assertEqual(WalletTransaction.balance_for_user(guest), 10000)
+
     def setUp(self):
         DirectPlaySettings.load()
         self.user = User.objects.create_user('entry-host')

@@ -5,6 +5,32 @@ from django.db.models import Q
 from tournaments.models import Fixture, Tournament
 
 
+class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
+    """One authenticated stream for both shared caches, without private payloads."""
+
+    async def connect(self):
+        from frontend.lobby_events import TABLE_GROUP, TOURNAMENT_GROUP, user_group
+
+        user = self.scope.get('user')
+        if user is None or not user.is_authenticated:
+            await self.close(code=4401)
+            return
+        self.groups_to_join = (TOURNAMENT_GROUP, TABLE_GROUP, user_group(user.pk))
+        for group in self.groups_to_join:
+            await self.channel_layer.group_add(group, self.channel_name)
+        await self.accept()
+        # This acknowledgement follows group registration. A refresh begun
+        # here closes the initial-load/reconnect gap without polling.
+        await self.send_json({'type': 'connected'})
+
+    async def disconnect(self, close_code):
+        for group in getattr(self, 'groups_to_join', ()):
+            await self.channel_layer.group_discard(group, self.channel_name)
+
+    async def club_invalidate(self, event):
+        await self.send_json({'type': 'invalidate', 'resource': event['resource']})
+
+
 @database_sync_to_async
 def _player_fixture_for_tournament(user_id, tournament_id):
     try:

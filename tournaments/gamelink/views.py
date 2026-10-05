@@ -36,6 +36,7 @@ from channels.layers import get_channel_layer
 from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, RatingResult, Tournament, WalletTransaction
 
 from .models import DirectPlayRematch, GameLink, IssuedTicket, SeenNonce
+from .status_events import should_record_snapshot, snapshot_response, validate_status_event
 from .playability import earliest_unresolved_fixtures, personally_ready_fixture_ids
 from .signing import SEATS, issue_direct_play_ticket, issue_ticket, verify_result_signature
 
@@ -412,7 +413,9 @@ def _resolve_current_fixture(request, pk):
     if len(current) != 1:
         reason = 'current_fixture_not_found' if not current else 'ambiguous_current_fixtures'
         return tournament, None, None, (412, reason, [fixture.pk for fixture in current])
-    fixture = Fixture.objects.select_for_update().select_related(
+    # Players/accounts are nullable joins. Lock only the fixture; the
+    # tournament was locked above, and the joined rows are read-only here.
+    fixture = Fixture.objects.select_for_update(of=('self',)).select_related(
         'mode__tournament', 'player1__user', 'player2__user',
     ).get(pk=current[0].pk)
     seat, refusal, reason = _check_playability(request.user, fixture)
@@ -1384,7 +1387,10 @@ class ResultCallbackView(View):
         """Settle a versioned contract, retaining fee-only settlement for legacy friend tables."""
         with transaction.atomic():
             try:
+                # The guest is a nullable join. Accounts are locked separately
+                # in settlement order when their balances/ratings are changed.
                 table = HeadToHeadTable.objects.select_for_update(
+                    of=('self',),
                 ).select_related('host', 'guest').get(pk=table_id)
             except HeadToHeadTable.DoesNotExist:
                 return _reject(request, 404, 'no direct-play table for this result', fixture_id=-table_id)
@@ -1422,15 +1428,10 @@ class ResultCallbackView(View):
                         return _reject(request, 409, 'direct-play table is not funded', fixture_id=-table_id)
             table.external_room_id = body['room_id']
             if body['status'] == STATUS_CANCELLED:
-                for charge in table.wallet_transactions.filter(amount__lt=0).select_related('user'):
-                    if not table.wallet_transactions.filter(
-                        user=charge.user, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-                    ).exists():
-                        WalletTransaction.create_entry(
-                            user=charge.user, amount=-charge.amount,
-                            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-                            head_to_head_table=table, note=f'Cancelled table {table.code}',
-                        )
+                for player in User.objects.filter(pk__in=[table.host_id, table.guest_id]).order_by('pk'):
+                    WalletTransaction.refund_entry_fees(
+                        user=player, head_to_head_table=table, note=f'Cancelled table {table.code}',
+                    )
                 table.status = HeadToHeadTable.STATUS_CANCELLED
                 table.save(update_fields=[
                            'external_room_id', 'status', 'updated_at'])
@@ -1580,6 +1581,7 @@ class LiveSnapshotCallbackView(View):
                     or sequence < 0 or not isinstance(body.get('state'), dict)
                     or body.get('status') not in ('waiting', 'playing', 'completed', 'cancelled')):
                 raise ValueError
+            validate_status_event(body)
         except (KeyError, TypeError, ValueError, UnicodeDecodeError):
             return _reject(request, 400, 'invalid live snapshot')
         try:
@@ -1602,19 +1604,19 @@ class LiveSnapshotCallbackView(View):
                 if link.status not in OPEN_LINK_STATUSES or link.fixture.is_confirmed:
                     _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
                                  link=link, reason='terminal_fixture')
-                    return JsonResponse({'status': 'already_recorded'})
+                    return snapshot_response(body, 'already_recorded')
                 if (link.live_snapshot or {}).get('status') in ('completed', 'cancelled'):
                     _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
                                  link=link, reason='terminal_room_snapshot')
-                    return JsonResponse({'status': 'already_recorded'})
+                    return snapshot_response(body, 'already_recorded')
                 if link.entry_authorized_at and not link.entry_authorized_for(link.fixture):
                     return _reject(request, 409, 'entry pairing changed', fixture_id=fixture_id)
                 if link.status == 'playing' and body['status'] == 'waiting':
                     _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
                                  link=link, reason='status_regression')
-                    return JsonResponse({'status': 'already_recorded'})
+                    return snapshot_response(body, 'already_recorded')
                 previous = (link.live_snapshot or {}).get('sequence', -1)
-                if sequence >= previous and body != link.live_snapshot:
+                if should_record_snapshot(body, link.live_snapshot, allow_equal_sequence=True):
                     link.live_snapshot = body
                     link.live_updated_at = timezone.now()
                     link.external_room_id = room_id
@@ -1627,9 +1629,17 @@ class LiveSnapshotCallbackView(View):
                               'live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
                     if body.get('status') == 'playing' and not FixtureAudit.objects.filter(fixture_id=fixture_id, action='live_started').exists():
                         FixtureAudit.objects.create(
-                            fixture_id=fixture_id, action='live_started')
+                            fixture_id=fixture_id, action='live_started',
+                            after={'started_at': body.get('started_at')})
+                    if body.get('event_type') in ('admin_required', 'admin_cleared'):
+                        FixtureAudit.objects.create(
+                            fixture_id=fixture_id, action=f"live_{body['event_type']}",
+                            after={'event_id': body['event_id'], 'event_revision': body['event_revision']},
+                        )
                     transaction.on_commit(lambda: _broadcast_live_snapshot(
                         tournament_id, fixture_id, body))
+                elif 'event_revision' in body:
+                    return snapshot_response(body, 'already_recorded')
                 elif sequence < previous:
                     logger.info(
                         'event=snapshot_ignored request_id=%s tournament_id=%s fixture_id=%s '
@@ -1641,7 +1651,7 @@ class LiveSnapshotCallbackView(View):
             return _reject(request, 401, 'nonce has been seen before')
         except (GameLink.DoesNotExist, Fixture.DoesNotExist):
             return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
-        return JsonResponse({'status': 'recorded'})
+        return snapshot_response(body, 'recorded')
 
     def _record_direct_play(self, request, table_id, body):
         """Called inside the authenticated snapshot transaction, including nonce storage."""
@@ -1655,11 +1665,10 @@ class LiveSnapshotCallbackView(View):
             return _reject(request, 409, 'room mismatch for direct-play table', fixture_id=-table_id)
         # A delayed snapshot must never reopen a settled table or replace its last live state.
         if table.status in (HeadToHeadTable.STATUS_COMPLETED, HeadToHeadTable.STATUS_CANCELLED):
-            return JsonResponse({'status': 'already_recorded'})
+            return snapshot_response(body, 'already_recorded')
         if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING) or not table.guest_id:
             return _reject(request, 409, 'direct-play table is not ready', fixture_id=-table_id)
-        previous = (table.live_snapshot or {}).get('sequence', -1)
-        if body['sequence'] > previous:
+        if should_record_snapshot(body, table.live_snapshot):
             table.live_snapshot = body
             table.live_updated_at = timezone.now()
             table.external_room_id = body['room_id']
@@ -1667,7 +1676,9 @@ class LiveSnapshotCallbackView(View):
             table.save(update_fields=[
                 'live_snapshot', 'live_updated_at', 'external_room_id', 'status', 'updated_at',
             ])
-        return JsonResponse({'status': 'recorded'})
+        elif 'event_revision' in body:
+            return snapshot_response(body, 'already_recorded')
+        return snapshot_response(body, 'recorded')
 
 
 def _validate_result(body):

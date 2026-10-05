@@ -18,6 +18,11 @@ def money(value):
     return Decimal(str(value)).quantize(Decimal('0.01'))
 
 
+def _snapshot_eq(a, b):
+    return {k: v for k, v in (a or {}).items() if not str(k).startswith('dynamic_')} == {
+        k: v for k, v in (b or {}).items() if not str(k).startswith('dynamic_')}
+
+
 def required_reserve(table, amount=None):
     stake = money(table.amount if amount is None else amount)
 
@@ -373,13 +378,21 @@ def create_or_match(request, *, quick=False, match_search=False):
         # Finish upgrade cleanup before taking matchmaking's user locks. Keeping
         # cleanup locks while acquiring a different pair can invert wallet order.
         from .search_lifecycle import reconcile_searches_locked
-        reconcile_searches_locked()
-        from .entry_lifecycle import expire_unstarted_tables, active_table
-        expire_unstarted_tables(user_id=request.user.pk)
+        reconcile_searches_locked(host_id=request.user.pk)
+        from .entry_lifecycle import expire_unstarted_tables, active_table, open_search_expired
+        expire_unstarted_tables(user_id=request.user.pk, allow_remote=False)
         with transaction.atomic():
             settings = DirectPlaySettings.objects.select_for_update().get(pk=1)
             existing = active_table(request.user.pk)
             if existing:
+                if (quick and existing.host_id == request.user.pk and existing.is_quick_match
+                        and existing.status == HeadToHeadTable.STATUS_OPEN and existing.guest_id is None):
+                    name, profile, stakes, points, clock, doubling = quote(settings, data, quick, match_search)
+                    if (existing.game_format == name and existing.target_points == points
+                            and existing.time_control == clock and existing.doubling_enabled == doubling
+                            and _snapshot_eq(existing.rules_snapshot, profile)
+                            and sorted(money(x) for x in existing.quick_stakes) == stakes):
+                        return JsonResponse({**_serialize_head_to_head(existing), 'matched': False})
                 return JsonResponse({'code': 'active_game_exists',
                                      'detail': 'יש לך כבר משחק פעיל. יש לחזור אליו או לסגור אותו לפני פתיחת משחק נוסף.',
                                      'active_table': _serialize_head_to_head(existing)}, status=409)
@@ -392,12 +405,12 @@ def create_or_match(request, *, quick=False, match_search=False):
                     game_format=name, target_points=points, time_control=clock, doubling_enabled=doubling,
                     is_quick_match=True, status='open', guest__isnull=True).select_related('host').order_by('created_at', 'pk')
 
-                def _snapshot_eq(a, b):
-                    return {k: v for k, v in (a or {}).items() if not str(k).startswith('dynamic_')} == {k: v for k, v in (b or {}).items() if not str(k).startswith('dynamic_')}
                 for existing in queue.filter(host=request.user):
                     if _snapshot_eq(existing.rules_snapshot, profile) and [money(x) for x in existing.quick_stakes] == stakes:
                         return JsonResponse({**_serialize_head_to_head(existing), 'matched': False})
                 for candidate in queue.exclude(host=request.user):
+                    if open_search_expired(candidate):
+                        continue
                     common = sorted(set(stakes) & {money(
                         x) for x in candidate.quick_stakes})
                     if not common or not _snapshot_eq(candidate.rules_snapshot, profile):
@@ -427,10 +440,12 @@ def create_or_match(request, *, quick=False, match_search=False):
                         guest_params = calculate_dynamic_params(
                             guest_balance, stake, candidate.rules_snapshot, mars_enabled=True)
                         # Money-game caps are dynamic and derived from both players'
-                        # current balance exposure, not the static profile cap.
+                        # funded exposure, not the static profile cap. The host's
+                        # ledger balance excludes the reservation already held
+                        # for this search; subtracting it again shrinks the cube.
+                        host_reserve = held(candidate, candidate.host)
                         host_params = calculate_dynamic_params(
-                            money(WalletTransaction.balance_for_user(
-                                candidate.host)),
+                            host_reserve,
                             stake,
                             candidate.rules_snapshot,
                             mars_enabled=True,
@@ -444,7 +459,7 @@ def create_or_match(request, *, quick=False, match_search=False):
                         # cap by guest's max_exposure (which already caps by loss if needed)
                         shared_max_exp = min(
                             shared_max_exp, guest_params['max_exposure'])
-                        if held(candidate, candidate.host) < shared_max_exp:
+                        if host_reserve < shared_max_exp:
                             continue
                         try:
                             reserve(candidate, request.user, shared_max_exp)
@@ -564,6 +579,9 @@ def create_or_match(request, *, quick=False, match_search=False):
 
 
 def join_table(table, user, settings):
+    from .search_lifecycle import _cancellation_reason
+    if table.is_quick_match and _cancellation_reason(table, settings):
+        raise ValidationError('This game format or access method is disabled.')
     profile = settings.format_profiles[table.game_format]
     access = 'private' if table.mode == 'friend' else 'public'
     if not settings.enabled or not profile['enabled'] or not profile[access]:
@@ -601,7 +619,7 @@ def settle(table, body):
     list(User.objects.select_for_update().filter(
         pk__in=sorted(player.pk for player in players)).order_by('pk'))
     reserves = {player.pk: held(table, player) for player in players}
-    if any(table.wallet_transactions.filter(user=player, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists() for player in players):
+    if not cancelled and any(table.wallet_transactions.filter(user=player, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists() for player in players):
         raise ValidationError('Reservation has already been released.')
     winner = None
     transfer = Decimal(0)
@@ -636,12 +654,17 @@ def settle(table, body):
                 table.amount * cube * multiplier))
         fee = money(transfer * table.fee_percent / 100)
     for player in players:
+        if cancelled:
+            WalletTransaction.refund_entry_fees(
+                user=player, head_to_head_table=table, note='Cancelled game reservation released',
+            )
+            continue
         # Returning the winner's own reservation is not winnings. Only the loser
         # transfers the settled stake. Combined wallet change equals minus fee.
-        if not cancelled and table.rules_snapshot.get('friend_fee_only'):
+        if table.rules_snapshot.get('friend_fee_only'):
             release = Decimal('0.00')
         else:
-            release = reserves[player.pk] if cancelled or player == winner else reserves[player.pk] - transfer
+            release = reserves[player.pk] if player == winner else reserves[player.pk] - transfer
         if release:
             WalletTransaction.create_entry(user=player, amount=release, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
                                            head_to_head_table=table, note='Unused game reservation released')

@@ -12,6 +12,77 @@ from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransa
 
 
 class SearchLifecycleTests(TestCase):
+    def test_settings_publication_does_not_scan_or_refund_inside_save(self):
+        from frontend.models import Task
+        table = self.search()
+        self.settings.enabled = False
+        with patch('frontend.search_lifecycle.reconcile_searches') as reconcile:
+            self.settings.save()
+        reconcile.assert_not_called()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+        self.assertFalse(table.wallet_transactions.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
+        self.assertTrue(Task.objects.filter(key='reconcile-searches', status='pending').exists())
+        reconcile_searches_locked()
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'cancelled')
+
+    def test_cleanup_budget_continues_after_cursor_and_refunds_only_once(self):
+        tables = [self.search('legacy') for _ in range(4)]
+        result = reconcile_searches_locked(batch_size=1, max_batches=2)
+        self.assertEqual(result['cancelled'], [tables[0].pk, tables[1].pk])
+        self.assertEqual(HeadToHeadTable.objects.filter(pk__in=[t.pk for t in tables], status='open').count(), 2)
+        continuation = result['continuation']
+        result = reconcile_searches_locked(batch_size=1, max_batches=2, **continuation)
+        self.assertEqual(result['cancelled'], [tables[2].pk, tables[3].pk])
+        self.assertIsNone(result['continuation'])
+        reconcile_searches_locked()
+        self.assertEqual(WalletTransaction.objects.filter(
+            head_to_head_table__in=tables, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 4)
+
+    def test_settings_save_does_not_steal_cleanup_lease_or_reset_cursor(self):
+        import uuid
+        from frontend.models import Task
+        token = uuid.uuid4()
+        Task.objects.filter(key='reconcile-searches').update(
+            status='running', lease_token=token, kwargs={'cursor': 99, 'stop_id': 200})
+        self.settings.enabled = False
+        self.settings.save()
+        task = Task.objects.get(key='reconcile-searches')
+        self.assertEqual(task.lease_token, token)
+        self.assertEqual(task.status, 'running')
+        self.assertEqual(task.kwargs, {'cursor': 99, 'stop_id': 200})
+
+    def test_disabled_quick_search_cannot_be_joined_before_cleanup(self):
+        from django.core.exceptions import ValidationError
+        from django.db import transaction
+        from frontend.game_formats import join_table
+        table = self.search()
+        self.settings.format_profiles['money']['quick'] = False
+        self.settings.save()
+        with self.assertRaises(ValidationError), transaction.atomic():
+            join_table(table, self.guest, self.settings)
+        self.assertFalse(table.wallet_transactions.filter(user=self.guest).exists())
+
+    def test_worker_reconciles_in_small_batches_and_refunds_once(self):
+        from frontend.search_lifecycle import reconcile_searches
+        tables = [self.search('legacy') for _ in range(3)]
+        with patch('frontend.search_lifecycle.reconcile_searches', wraps=reconcile_searches) as reconcile:
+            self.assertEqual(reconcile_searches_locked(batch_size=1), [t.pk for t in tables])
+        self.assertEqual(reconcile.call_count, 3)
+        self.assertTrue(all(len(call.kwargs['table_ids']) == 1 for call in reconcile.call_args_list))
+        self.assertEqual(reconcile_searches_locked(batch_size=1), [])
+        self.assertEqual(WalletTransaction.objects.filter(
+            head_to_head_table__in=tables, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 3)
+
+    def test_reconcile_stops_before_writing_when_lease_is_lost(self):
+        table = self.search('legacy')
+        self.assertIs(reconcile_searches_locked(heartbeat=lambda: False), False)
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'open')
+        self.assertFalse(table.wallet_transactions.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).exists())
+
     def setUp(self):
         self.settings = DirectPlaySettings.load()
         self.host = User.objects.create_user('search-lifecycle-host')
@@ -47,6 +118,7 @@ class SearchLifecycleTests(TestCase):
         snapshot = copy.deepcopy(money.rules_snapshot)
         self.settings.format_profiles['money']['fee_percent'] = 10
         self.settings.save()
+        reconcile_searches_locked()
         money.refresh_from_db()
         match.refresh_from_db()
         self.assertEqual(money.status, 'open')
@@ -54,7 +126,7 @@ class SearchLifecycleTests(TestCase):
         self.assertEqual(money.fee_percent, 5)
         self.assertEqual(money.settlement, {})
         self.assertEqual(match.status, 'open')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9100)
         self.assertEqual(WalletTransaction.objects.filter(
             head_to_head_table=money, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 0)
 
@@ -65,10 +137,11 @@ class SearchLifecycleTests(TestCase):
         table = self.search('match')
         self.settings.format_profiles['match']['time_controls'] = ['fast']
         self.settings.save()
+        reconcile_searches_locked()
         table.refresh_from_db()
         self.assertEqual(table.status, 'open')
         self.assertEqual(table.settlement, {})
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9900)
 
         new_match = self.search('match')
         self.assertEqual(new_match.rules_snapshot['time_controls'], ['fast'])
@@ -83,6 +156,7 @@ class SearchLifecycleTests(TestCase):
         self.settings.format_profiles['money']['loss_limit_multiplier'] = 4
         self.settings.format_profiles['match']['fee_percent'] = 10
         self.settings.save()
+        reconcile_searches_locked()
         for table, original in zip(tables, contracts):
             table.refresh_from_db()
             self.assertEqual((table.status, table.rules_snapshot, table.fee_percent,
@@ -98,13 +172,17 @@ class SearchLifecycleTests(TestCase):
                                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY, head_to_head_table=table)
         WalletTransaction.create_entry(user=self.host, amount=150,
                                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
-        self.settings.format_profiles['money']['loss_limit_multiplier'] = 2
+        # Profile changes preserve funded searches; disabling quick access is
+        # the cancellation trigger for this ledger/refund test.
+        self.settings.format_profiles['money']['quick'] = False
         self.settings.save()
+        reconcile_searches_locked()
         table.refresh_from_db()
         self.assertEqual(table.settlement['refund'], '650.00')
         self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
         self.assertEqual(reconcile_searches_locked(), [])
         self.settings.save()
+        reconcile_searches_locked()
         self.assertEqual(WalletTransaction.objects.filter(
             head_to_head_table=table, kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 2)
 
@@ -112,6 +190,7 @@ class SearchLifecycleTests(TestCase):
         tables = [self.search(), self.search('match')]
         self.settings.enabled = False
         self.settings.save()
+        reconcile_searches_locked()
         for table in tables:
             table.refresh_from_db()
             self.assertEqual(table.status, 'cancelled')
@@ -122,6 +201,7 @@ class SearchLifecycleTests(TestCase):
         match = self.search('match')
         self.settings.format_profiles['money']['quick'] = False
         self.settings.save()
+        reconcile_searches_locked()
         money.refresh_from_db()
         match.refresh_from_db()
         self.assertEqual(money.status, 'cancelled')
@@ -133,6 +213,7 @@ class SearchLifecycleTests(TestCase):
                                        kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND, head_to_head_table=table)
         self.settings.enabled = False
         self.settings.save()
+        reconcile_searches_locked()
         table.refresh_from_db()
         self.assertEqual(table.settlement['refund'], '0.00')
         self.assertEqual(WalletTransaction.objects.filter(
@@ -144,6 +225,7 @@ class SearchLifecycleTests(TestCase):
         self.settings.coin_grant_amount = 500
         self.settings.format_profiles['match']['fee_percent'] = 9
         self.settings.save()
+        reconcile_searches_locked()
         table.refresh_from_db()
         self.assertEqual(table.status, 'open')
         self.assertEqual(WalletTransaction.balance_for_user(self.host), 9200)
@@ -197,6 +279,7 @@ class SearchLifecycleTests(TestCase):
         old_profiles = copy.deepcopy(self.settings.format_profiles)
         self.settings.format_profiles['money']['fee_percent'] = 10
         self.settings.save()
+        reconcile_searches_locked()
         table.refresh_from_db()
         self.assertEqual(table.status, 'open')
         self.assertEqual(table.settlement, {})

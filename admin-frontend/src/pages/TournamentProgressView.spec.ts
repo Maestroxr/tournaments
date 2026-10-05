@@ -99,6 +99,51 @@ describe('Tournament workspace', () => {
     expect(api).toHaveBeenCalledTimes(1)
   })
 
+  it('updates attention counts once per status revision and ignores delayed events', async () => {
+    api.mockResolvedValue({
+      ...progress(),
+      control_room: {
+        current_stage: 'Main bracket', current_round: 'Round 1',
+        counts: { playing: 1, waiting: 1, waiting_opponent: 0, review: 0, stalled: 0, completed: 1, upcoming: 0 },
+        waiting_players: [], round_total: 3, round_completed: 1,
+        stale_after_seconds: null, generated_at: new Date().toISOString(),
+      },
+    })
+    const { wrapper } = await view()
+    const socket = Socket.mock.results[0]!.value as { onmessage: (event: MessageEvent) => void }
+    const send = async (revision: number, requiresAdmin: boolean) => {
+      socket.onmessage(new MessageEvent('message', { data: JSON.stringify({
+        type: 'live_snapshot', fixture_id: 2,
+        live: { ...playing, sequence: 0, event_revision: revision,
+          state: { ...playing.state, presence: { needsAdminAdjudication: requiresAdmin } } },
+      }) }))
+      await flushPromises()
+    }
+    await send(2, true)
+    await send(2, true)
+    await send(1, false)
+    expect(wrapper.getComponent(TournamentLiveAttention).props('stalled').map((item: TournamentFixture) => item.id)).toEqual([2])
+    expect(wrapper.getComponent(TournamentMatchSummary).findAll('dd').map(n => n.text())).toEqual(['6', '0', '1', '1', '1'])
+    await send(3, false)
+    await send(2, true)
+    expect(wrapper.getComponent(TournamentLiveAttention).props('stalled')).toEqual([])
+    expect(wrapper.getComponent(TournamentMatchSummary).findAll('dd').map(n => n.text())).toEqual(['6', '1', '1', '0', '1'])
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps fallback counts consistent with the cards after an admin event', async () => {
+    const { wrapper } = await view()
+    const socket = Socket.mock.results[0]!.value as { onmessage: (event: MessageEvent) => void }
+    socket.onmessage(new MessageEvent('message', { data: JSON.stringify({
+      type: 'live_snapshot', fixture_id: 2,
+      live: { ...playing, event_revision: 2,
+        state: { ...playing.state, presence: { needsAdminAdjudication: true } } },
+    }) }))
+    await flushPromises()
+    expect(wrapper.getComponent(TournamentLiveAttention).props('stalled')).toHaveLength(1)
+    expect(wrapper.getComponent(TournamentMatchSummary).findAll('dd').map(n => n.text())).toEqual(['6', '0', '1', '1', '1'])
+  })
+
   it('supports direct bracket links', async () => {
     const { wrapper } = await view('/tournaments/20/bracket')
     expect(wrapper.findAllComponents(TournamentBracketMatch)).toHaveLength(3)

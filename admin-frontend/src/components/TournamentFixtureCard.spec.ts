@@ -98,6 +98,19 @@ describe('TournamentFixtureCard', () => {
 
     expect(wrapper.classes()).toContain('fixture-card--stalled')
     expect(wrapper.get('.fixture-card__timing').text()).toContain('12:34')
-    expect(wrapper.text()).toContain('No recent activity')
+    expect(wrapper.text()).toContain('Organizer review required')
+  })
+
+  it('shows status without presenting frozen event statistics as live', () => {
+    const wrapper = mountCard({
+      operational_status: 'playing',
+      live: {
+        status: 'playing', event_revision: 1, event_type: 'started',
+        state: { phase: 'moving', turn: 'white', dice: [4, 2], cube: 2 },
+        match_score: { white: 3, black: 1 },
+      },
+    })
+    expect(wrapper.classes()).toContain('fixture-card--playing')
+    expect(wrapper.find('.fixture-card__live-stats').exists()).toBe(false)
   })
 })

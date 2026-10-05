@@ -104,11 +104,13 @@ class TournamentReminderDelivery(models.Model):
 
 
 class Task(models.Model):
+    NAME_RECONCILE_SEARCHES = 'reconcile_searches'
     NAME_DELIVER_ADMIN_COMMAND = 'deliver_admin_command'
     NAME_EXPIRE_UNSTARTED_GAMES = 'expire_unstarted_games'
     NAME_START_SCHEDULED_TOURNAMENTS = 'start_scheduled_tournaments'
     NAME_EXPIRE_TOURNAMENT_ENTRY_DEADLINES = 'expire_tournament_entry_deadlines'
     NAME_CHOICES = [
+        (NAME_RECONCILE_SEARCHES, 'Reconcile unmatched searches'),
         (NAME_DELIVER_ADMIN_COMMAND, 'Deliver admin command'),
         (NAME_EXPIRE_UNSTARTED_GAMES, 'Expire unstarted games'),
         (NAME_START_SCHEDULED_TOURNAMENTS, 'Start scheduled tournaments'),

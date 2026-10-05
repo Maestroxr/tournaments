@@ -180,6 +180,23 @@ describe('Admin match details dialog', () => {
     expect(wrapper.find('.match-live__score').exists()).toBe(false)
   })
 
+  it('shows an admin event without frozen scores, dice or turn', () => {
+    const wrapper = view(fixture({
+      live: {
+        status: 'playing', event_revision: 2, event_type: 'admin_required',
+        state: {
+          phase: 'moving', turn: 'white', dice: [3, 6], cube: 2,
+          presence: { needsAdminAdjudication: true },
+        },
+        match_score: { white: 2, black: 1 },
+      },
+    }))
+    expect(wrapper.get('.match-live').text()).toContain('Game status')
+    expect(wrapper.get('.match-live').text()).toContain('Organizer review required')
+    expect(wrapper.find('.match-live__score').exists()).toBe(false)
+    expect(wrapper.findAll('.match-live dd')).toHaveLength(0)
+  })
+
   it('keeps all close paths locked during an organizer mutation and forwards saves', async () => {
     const wrapper = view(fixture(), { tournamentId: '20' })
     const panel = wrapper.getComponent(TournamentMatchAdminPanel)

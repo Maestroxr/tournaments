@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from gamelink.models import GameLink
 from tournaments.models import Participant, Participation, Tournament
@@ -85,9 +86,10 @@ class TournamentControlRoomTests(TestCase):
         self.assertEqual(control_room['round_total'], 4)
         self.assertEqual(control_room['round_completed'], 0)
         self.assertEqual(control_room['counts']['review'], 1)
-        self.assertEqual(control_room['counts']['stalled'], 1)
+        self.assertEqual(control_room['counts']['stalled'], 0)
+        self.assertEqual(control_room['counts']['playing'], 1)
         self.assertEqual(control_room['counts']['waiting'], 2)
-        self.assertEqual(control_room['stale_after_seconds'], 120)
+        self.assertIsNone(control_room['stale_after_seconds'])
 
         serialized = [
             fixture
@@ -96,9 +98,46 @@ class TournamentControlRoomTests(TestCase):
             for fixture in level['fixtures']
         ]
         stale_fixture = next(item for item in serialized if item['id'] == fixtures[1].id)
-        self.assertEqual(stale_fixture['operational_status'], 'stalled')
-        self.assertTrue(stale_fixture['stalled'])
+        self.assertEqual(stale_fixture['operational_status'], 'playing')
+        self.assertFalse(stale_fixture['stalled'])
         self.assertIsNotNone(stale_fixture['started_at'])
         self.assertIsNotNone(stale_fixture['last_activity_at'])
         self.assertGreaterEqual(stale_fixture['duration_seconds'], 0)
         self.assertIn('ready_at', stale_fixture)
+
+    def test_explicit_admin_state_controls_stalled_and_preserves_actual_start_time(self):
+        fixture = self.tournament.current_stage.fixtures.filter(
+            level=self.tournament.current_stage.current_level,
+        ).order_by('id').first()
+        started_at = timezone.now() - timedelta(minutes=5)
+        link = GameLink.objects.create(
+            fixture=fixture, status='playing', expires_at=timezone.now() + timedelta(hours=1),
+            live_snapshot={
+                'status': 'playing', 'event_revision': 2, 'started_at': started_at.isoformat(),
+                'state': {'presence': {'needsAdminAdjudication': True}},
+            },
+            live_updated_at=timezone.now(),
+        )
+
+        def progress():
+            response = self.client.get(reverse(
+                'api-admin-tournament-progress', kwargs={'pk': self.tournament.pk},
+            ))
+            self.assertEqual(response.status_code, 200, response.content)
+            payload = response.json()
+            fixtures = [item for stage in payload['stages'].values()
+                        for level in stage['levels'] for item in level['fixtures']]
+            return payload['control_room'], next(item for item in fixtures if item['id'] == fixture.pk)
+
+        counts, serialized = progress()
+        self.assertEqual(counts['counts']['stalled'], 1)
+        self.assertTrue(serialized['stalled'])
+        self.assertIsNone(serialized['last_activity_at'])
+        self.assertIsNotNone(serialized['last_status_at'])
+        self.assertEqual(parse_datetime(serialized['started_at']), started_at)
+        link.live_snapshot['event_revision'] = 3
+        link.live_snapshot['state']['presence']['needsAdminAdjudication'] = False
+        link.save(update_fields=['live_snapshot'])
+        counts, serialized = progress()
+        self.assertEqual(counts['counts']['stalled'], 0)
+        self.assertEqual(serialized['operational_status'], 'playing')

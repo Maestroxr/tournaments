@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture } from '@/types/tournamentProgress'
+import { isStatusEvent } from '@/services/tournamentStatusEvents'
 
 const props = defineProps<{
   fixture: TournamentFixture
@@ -10,6 +11,8 @@ const props = defineProps<{
 }>()
 const { t, locale } = useI18n()
 const live = computed(() => (props.fixture.is_confirmed ? null : props.fixture.live))
+const statusOnly = computed(() => isStatusEvent(live.value))
+const title = computed(() => t(statusOnly.value ? 'matchDetails.statusTitle' : 'matchDetails.liveTitle'))
 const turn = computed(() => {
   const value = live.value?.state?.turn
   return value === 'white' || value === 'black' ? t(`matchDetails.${value}`) : '—'
@@ -27,16 +30,19 @@ const updated = computed(() =>
   <section
     v-if="!fixture.is_confirmed"
     class="match-live"
-    :aria-label="t('matchDetails.liveTitle')"
+    :aria-label="title"
   >
     <header>
-      <h3><i class="bi bi-broadcast" aria-hidden="true"></i> {{ t('matchDetails.liveTitle') }}</h3>
+      <h3><i class="bi bi-broadcast" aria-hidden="true"></i> {{ title }}</h3>
       <span :class="['match-live__connection', connected && 'is-connected']">
         <i aria-hidden="true"></i
         >{{ t(connected ? 'matchDetails.connected' : 'matchDetails.periodic') }}
       </span>
     </header>
-    <template v-if="live">
+    <p v-if="statusOnly" class="mt-3 text-sm text-amber-100" role="status">
+      {{ t(live?.state.presence?.needsAdminAdjudication ? 'controlRoom.adminRequired' : 'matchDetails.statusPlaying') }}
+    </p>
+    <template v-else-if="live">
       <div class="match-live__score" aria-live="polite" aria-atomic="true">
         <h4>{{ t('matchDetails.liveScore') }}</h4>
         <p dir="ltr">{{ live.match_score.white }} : {{ live.match_score.black }}</p>

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import UserQuickView from './UserQuickView.vue'
 import type { TournamentFixture, TournamentProgressPlayer } from '@/types/tournamentProgress'
 import { useI18n } from '@/i18n'
+import { isStatusEvent } from '@/services/tournamentStatusEvents'
 
 const props = defineProps<{
   fixture: TournamentFixture
@@ -183,10 +184,10 @@ function isWinner(slot: 1 | 2) {
     <div v-if="fixture.started_at" class="fixture-card__timing">
       <span><i class="bi bi-stopwatch" aria-hidden="true"></i>{{ t('controlRoom.elapsed') }}</span>
       <strong dir="ltr">{{ formatDuration(fixture.duration_seconds) }}</strong>
-      <span v-if="fixture.stalled" class="fixture-card__stale"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i>{{ t('controlRoom.noRecentActivity') }}</span>
+      <span v-if="fixture.stalled" class="fixture-card__stale"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i>{{ t('controlRoom.adminRequired') }}</span>
     </div>
 
-    <dl v-if="fixture.live && !fixture.is_confirmed" class="fixture-card__live-stats">
+    <dl v-if="fixture.live && !isStatusEvent(fixture.live) && !fixture.is_confirmed" class="fixture-card__live-stats">
       <div>
         <dt><i class="bi bi-broadcast" aria-hidden="true"></i>{{ t('tournaments.liveScore') }}</dt>
         <dd dir="ltr">

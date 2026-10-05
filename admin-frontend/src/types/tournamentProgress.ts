@@ -16,6 +16,7 @@ export interface TournamentFixture {
   ready_at?: string | null
   started_at?: string | null
   last_activity_at?: string | null
+  last_status_at?: string | null
   ended_at?: string | null
   duration_seconds?: number | null
   stalled?: boolean
@@ -35,11 +36,21 @@ export interface TournamentFixture {
   has_confirmed: boolean
   live: {
     status: string
+    sequence?: number
+    event_id?: string
+    event_type?: 'started' | 'admin_required' | 'admin_cleared'
+    event_revision?: number
+    occurred_at?: string
+    started_at?: string | null
     state: {
       phase: string | null
       turn: string | null
       dice: number[] | null
       cube: number | null
+      presence?: {
+        needsAdminAdjudication: boolean
+        absentSince?: Record<string, number>
+      }
     }
     match_score: { white: number; black: number }
   } | null
@@ -83,7 +94,7 @@ export interface TournamentProgressData {
     }>
     round_total: number
     round_completed: number
-    stale_after_seconds: number
+    stale_after_seconds: number | null
     generated_at: string
   }
 }

@@ -2,6 +2,22 @@
 from gamelink.models import AdminGameCommand
 
 from .models import Task
+from django.utils import timezone
+
+
+def schedule_search_reconciliation(*, wake=False):
+    task, created = Task.objects.get_or_create(
+        key='reconcile-searches', defaults={'name': Task.NAME_RECONCILE_SEARCHES},
+    )
+    if not created:
+        # Do not invalidate the owner's cursor/lease. Periodic cycles cover
+        # changes published during a running scan as well as later new rows.
+        statuses = (Task.STATUS_DONE, Task.STATUS_PENDING) if wake else (Task.STATUS_DONE,)
+        if task.status in statuses:
+            Task.objects.filter(pk=task.pk, status__in=statuses).update(
+                status=Task.STATUS_PENDING, run_at=timezone.now(),
+            )
+    return task, created
 
 
 def enqueue_admin_command(command_id):
@@ -16,11 +32,12 @@ def enqueue_admin_command(command_id):
 
 
 def schedule_tasks():
+    _, search_created = schedule_search_reconciliation()
     _, created = Task.objects.get_or_create(
         key='expire-unstarted-games',
         defaults={'name': Task.NAME_EXPIRE_UNSTARTED_GAMES},
     )
-    created_count = int(created)
+    created_count = int(created) + int(search_created)
     _, created = Task.objects.get_or_create(
         key='start-scheduled-tournaments',
         defaults={'name': Task.NAME_START_SCHEDULED_TOURNAMENTS},

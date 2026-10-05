@@ -3,6 +3,7 @@ channels==4.2.2
 channels-redis==4.3.0
 daphne==4.0.0
 django==4.2.15
+psycopg2-binary==2.9.11
 django-polymorphic==3.1.0
 django-crispy-forms==2.1
 crispy-bootstrap4==2023.1

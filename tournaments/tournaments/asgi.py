@@ -13,11 +13,12 @@ from channels.auth import AuthMiddlewareStack
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
 
-import gamelink.routing
-
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tournaments.settings')
 
 django_asgi_app = get_asgi_application()
+
+# Routing imports consumers and models; initialize Django before loading them.
+import gamelink.routing
 
 application = ProtocolTypeRouter({
     'http': django_asgi_app,

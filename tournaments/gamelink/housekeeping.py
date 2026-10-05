@@ -68,4 +68,8 @@ def purge_expired(nonce_retention = None, now = None):
         fixture__mode__tournament__entry_deadline_paused=False,
     ).update(status='cancelled')
 
+    if links:
+        from frontend.lobby_events import invalidate_tournaments
+        invalidate_tournaments()
+
     return dict(nonces = nonces, tickets = tickets, links = links)

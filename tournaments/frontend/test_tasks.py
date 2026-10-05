@@ -160,6 +160,41 @@ class TournamentTaskTests(TransactionTestCase):
         self.assertIsNotNone(expiry.last_finished_at)
         self.assertEqual(Task.objects.filter(name='expire_unstarted_games').count(), 1)
 
+    def test_bounded_cleanup_keeps_cursor_then_starts_a_new_cycle(self):
+        task = Task.objects.get(name=Task.NAME_EXPIRE_UNSTARTED_GAMES)
+        continuation = {'cursor': 20, 'stop_id': 70}
+        execute = MagicMock(side_effect=[
+            {'checked': 20, 'continuation': continuation},
+            {'checked': 3, 'continuation': None},
+        ])
+        with patch.dict(HANDLERS, {task.name: execute}):
+            self.assertTrue(run_task(task.pk))
+            task.refresh_from_db()
+            self.assertEqual(task.kwargs, continuation)
+            self.assertEqual(task.status, Task.STATUS_PENDING)
+            self.assertLess(task.run_at, timezone.now() + timedelta(seconds=3))
+            Task.objects.filter(pk=task.pk).update(run_at=timezone.now())
+            self.assertTrue(run_task(task.pk))
+        self.assertEqual(execute.call_args_list[1].kwargs['cursor'], 20)
+        self.assertEqual(execute.call_args_list[1].kwargs['stop_id'], 70)
+        task.refresh_from_db()
+        self.assertEqual(task.kwargs, {})
+        self.assertGreater(task.run_at, timezone.now() + timedelta(seconds=50))
+
+    def test_cleanup_failure_keeps_checkpoint_and_does_not_duplicate_work(self):
+        task = Task.objects.get(name=Task.NAME_RECONCILE_SEARCHES)
+        checkpoint = {'cursor': 25, 'stop_id': 90}
+        Task.objects.filter(pk=task.pk).update(kwargs=checkpoint)
+        with patch.dict(HANDLERS, {task.name: MagicMock(side_effect=RuntimeError('offline'))}):
+            self.assertFalse(run_task(task.pk))
+        task.refresh_from_db()
+        due = task.run_at
+        schedule_tasks()
+        task.refresh_from_db()
+        self.assertEqual(task.kwargs, checkpoint)
+        self.assertEqual(task.run_at, due)
+        self.assertEqual(Task.objects.filter(key=task.key).count(), 1)
+
     def test_expiry_stops_when_lease_is_lost(self):
         table = self.table()
         expire_unstarted_tables(heartbeat=lambda: False)

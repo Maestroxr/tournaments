@@ -9,9 +9,11 @@ const props = defineProps<{
 }>()
 const { t } = useI18n()
 const statusCount = (status: TournamentFixture['operational_status']) => props.controlRoom?.counts[status!] ?? props.fixtures.filter(f => {
+  if (f.operational_status) return f.operational_status === status
   if (status === 'completed') return f.is_confirmed
   if (status === 'review') return !f.is_confirmed && (f.score1 != null || f.score2 != null || f.confirmations > 0)
-  if (status === 'playing') return !f.is_confirmed && f.live?.status === 'playing'
+  if (status === 'playing') return !f.is_confirmed && !f.stalled && f.live?.status === 'playing'
+  if (status === 'stalled') return !f.is_confirmed && Boolean(f.stalled)
   if (status === 'waiting') return !f.is_confirmed && !f.live && f.score1 == null && f.score2 == null && Boolean(f.player1 && f.player2)
   if (status === 'waiting_opponent') return !f.is_confirmed && Boolean(f.player1 || f.player2) && !(f.player1 && f.player2)
   return f.operational_status === status

@@ -538,15 +538,24 @@ def _refund_registration(tournament, registration, actor):
         and participant.user_id is not None
         and registration.payment_status == models.TournamentRegistration.PAYMENT_PAID
     ):
-        models.WalletTransaction.create_entry(
+        models.WalletTransaction.refund_entry_fees(
             user=participant.user,
-            amount=tournament.entry_fee,
-            kind=models.WalletTransaction.KIND_TOURNAMENT_REFUND,
             tournament=tournament,
             actor=actor,
             note=f"Refund for {tournament.name}",
         )
         registration.payment_status = models.TournamentRegistration.PAYMENT_REFUNDED
+
+
+def _refund_tournament_roster(tournament, actor):
+    """Caller holds the tournament lock; wallets always lock in user ID order."""
+    from django.contrib.auth.models import User
+    participations = list(tournament.participations.select_related('participant__user'))
+    user_ids = [p.participant.user_id for p in participations if p.participant.user_id is not None]
+    list(User.objects.select_for_update().filter(pk__in=user_ids).order_by('pk'))
+    for participation in participations:
+        registration = _ensure_registration(tournament, participation.participant)
+        _refund_registration(tournament, registration, actor)
 
 
 def _add_to_active_roster(tournament, registration, actor):
@@ -764,14 +773,14 @@ def api_join(request, pk):
 def api_withdraw(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    t = get_object_or_404(models.Tournament, pk=pk)
-    if t.state != 'open':
-        return JsonResponse({"detail": "Registration is closed"}, status=412)
-    participant = models.Participant.objects.filter(user=request.user).first()
-    participation = t.participations.filter(participant=participant).first() if participant else None
-    registration = t.registrations.filter(participant=participant).first() if participant else None
-    if participation or registration:
-        with transaction.atomic():
+    with transaction.atomic():
+        t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+        if t.state != 'open':
+            return JsonResponse({"detail": "Registration is closed"}, status=412)
+        participant = models.Participant.objects.filter(user=request.user).first()
+        participation = t.participations.filter(participant=participant).first() if participant else None
+        registration = t.registrations.select_for_update().filter(participant=participant).first() if participant else None
+        if participation or registration:
             if registration is None:
                 registration = _ensure_registration(t, participant)
             if participation and not (
@@ -992,7 +1001,7 @@ def api_head_to_head_join(request, code):
         return JsonResponse({"detail": "Authentication required"}, status=401)
     settings_row = models.DirectPlaySettings.load()
     from .entry_lifecycle import expire_unstarted_tables
-    expire_unstarted_tables(user_id=request.user.pk)
+    expire_unstarted_tables(user_id=request.user.pk, allow_remote=False)
     if not settings_row.enabled:
         return JsonResponse({"detail": "One-on-one games are currently disabled."}, status=412)
     try:
@@ -1007,6 +1016,9 @@ def api_head_to_head_join(request, code):
                 if not legacy_profile['enabled'] or not legacy_profile[access]:
                     return JsonResponse({'detail': 'This game format or access method is disabled.'}, status=412)
             if table.status != models.HeadToHeadTable.STATUS_OPEN or table.guest_id:
+                return JsonResponse({"detail": "This table is no longer available."}, status=409)
+            from .entry_lifecycle import open_search_expired
+            if open_search_expired(table):
                 return JsonResponse({"detail": "This table is no longer available."}, status=409)
             if table.game_format == 'money' or (table.game_format == 'legacy' and table.is_quick_match):
                 return JsonResponse({"detail": "Quick Match tables can only be joined through matchmaking."}, status=409)
@@ -1049,16 +1061,15 @@ def api_head_to_head_join(request, code):
 
 
 def _refund_head_to_head(table, actor=None):
-    charges = table.wallet_transactions.filter(amount__lt=0).select_related('user')
-    for charge in charges:
-        already_refunded = table.wallet_transactions.filter(
-            user=charge.user, kind=models.WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-        ).exists()
-        if not already_refunded:
-            models.WalletTransaction.create_entry(
-                user=charge.user, amount=-charge.amount,
-                kind=models.WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-                head_to_head_table=table, actor=actor,
+    # Keep the account lock order identical to result settlement.
+    from django.contrib.auth.models import User
+    with transaction.atomic():
+        table = models.HeadToHeadTable.objects.select_for_update().get(pk=table.pk)
+        players = list(User.objects.select_for_update().filter(
+            pk__in=[table.host_id, table.guest_id]).order_by('pk'))
+        for player in players:
+            models.WalletTransaction.refund_entry_fees(
+                user=player, head_to_head_table=table, actor=actor,
                 note=f"Refund for cancelled table {table.code}",
             )
 
@@ -1357,14 +1368,12 @@ def api_admin_tournament_draft(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    t = get_object_or_404(models.Tournament, pk=pk)
-    if t.state != "open":
-        return JsonResponse({"detail": f"Cannot draft, state={t.state}"}, status=412)
     with transaction.atomic():
+        t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+        if t.state != "open":
+            return JsonResponse({"detail": f"Cannot draft, state={t.state}"}, status=412)
         if t.entry_fee > 0:
-            for participation in t.participations.select_related("participant__user"):
-                registration = _ensure_registration(t, participation.participant)
-                _refund_registration(t, registration, request.user)
+            _refund_tournament_roster(t, request.user)
         t.published = False
         t.registration_closed_at = None
         t.registration_closed_reason = ''
@@ -1634,6 +1643,9 @@ def _admin_tournament_attendees(request, pk):
             return JsonResponse({'detail': 'The roster is locked'}, status=412)
         refund_requested = bool(data.get('refund', action == 'withdraw'))
         refunded_count = 0
+        if refund_requested:
+            list(User.objects.select_for_update().filter(
+                pk__in=[r.participant.user_id for r in registrations.values()]).order_by('pk'))
         for registration in registrations.values():
             participation = t.participations.filter(participant=registration.participant).first()
             if action == 'withdraw':
@@ -1725,7 +1737,7 @@ def _admin_tournament_progress(request, pk):
         return JsonResponse({"detail": "Authentication required"}, status=401)
     queryset = models.Tournament.objects.select_related('creator')
     if request.method == 'POST':
-        queryset = queryset.select_for_update()
+        queryset = queryset.select_for_update(of=('self',))
     t = get_object_or_404(queryset, pk=pk)
     snapshot = TournamentReadSnapshot(t, request.user, include_live=True) if request.method == 'GET' else None
     state = snapshot.state if snapshot else t.state
@@ -1786,7 +1798,7 @@ def _admin_tournament_progress(request, pk):
                 'round_total': sum(bool(item['is_current_round']) for item in operational_fixtures),
                 'round_completed': sum(item['is_current_round'] and item['operational_status'] == 'completed'
                                        for item in operational_fixtures),
-                'stale_after_seconds': 120, 'generated_at': now.isoformat(),
+                'stale_after_seconds': None, 'generated_at': now.isoformat(),
             },
         })
     # POST - submit score
@@ -1795,7 +1807,8 @@ def _admin_tournament_progress(request, pk):
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
     try:
-        fixture = models.Fixture.objects.select_for_update().select_related(
+        # Nullable player/account joins must not be included in FOR UPDATE.
+        fixture = models.Fixture.objects.select_for_update(of=('self',)).select_related(
             'mode__tournament', 'player1__user', 'player2__user',
         ).get(id=data.get("fixture_id"), mode__tournament=t)
     except models.Fixture.DoesNotExist:

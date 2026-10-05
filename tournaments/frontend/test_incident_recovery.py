@@ -215,12 +215,51 @@ class IncidentRecoveryTests(TestCase):
             self.assertEqual(expire_tournament_entry_deadlines(heartbeat=None), 1)
         self.assertEqual(resolver.call_args.args[0].pk, eligible.pk)
 
+    def test_blocked_candidate_page_cannot_starve_a_later_playable_fixture(self):
+        _, stage = self.expired_bracket()
+        first, eligible = list(stage.fixtures.filter(level=0).order_by('pk'))
+        with patch('frontend.task_runner.ENTRY_EXPIRY_BATCH_SIZE', 1), \
+                patch('frontend.task_runner._personally_ready_fixture_ids', return_value={eligible.pk}), \
+                patch('gamelink.views._resolve_double_no_show_locked', return_value=True) as resolver:
+            skipped = expire_tournament_entry_deadlines(heartbeat=None, bounded=True)
+            self.assertEqual(skipped['processed'], 0)
+            self.assertEqual(skipped['continuation']['cursor'], first.pk)
+            resumed = expire_tournament_entry_deadlines(heartbeat=None, bounded=True, **skipped['continuation'])
+        self.assertEqual(resumed['processed'], 1)
+        self.assertIsNone(resumed['continuation'])
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.args[0].pk, eligible.pk)
+
     def test_start_scanner_stops_when_lease_is_lost(self):
         tournament, stage = self.make_bracket(start=False)
         self.assertIs(start_scheduled_tournaments(heartbeat=lambda: False), False)
         self.assertFalse(stage.fixtures.exists())
         tournament.refresh_from_db()
         self.assertTrue(tournament.published)
+
+    def test_invalid_start_does_not_block_later_candidate_pages(self):
+        from frontend.api import _start_tournament_at_capacity
+        cups = [self.make_bracket(start=False) for _ in range(3)]
+        task = Task.objects.create(key='start-fairness', name=Task.NAME_START_SCHEDULED_TOURNAMENTS)
+
+        def start(tournament):
+            if tournament.pk == cups[0][0].pk:
+                raise ValidationError('invalid first draw')
+            return _start_tournament_at_capacity(tournament)
+
+        with patch('frontend.task_runner.START_BATCH_SIZE', 1), \
+                patch('frontend.api._start_tournament_at_capacity', side_effect=start):
+            self.assertFalse(run_task(task.pk))
+            task.refresh_from_db()
+            self.assertEqual(task.kwargs['cursor'], cups[0][0].pk)
+            for _ in range(2):
+                Task.objects.filter(pk=task.pk).update(run_at=timezone.now())
+                self.assertTrue(run_task(task.pk))
+        self.assertFalse(cups[0][1].fixtures.exists())
+        self.assertTrue(cups[1][1].fixtures.exists())
+        self.assertTrue(cups[2][1].fixtures.exists())
+        task.refresh_from_db()
+        self.assertEqual(task.kwargs, {})  # The next cycle retries the invalid first cup too.
 
     def test_start_scanner_does_not_lock_started_tournaments(self):
         self.make_bracket()

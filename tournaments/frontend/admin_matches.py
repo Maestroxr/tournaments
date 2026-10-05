@@ -9,6 +9,7 @@ from django.db.models import Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_http_methods
 
 from gamelink.models import GameLink
@@ -47,6 +48,7 @@ def details(fixture):
     link = GameLink.objects.filter(fixture=fixture).first()
     live_presence = (((link.live_snapshot or {}).get('state') or {}).get('presence') or {}) if link else {}
     start = fixture.audit_events.filter(action='live_started').order_by('created_at').first()
+    started_at = parse_datetime((link.live_snapshot or {}).get('started_at') or '') if link else None
     version_data = {**snapshot(fixture), 'revision': state.revision if state else 0,
                     'link_status': link.status if link else None}
     players = []
@@ -62,7 +64,7 @@ def details(fixture):
             'needs_admin_adjudication': bool(live_presence.get('needsAdminAdjudication')),
             'absent_since': live_presence.get('absentSince') or {},
             'times': {'connection_created_at': link.created_at.isoformat() if link else None,
-                      'live_started_at': start.created_at.isoformat() if start else None,
+                      'live_started_at': (started_at or start.created_at).isoformat() if started_at or start else None,
                       'ended_at': (fixture.admin_resolved_at or (link.completed_at if link else None)).isoformat()
                         if fixture.admin_resolved_at or (link and link.completed_at) else None},
             'history': [{'id': event.id, 'action': event.action, 'actor': event.actor.username if event.actor else None,

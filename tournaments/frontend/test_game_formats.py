@@ -51,8 +51,9 @@ class GameFormatTests(TestCase):
 
     def test_money_reserves_max_loss_and_settles_cube_gammon_once(self):
         table = self.funded()
-        self.assertEqual(self.balance(self.host), 9200)
-        self.assertEqual(self.balance(self.guest), 9200)
+        # Balance 10000 funds cube 32 with Mars x2 at stake 100: reserve 6400.
+        self.assertEqual(self.balance(self.host), 3600)
+        self.assertEqual(self.balance(self.guest), 3600)
         self.assertEqual(self.result(table).status_code, 200)
         self.assertEqual(self.balance(self.host), 10380)
         self.assertEqual(self.balance(self.guest), 9600)
@@ -61,11 +62,11 @@ class GameFormatTests(TestCase):
         table.refresh_from_db()
         self.assertEqual(table.settlement['transfer'], '400.00')
 
-    def test_loss_limit_caps_backgammon(self):
+    def test_dynamic_reserve_settles_backgammon_above_legacy_profile_limit(self):
         table = self.funded()
         self.assertEqual(self.result(table, financial_result=dict(format='money', cube=8, win_type='backgammon')).status_code, 200)
-        self.assertEqual(self.balance(self.guest), 9200)
-        self.assertEqual(self.balance(self.host), 10760)
+        self.assertEqual(self.balance(self.guest), 7600)
+        self.assertEqual(self.balance(self.host), 12280)
 
     def test_jacoby_and_fixed_match(self):
         for name, jacoby, expected in [('money', True, 100), ('money', False, 300), ('match', False, 100)]:
@@ -106,25 +107,23 @@ class GameFormatTests(TestCase):
         table = self.funded()
         for result in (None, {}, dict(format='money', cube=64, win_type='single'), dict(format='money', cube=True, win_type='single')):
             self.assertEqual(self.result(table, financial_result=result).status_code, 409)
-            self.assertEqual(self.balance(self.host), 9200)
-            self.assertEqual(self.balance(self.guest), 9200)
+            self.assertEqual(self.balance(self.host), 3600)
+            self.assertEqual(self.balance(self.guest), 3600)
 
     def test_snapshot_is_immutable_but_disabled_format_blocks_join(self):
-        response = self.create()
+        response = self.create(game_format='match', target_points=5)
         table = HeadToHeadTable.objects.get(pk=response.json()['id'])
-        # Reproduce a public money table created before mode enforcement. Existing
-        # funded contracts must remain joinable and settle on their saved rules.
-        table.is_quick_match = False
-        table.save(update_fields=['is_quick_match'])
-        self.settings.format_profiles['money'].update(loss_limit_multiplier=16, fee_percent=10, enabled=False)
+        # Public match tables remain on their funded contract; money tables
+        # are admitted only through matchmaking, never this public join route.
+        self.settings.format_profiles['match'].update(fee_percent=10, enabled=False)
         self.settings.save()
         self.client.force_login(self.guest)
         self.assertEqual(self.client.post(f'/api/head-to-head/tables/{table.code}/join').status_code, 400)
-        self.settings.format_profiles['money']['enabled'] = True
+        self.settings.format_profiles['match']['enabled'] = True
         self.settings.save()
         self.assertEqual(self.client.post(f'/api/head-to-head/tables/{table.code}/join').status_code, 200)
         table.refresh_from_db()
-        self.assertEqual(required_reserve(table), 800)
+        self.assertEqual(required_reserve(table), 100)
         self.assertEqual(table.fee_percent, 5)
 
     def test_quick_intersection_reserves_max_and_refunds_unused(self):
@@ -132,10 +131,10 @@ class GameFormatTests(TestCase):
         self.client.force_login(self.host)
         a = self.client.post('/api/head-to-head/quick-match', json.dumps(payload), content_type='application/json')
         self.assertEqual(a.status_code, 201, a.content)
-        self.assertEqual(self.balance(self.host), 6000)
+        self.assertEqual(self.balance(self.host), 2000)
         again = self.client.post('/api/head-to-head/quick-match', json.dumps(payload), content_type='application/json')
         self.assertEqual(again.json()['id'], a.json()['id'])
-        self.assertEqual(self.balance(self.host), 6000)
+        self.assertEqual(self.balance(self.host), 2000)
         self.client.force_login(self.guest)
         payload['amounts'] = [100]
         b = self.client.post('/api/head-to-head/quick-match', json.dumps(payload), content_type='application/json')
@@ -149,6 +148,22 @@ class GameFormatTests(TestCase):
         self.assertEqual(table.settlement['dynamic_max_cube'], 32)
         self.assertEqual(self.result(table, financial_result=dict(format='money', cube=32, win_type='gammon')).status_code, 200)
         self.assertEqual(self.balance(self.host), 16080)
+        self.assertEqual(self.balance(self.guest), 3600)
+
+    def test_host_search_reserve_still_supports_cube_after_available_balance_is_spent(self):
+        response = self.create()
+        self.assertEqual(response.status_code, 201, response.content)
+        table = HeadToHeadTable.objects.get(pk=response.json()['id'])
+        WalletTransaction.create_entry(user=self.host, amount=-3600,
+                                       kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY)
+        self.client.force_login(self.guest)
+        joined = self.client.post('/api/head-to-head/quick-match',
+            json.dumps({'game_format': 'money', 'amounts': [100]}), content_type='application/json')
+        self.assertEqual(joined.status_code, 200, joined.content)
+        table.refresh_from_db()
+        self.assertEqual(table.settlement['dynamic_max_cube'], 32)
+        self.assertEqual(required_reserve(table), Decimal('6400.00'))
+        self.assertEqual(self.balance(self.host), 0)
         self.assertEqual(self.balance(self.guest), 3600)
 
     def test_admin_profiles_roundtrip_and_incompatible_rules_rejected(self):
