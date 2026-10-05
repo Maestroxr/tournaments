@@ -454,11 +454,12 @@ def _entry_deadline_fields(fixture, now):
 
 
 def _fresh_seat(game_link, seat, now):
-    """Whether `seat` declared readiness inside the freshness window."""
+    """A live waiting connection or a fresh legacy HTTP heartbeat."""
     ready_at = game_link.p1_ready_at if seat == 'p1' else game_link.p2_ready_at
-    if ready_at is None:
-        return False
-    return ready_at >= now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+    if ready_at is not None and ready_at >= now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS):
+        return True
+    from .entry_presence import seat_present
+    return seat_present(game_link.fixture_id, seat, now)
 
 
 def _no_show_winner_seat(fixture):
@@ -777,11 +778,7 @@ def _tournament_finished_entry_response(request, tournament_pk):
 
 
 def _readiness_fresh(game_link, now):
-    """True only when both seats heartbeated no earlier than the freshness window."""
-    if game_link.p1_ready_at is None or game_link.p2_ready_at is None:
-        return False
-    cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
-    return game_link.p1_ready_at >= cutoff and game_link.p2_ready_at >= cutoff
+    return _fresh_seat(game_link, 'p1', now) and _fresh_seat(game_link, 'p2', now)
 
 
 def _authorize_entry_pair(request, fixture, game_link, now, *, seat=None):
@@ -816,14 +813,13 @@ def _opponent_info(fixture, seat, game_link, now):
     """
     if seat == 'p1':
         opponent_user = fixture.player2.user
-        opponent_ready_at = game_link.p2_ready_at
+        opponent_seat = 'p2'
     else:
         opponent_user = fixture.player1.user
-        opponent_ready_at = game_link.p1_ready_at
-    cutoff = now - datetime.timedelta(seconds=READY_FRESHNESS_SECONDS)
+        opponent_seat = 'p1'
     return {
         'username': opponent_user.username,
-        'is_waiting': opponent_ready_at is not None and opponent_ready_at >= cutoff,
+        'is_waiting': _fresh_seat(game_link, opponent_seat, now),
     }
 
 
@@ -1006,18 +1002,16 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
     """
     Record one player's readiness heartbeat for their current tournament fixture.
 
-    POST only, session-authenticated and CSRF-protected like the play endpoint. Each browser
-    posts roughly every two seconds while the loading overlay waits; `both_ready` turns true
-    once both seats have a fresh heartbeat, and only then does the client submit the game
-    entry form. Once authorized, the pair can finish entry without another shared
-    heartbeat. An unreserved fixture remains subject to its tournament's entry policy.
+    Legacy POST callers renew a heartbeat. The shared WebSocket invokes the same
+    transaction with a connection-presence change instead, then pushes state.
+    Once authorized, the pair can finish entry without another shared heartbeat.
     """
 
     http_method_names = ['post']
     always_json_auth_response = True
 
     @transaction.atomic
-    def post(self, request, pk):
+    def post(self, request, pk, *, presence_change=None, expected_fixture=None):
         if not settings.GAMELINK_ENABLED:
             return _start_refusal(412, 'disabled')
 
@@ -1032,6 +1026,8 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
             status, reason, _ = refusal
             return _start_refusal(status, reason, request=request)
 
+        if expected_fixture is not None and fixture.pk != expected_fixture:
+            return _start_refusal(412, 'entry_pairing_changed', request=request)
         now = timezone.now()
         game_link, _ = GameLink.objects.get_or_create(
             fixture=fixture,
@@ -1074,8 +1070,11 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
             opponent_user_id = fixture.player2.user_id
         else:
             opponent_user_id = fixture.player1.user_id
-        setattr(game_link, field, now)
-        game_link.save(update_fields=[field])
+        if presence_change is None:
+            setattr(game_link, field, now)
+            game_link.save(update_fields=[field])
+        else:
+            new_waiting_attempt = presence_change(fixture, seat, game_link, now)
         # Re-read so a heartbeat the opponent committed while this request was in flight counts.
         game_link.refresh_from_db()
         if (new_waiting_attempt and opponent_user_id is not None

@@ -27,6 +27,8 @@ def user_group(user_id):
 
 def invalidate_tournaments(using='default'):
     """Bulk writes bypass signals and explicitly invalidate once after commit."""
+    from .lobby_revisions import advance
+    advance({TOURNAMENT_GROUP}, 'tournaments', using)
     transaction.on_commit(lambda: _send({TOURNAMENT_GROUP}, 'tournaments'), using=using)
 
 
@@ -117,7 +119,13 @@ def _invalidate(sender, instance, using, **kwargs):
         groups, resource = {TABLE_GROUP}, 'tables'
     else:
         groups, resource = {TOURNAMENT_GROUP}, 'tournaments'
+    from .lobby_revisions import advance
+    advance(groups, resource, using)
     transaction.on_commit(lambda: _send(groups, resource), using=using)
+    if sender in (Fixture, GameLink):
+        from gamelink.entry_presence import notify_fixture
+        fixture_id = instance.pk if sender is Fixture else instance.fixture_id
+        transaction.on_commit(lambda: notify_fixture(fixture_id), using=using)
 
 
 def _saved(sender, instance, using, raw=False, **kwargs):

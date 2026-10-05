@@ -25,6 +25,7 @@ from gamelink.views import _check_playability, _entry_deadline_fields
 from gamelink.playability import earliest_unresolved_fixtures
 from tournaments import models
 from .tournament_reads import TournamentReadSnapshot
+from .lobby_revisions import versioned_read
 from .forms import (
     SignupForm,
     AdminUserCreateForm,
@@ -689,6 +690,7 @@ def api_logout(request):
 
 
 @require_http_methods(["GET"])
+@versioned_read('tournaments')
 def api_tournaments(request):
     qs = models.Tournament.objects.filter(published=True).select_related('creator')
     # optional ?state=open|active|finished or ?q=search
@@ -868,6 +870,7 @@ def _create_friend_table(**fields):
 
 @require_http_methods(["GET", "POST"])
 @transaction.non_atomic_requests
+@versioned_read('tables')
 def api_head_to_head_tables(request):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)

@@ -5,6 +5,17 @@ from django.db import models
 from django.utils import timezone
 
 
+class LobbyRevision(models.Model):
+    """Durable cache versions scoped to the viewers who can see a change."""
+    resource = models.CharField(max_length=16)
+    scope = models.CharField(max_length=160)
+    generation = models.UUIDField(default=uuid.uuid4, editable=False)
+    sequence = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['resource', 'scope'], name='unique_lobby_revision_scope')]
+
+
 class AccountEmail(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='account_email')
     email = models.EmailField(unique=True)

@@ -124,7 +124,10 @@ if CHANNEL_LAYER_BACKEND == 'redis':
         'default': {
             'BACKEND': 'channels_redis.core.RedisChannelLayer',
             'CONFIG': {
-                'hosts': [REDIS_URL],
+                # Redis 8 defaults to a five-second read timeout, equal to
+                # Channels' blocking receive. Leave room for that normal wait.
+                'hosts': [{'address': REDIS_URL, 'socket_timeout': 10,
+                           'socket_connect_timeout': 5}],
             },
         },
     }

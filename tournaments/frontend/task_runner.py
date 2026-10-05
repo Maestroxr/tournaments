@@ -198,6 +198,9 @@ def expire_tournament_entry_deadlines(*, heartbeat, cursor=0, stop_id=None, boun
     so single-fresh still yields opponent_no_show and zero-fresh yields
     double_no_show; both-fresh is left alone. Idempotent under row locks.
     """
+    from gamelink.entry_presence import expire_presence
+    if heartbeat is None or heartbeat():
+        expire_presence()
     from gamelink.views import (
         TOURNAMENT_ENTRY_WINDOW,
         _entry_deadline_fields,

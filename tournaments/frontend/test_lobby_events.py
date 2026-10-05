@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +15,9 @@ from tournaments.models import HeadToHeadTable, Tournament
 
 from .entry_lifecycle import touch_open_searches
 from .lobby_events import TABLE_GROUP, TOURNAMENT_GROUP, user_group
+from .lobby_revisions import advance, current, versioned_read, REVISION_HEADER
+
+REVISIONS = {resource: {'generation': '0', 'sequence': 0} for resource in ('tournaments', 'tables')}
 
 
 class LobbyEventTests(TestCase):
@@ -76,9 +80,48 @@ class LobbyEventTests(TestCase):
                 tournament.save(update_fields=['published'])
             send.assert_called_once_with({TOURNAMENT_GROUP}, 'tournaments')
 
+    def test_versions_roll_back_with_the_changes(self):
+        before = current('tables', self.host.pk)
+        with self.assertRaisesMessage(RuntimeError, 'rollback'):
+            with transaction.atomic():
+                self.table.status = 'cancelled'
+                self.table.save(update_fields=['status'])
+                self.assertNotEqual(current('tables', self.host.pk), before)
+                raise RuntimeError('rollback')
+        self.assertEqual(current('tables', self.host.pk), before)
+
+    def test_private_revision_does_not_change_other_viewers_versions(self):
+        outsider = User.objects.create(username='outsider')
+        before = current('tables', outsider.pk)
+        host_before = current('tables', self.host.pk)
+        advance({user_group(self.host.pk), user_group(self.guest.pk)}, 'tables')
+        self.assertEqual(current('tables', outsider.pk), before)
+        self.assertNotEqual(current('tables', self.host.pk), host_before)
+
+    def test_read_header_captures_before_serialization_not_after_a_concurrent_change(self):
+        from django.http import JsonResponse
+        before = current('tournaments', self.host.pk)
+
+        @versioned_read('tournaments')
+        def read(request):
+            advance({TOURNAMENT_GROUP}, 'tournaments')
+            return JsonResponse([], safe=False)
+
+        response = read(SimpleNamespace(method='GET', user=self.host))
+        self.assertEqual(json.loads(response[REVISION_HEADER]), before)
+        self.assertNotEqual(current('tournaments', self.host.pk), before)
+
 
 @override_settings(CHANNEL_LAYERS={'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}})
 class ClubUpdatesConsumerTests(SimpleTestCase):
+    def setUp(self):
+        versions = patch('frontend.lobby_revisions.current_revisions', return_value=REVISIONS)
+        versions.start()
+        self.addCleanup(versions.stop)
+        revision = patch('frontend.lobby_revisions.current', return_value=REVISIONS['tables'])
+        revision.start()
+        self.addCleanup(revision.stop)
+
     def connection(self, user):
         connection = WebsocketCommunicator(ClubUpdatesConsumer.as_asgi(), '/ws/club/updates/')
         connection.scope['user'] = user
@@ -92,11 +135,12 @@ class ClubUpdatesConsumerTests(SimpleTestCase):
     async def test_registered_connection_receives_only_invalidation_metadata(self):
         connection = self.connection(SimpleNamespace(pk=7, is_authenticated=True))
         self.assertTrue((await connection.connect())[0])
-        self.assertEqual(await connection.receive_json_from(), {'type': 'connected'})
+        self.assertEqual(await connection.receive_json_from(), {'type': 'connected', 'revisions': REVISIONS})
         for group, resource in ((TOURNAMENT_GROUP, 'tournaments'), (TABLE_GROUP, 'tables'),
                                 (user_group(7), 'tables')):
             await get_channel_layer().group_send(group, {'type': 'club.invalidate', 'resource': resource})
-            self.assertEqual(await connection.receive_json_from(), {'type': 'invalidate', 'resource': resource})
+            self.assertEqual(await connection.receive_json_from(), {
+                'type': 'invalidate', 'resource': resource, 'revision': REVISIONS['tables']})
         await get_channel_layer().group_send(user_group(8), {'type': 'club.invalidate', 'resource': 'tables'})
         self.assertTrue(await connection.receive_nothing())
         await connection.disconnect()
