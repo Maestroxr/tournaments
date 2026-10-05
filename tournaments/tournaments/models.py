@@ -1,4 +1,6 @@
+from collections import defaultdict
 import math
+import logging
 import random
 import re
 from decimal import Decimal
@@ -6,12 +8,14 @@ from decimal import Decimal
 import numpy as np
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
-from django.db.models import CheckConstraint, Max, Min, Q, QuerySet
+from django.db import DatabaseError, models, transaction
+from django.db.models import CheckConstraint, Count, Max, Min, Q, QuerySet
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 from django.utils import timezone
 from polymorphic.models import PolymorphicModel
+
+logger = logging.getLogger(__name__)
 
 
 class PlayerRating(models.Model):
@@ -75,6 +79,7 @@ class Tournament(models.Model):
     # New easy fields — keep YAML for knockout/groups/division structure, add UI-friendly metadata
     created_at = models.DateTimeField(auto_now_add=True)
     starts_at = models.DateTimeField()
+    entry_deadline_paused = models.BooleanField(default=False)
     min_players = models.PositiveSmallIntegerField(default=6)
     max_players = models.PositiveSmallIntegerField(null=True, blank=True)
     target_points = models.PositiveSmallIntegerField(
@@ -278,24 +283,40 @@ class Tournament(models.Model):
             participation.save(update_fields=['slot_id'])
 
     def update_state(self):
-        if self.current_stage is None:
+        # A bye/no-show cascade can finish the last stage inside update_state.
+        # Re-read the stage after each update before attempting another pass.
+        stage = self.current_stage
+        cascade = stage is not None
+        if stage is not None:
+            # Already-created later stages can contain independent assignments.
+            # Process their results too, without creating a dependent stage
+            # before the ordered current-stage flow below reaches it.
+            for later in self.stages.filter(pk__gt=stage.pk, fixtures__isnull=False).distinct():
+                while later.update_fixtures():
+                    pass
+            stage = self.current_stage
+        while stage is not None:
+            if not stage.update_state():
+                return
+            stage = self.current_stage
 
-            # If the tournament is finished, update the podium positions.
-            podium = self._get_podium()
-            eligible_podium = [p for p in podium if p is not None and not self.participations.filter(
-                participant=p, disqualified_at__isnull=False).exists()]
-            for position, participant in enumerate(eligible_podium):
-                participation = self.participations.get(
-                    participant=participant)
+        # Finalize in this same call, including a stage completed by a cascade.
+        podium = self._get_podium()
+        eligible_podium = [p for p in podium if p is not None and not self.participations.filter(
+            participant=p, disqualified_at__isnull=False).exists()]
+        podium_changed = False
+        for position, participant in enumerate(eligible_podium):
+            participation = self.participations.get(participant=participant)
+            if participation.podium_position != position:
                 participation.podium_position = position
-                participation.save()
-            self.award_prize_money()
-
-        else:
-
-            # Propagate `update_state` to the current stage as long as updates happen.
-            while self.current_stage.update_state():
-                pass
+                participation.save(update_fields=['podium_position'])
+                podium_changed = True
+        self.award_prize_money()
+        if cascade or podium_changed:
+            transaction.on_commit(lambda: logger.info(
+                'event=tournament_finalized tournament_id=%s podium_size=%s via_cascade=%s',
+                self.pk, len(eligible_podium), cascade,
+            ))
 
     def award_prize_money(self):
         # A physical/custom gift is fulfilled outside the wallet.
@@ -320,6 +341,9 @@ class Tournament(models.Model):
             tournament=self,
             note=f"Prize for winning {self.name}",
         )
+        transaction.on_commit(lambda: logger.info(
+            'event=tournament_prize_awarded tournament_id=%s user_id=%s', self.pk, winner.participant.user_id,
+        ))
 
     @property
     def collected_entry_fees(self):
@@ -729,6 +753,11 @@ class DirectPlaySettings(models.Model):
         ]
 
     @classmethod
+    def for_read(cls):
+        """Return current settings or unsaved defaults without creating a row."""
+        return cls.objects.filter(pk=1).first() or cls(pk=1)
+
+    @classmethod
     def load(cls):
         return cls.objects.get_or_create(pk=1)[0]
 
@@ -1006,18 +1035,37 @@ class Mode(PolymorphicModel):
 
     @property
     def levels(self):
-        if self.fixtures.count() == 0:
-            return 0
-        else:
-            return 1 + self.fixtures.aggregate(Max('level'))['level__max']
+        last_level = self.fixtures.aggregate(Max('level'))['level__max']
+        return 0 if last_level is None else last_level + 1
 
     @property
     def current_level(self):
-        for level in range(self.levels):
-            fixtures = self.fixtures.filter(level=level)
-            if not all((fixture.is_confirmed for fixture in fixtures)):
-                return level
-        return self.levels
+        # A fresh, bounded set of queries per call; never cache across writes.
+        # Keep these predicates aligned with Fixture.is_confirmed.
+        rows = list(self.fixtures.values(
+            'id', 'level', 'admin_result', 'admin_winner_id',
+            'score1', 'score2', 'auto_confirmed',
+        ).annotate(confirmation_count=Count('confirmations')).order_by('level', 'id'))
+        required = None
+        for row in rows:
+            result = row['admin_result']
+            if result == 'double_no_show' or (
+                result in ('advance', 'disqualify', 'no_show_bye')
+                and row['admin_winner_id']
+            ):
+                continue
+            if row['score1'] is None or row['score2'] is None:
+                return row['level']
+            if row['auto_confirmed'] or result in ('score', 'finish'):
+                continue
+            if required is None:
+                required = 1 + Participation.objects.filter(
+                    tournament_id=self.tournament_id,
+                    participant__user__isnull=False,
+                ).count() // 2
+            if row['confirmation_count'] < required:
+                return row['level']
+        return rows[-1]['level'] + 1 if rows else 0
 
     def get_level_name(self, level):
         return None
@@ -1155,19 +1203,12 @@ def _notify_match_ready(fixture):
             recipients.append(player.user_id)
     if not recipients:
         return
-    fixture_id = fixture.pk
-
-    def _send():
-        # Local import on purpose: mirrors the existing function-level
-        # ``from frontend.push import ...`` pattern in gamelink/views.py and
-        # keeps any import cycle with the tournaments app impossible.
-        from frontend.push import notify_tournament_match_ready
-        fresh = Fixture.objects.select_related(
-            'mode__tournament').get(pk=fixture_id)
-        for recipient_id in recipients:
-            notify_tournament_match_ready(fresh, recipient_id=recipient_id)
-
-    transaction.on_commit(_send)
+    # This only inserts durable queue rows. Keep it inside the caller's fixture
+    # transition transaction so a failed enqueue cannot commit an unnotified
+    # playable_at stamp; the push worker performs all external delivery.
+    from frontend.push import notify_tournament_match_ready
+    for recipient_id in recipients:
+        notify_tournament_match_ready(fixture, recipient_id=recipient_id)
 
 
 class Groups(Mode):
@@ -1197,14 +1238,48 @@ class Groups(Mode):
                     if pidx1 >= len(group) or pidx2 >= len(group):
                         continue
 
-                    fixture = Fixture.objects.create(
+                    Fixture.objects.create(
                         mode=self,
                         level=level,
                         player1=group[pidx1],
                         player2=group[pidx2],
-                        playable_at=timezone.now(),
                     )
-                    _notify_match_ready(fixture)
+        self.update_fixtures()
+
+    def update_fixtures(self):
+        # Group schedules contain every future pairing from the outset. Only
+        # a pair that is next for both participants receives an entry clock.
+        # Unlike browser admission, offline participants still have a schedule.
+        from gamelink.playability import personally_ready_fixture_ids
+
+        fixtures = list(Fixture.objects.filter(mode__tournament_id=self.tournament_id)
+                        .select_related('player1', 'player2')
+                        .annotate(read_confirmation_count=Count('confirmations')))
+        required = 1 + Participation.objects.filter(
+            tournament_id=self.tournament_id, participant__user__isnull=False,
+        ).count() // 2
+
+        def confirmed(fixture):
+            return fixture.confirmed_result(
+                confirmation_count=fixture.read_confirmation_count,
+                required_confirmations=required,
+            )
+
+        ready_ids = personally_ready_fixture_ids(fixtures, is_confirmed=confirmed)
+        changed = False
+        for fixture in fixtures:
+            if (fixture.mode_id != self.pk or fixture.playable_at is not None
+                    or fixture.admin_result or confirmed(fixture)
+                    or fixture.player1_id is None or fixture.player2_id is None):
+                continue
+            if fixture.pk not in ready_ids:
+                continue
+            fixture.mode = self
+            fixture.playable_at = timezone.now()
+            fixture.save(update_fields=['playable_at'])
+            _notify_match_ready(fixture)
+            changed = True
+        return changed
 
     def get_standings(self, participant):
         row = get_stats(participant, dict(mode=self))
@@ -1483,16 +1558,15 @@ class Knockout(Mode):
             return False
         else:
             setattr(dst_fixture, dst_attr, player)
-            # Write-once transition to playability: stamp the first moment the
-            # destination fixture holds both players AND is actually allowed
-            # to be played (its level is current). Future-level fixtures keep
-            # playable_at=None until update_fixtures activates them.
-            # Never reset afterwards.
+            # Each completed branch may advance independently. The entry clock
+            # starts when this fixture gains both players, even if unrelated
+            # matches in an earlier round are still running. Never reset it.
             became_playable = (
                 dst_fixture.player1_id is not None
                 and dst_fixture.player2_id is not None
                 and dst_fixture.playable_at is None
-                and dst_fixture.level == dst_fixture.mode.current_level
+                and not dst_fixture.admin_result
+                and not dst_fixture.is_confirmed
             )
             if became_playable:
                 dst_fixture.playable_at = timezone.now()
@@ -1525,21 +1599,18 @@ class Knockout(Mode):
             if fixture.is_confirmed:
                 if self.propagate(fixture):
                     updates_performed = True
-        # Activate newly-current fixtures: both players arrived early while
-        # a previous level was still open, so playable_at stayed None.
-        # Stamp once now that their level is actually allowed to be played.
-        for fixture in self.fixtures.filter(level=self.current_level):
-            if fixture.is_confirmed:
+        # Repair previously assigned pairs whose entry clock was held behind
+        # the tournament-wide round. Fresh rows are required after propagation;
+        # timestamps already set by it or by a prior call remain unchanged.
+        for fixture in self.fixtures.filter(
+            player1__isnull=False, player2__isnull=False, playable_at__isnull=True,
+        ).select_related('player1', 'player2'):
+            if fixture.is_confirmed or fixture.admin_result:
                 continue
-            if (
-                fixture.player1_id is not None
-                and fixture.player2_id is not None
-                and fixture.playable_at is None
-            ):
-                fixture.playable_at = timezone.now()
-                fixture.save()
-                _notify_match_ready(fixture)
-                updates_performed = True
+            fixture.playable_at = timezone.now()
+            fixture.save(update_fields=['playable_at'])
+            _notify_match_ready(fixture)
+            updates_performed = True
         if self._resolve_empty_destinations():
             updates_performed = True
         return updates_performed
@@ -1567,14 +1638,46 @@ class Knockout(Mode):
         """
         from django.utils import timezone as tz
 
+        # This graph exists only for this call, inside the caller's transaction.
+        # Sharing these objects also exposes a just-resolved destination to any
+        # later destination it feeds, as the former per-destination queries did.
+        fixtures = list(self.fixtures.select_related(
+            'player1', 'player2', 'admin_winner',
+        ).prefetch_related('confirmations'))
+        inbound_by_destination = defaultdict(list)
+        for src in fixtures:
+            propagate = (src.extras or {}).get('propagate', {}) if isinstance(src.extras, dict) else {}
+            for slot_name, target in propagate.items():
+                if isinstance(target, dict) and isinstance(target.get('fixture_id'), int):
+                    inbound_by_destination[target['fixture_id']].append((src, slot_name))
+        required = None
+
+        def is_confirmed(fixture):
+            nonlocal required
+            needs_votes = (
+                fixture.score1 is not None and fixture.score2 is not None
+                and not fixture.auto_confirmed
+                and fixture.admin_result not in ('double_no_show', 'score', 'finish')
+                and not (fixture.admin_result in ('advance', 'disqualify', 'no_show_bye')
+                         and fixture.admin_winner_id)
+            )
+            if needs_votes and required is None:
+                required = 1 + Participation.objects.filter(
+                    tournament_id=self.tournament_id, participant__user__isnull=False,
+                ).count() // 2
+            return fixture.confirmed_result(
+                confirmation_count=len(fixture.confirmations.all()),
+                required_confirmations=required,
+            )
+
         changed = False
-        for dst in self.fixtures.all():
-            if dst.is_confirmed or dst.admin_result:
+        for dst in fixtures:
+            if is_confirmed(dst) or dst.admin_result:
                 continue
-            inbound = self._inbound_sources(dst)
+            inbound = inbound_by_destination.get(dst.pk, ())
             if not inbound:
                 continue
-            if not all(src.is_confirmed for src, _ in inbound):
+            if not all(is_confirmed(src) for src, _ in inbound):
                 continue
             winners = []
             for src, slot in inbound:
@@ -1624,17 +1727,15 @@ class Knockout(Mode):
     @staticmethod
     def _cancel_link(fixture):
         """Close any pending GameLink so no ticket can be issued afterwards."""
+        from gamelink.models import GameLink
+
         try:
-            from gamelink.models import GameLink
-        except Exception:
-            return
-        try:
-            link = GameLink.objects.filter(fixture_id=fixture.pk).first()
-            if link is not None and link.status == 'pending':
-                link.status = 'cancelled'
-                link.save(update_fields=['status'])
-        except Exception:
-            return
+            cancelled = GameLink.objects.filter(fixture_id=fixture.pk, status='pending').update(status='cancelled')
+        except DatabaseError:
+            logger.exception('event=cascade_link_cancel_failed fixture_id=%s', fixture.pk)
+            raise
+        if cancelled:
+            transaction.on_commit(lambda: logger.info('event=cascade_link_cancelled fixture_id=%s', fixture.pk))
 
     def check_fixture(self, fixture):
         if fixture.score1 is not None and fixture.score2 is not None and fixture.score1 == fixture.score2:
@@ -1653,26 +1754,28 @@ class Knockout(Mode):
                 extras__tree=1) if fixture.loser not in chunk1]
             return chunk1 + chunk2
 
-    def get_level_size(self, level):
+    def get_level_size(self, level, *, levels=None):
         """
         Return the maximum possible number of participants in a level of the main tree.
 
         This is not the actual number of participants, but the maximum number based on the tree structure.
         """
-        rlevel = self.levels - level
-        assert rlevel >= 1, f'level={level}, self.levels={self.levels}'
+        levels = self.levels if levels is None else levels
+        rlevel = levels - level
+        assert rlevel >= 1, f'level={level}, levels={levels}'
         if not self.double_elimination:
             return pow(2, rlevel)
         else:
             return pow(2, rlevel // 2)
 
-    def get_level_name(self, level):
+    def get_level_name(self, level, *, levels=None, tree_fixture_count=None):
         first_complete_level = Knockout.get_first_complete_level(
-            self.fixtures.filter(extras__tree=1).count())
+            self.fixtures.filter(extras__tree=1).count() if tree_fixture_count is None else tree_fixture_count)
         if level < first_complete_level:
             return 'Playoffs'
 
-        level_size = self.get_level_size(level)
+        levels = self.levels if levels is None else levels
+        level_size = self.get_level_size(level, levels=levels)
         if level_size == 2:
             base_level_name = 'Final'
         elif level_size == 4:
@@ -1689,7 +1792,7 @@ class Knockout(Mode):
             if level == first_complete_level:
                 return base_level_name
             if level_size <= 2:
-                rlevel = self.levels - level
+                rlevel = levels - level
                 prefix = {3: '1st', 2: '2nd', 1: '3rd'}[rlevel]
                 return f'{prefix} Final Round'
             else:
@@ -1781,6 +1884,10 @@ class Fixture(models.Model):
 
     @property
     def is_confirmed(self):
+        return self.confirmed_result()
+
+    def confirmed_result(self, *, confirmation_count=None, required_confirmations=None):
+        """Use supplied response/transaction-local counts without retaining a cache."""
         if self.admin_result in ('advance', 'disqualify', 'no_show_bye') and self.admin_winner_id:
             return True
         # Terminal without a winner: both players eliminated, bracket continues.
@@ -1793,7 +1900,11 @@ class Fixture(models.Model):
         # would stall the tournament forever.
         if self.auto_confirmed or self.admin_result in ('score', 'finish'):
             return True
-        return self.confirmations.count() >= self.required_confirmations_count
+        if confirmation_count is None:
+            confirmation_count = self.confirmations.count()
+        if required_confirmations is None:
+            required_confirmations = self.required_confirmations_count
+        return confirmation_count >= required_confirmations
 
     @property
     def winner(self):

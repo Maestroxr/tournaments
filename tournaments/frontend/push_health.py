@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
-from .models import PushDelivery, TablePushDelivery, PushWorkerStatus
+from .models import FixturePushDelivery, PushDelivery, TablePushDelivery, PushWorkerStatus, TournamentReminderDelivery
 from .push import configured
 
 
@@ -38,7 +38,7 @@ def admin_push_health(request):
     if configured() and (not worker or worker.expected_by <= now):
         issues.append({'code': 'worker_stopped'})
     counts = {'failed': 0, 'retrying': 0, 'delayed': 0}
-    for model in (PushDelivery, TablePushDelivery):
+    for model in (PushDelivery, FixturePushDelivery, TablePushDelivery, TournamentReminderDelivery):
         result = model.objects.filter(delivered_at=None, discarded_at=None).aggregate(
             failed=Count('pk', filter=Q(attempts__gte=5, next_attempt_at__lte=now)),
             retrying=Count('pk', filter=Q(attempts__gt=0, attempts__lt=5, next_attempt_at__lte=now)),

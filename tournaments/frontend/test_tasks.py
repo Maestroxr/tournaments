@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from frontend.entry_lifecycle import expire_unstarted_tables
 from frontend.models import Task
-from frontend.task_runner import HANDLERS, run_task
+from frontend.task_runner import HANDLERS, TaskRunOutcome, run_task
 from frontend.tasks import enqueue_admin_command, schedule_tasks
 from gamelink.commands import queue_admin_command
 from gamelink.models import AdminGameCommand, GameLink
@@ -39,7 +39,9 @@ class TournamentTaskTests(TransactionTestCase):
         Task.objects.all().delete()
         DirectPlaySettings.load()
         self.user = User.objects.create_user('task-host')
-        self.tournament = Tournament.objects.create(name='Task cup', podium_spec=[])
+        self.tournament = Tournament.objects.create(
+            name='Task cup', podium_spec=[], starts_at=timezone.now() + timedelta(hours=1),
+        )
         self.mode = Knockout.objects.create(tournament=self.tournament)
         schedule_tasks()
 
@@ -102,7 +104,8 @@ class TournamentTaskTests(TransactionTestCase):
         command = self.command()
         task = enqueue_admin_command(command.pk)
         open_url.side_effect = URLError('offline')
-        call_command('run_tasks', stdout=StringIO())
+        with self.assertRaises(CommandError):
+            call_command('run_tasks', stdout=StringIO())
         table.refresh_from_db()
         command.refresh_from_db()
         task.refresh_from_db()
@@ -138,7 +141,8 @@ class TournamentTaskTests(TransactionTestCase):
         enqueue_admin_command(command.pk)
         failed_expiry = MagicMock(side_effect=RuntimeError('expiry unavailable'))
         with patch.dict(HANDLERS, {'expire_unstarted_games': failed_expiry}):
-            call_command('run_tasks', stdout=StringIO())
+            with self.assertRaises(CommandError):
+                call_command('run_tasks', stdout=StringIO())
         command.refresh_from_db()
         self.assertEqual(command.status, 'delivered')
         expiry = Task.objects.get(name='expire_unstarted_games')
@@ -214,15 +218,21 @@ class TournamentTaskTests(TransactionTestCase):
     @patch('gamelink.commands.urlopen')
     def test_cron_runner_honors_batch_limit(self, open_url):
         self.successful_response(open_url)
-        Task.objects.filter(name='expire_unstarted_games').update(
+        # Isolate command delivery from all periodic work seeded by schedule_tasks.
+        Task.objects.update(
             run_at=timezone.now() + timedelta(minutes=1),
         )
         for _ in range(3):
             enqueue_admin_command(self.command().pk)
-        call_command('run_tasks', limit=2, stdout=StringIO())
+        output = StringIO()
+        call_command('run_tasks', limit=2, stdout=output)
         self.assertEqual(AdminGameCommand.objects.filter(status='delivered').count(), 2)
+        self.assertEqual(AdminGameCommand.objects.filter(status='pending').count(), 1)
+        self.assertEqual(open_url.call_count, 2)
+        self.assertIn('count=2 completed=2 failed=0 deferred=0', output.getvalue())
         call_command('run_tasks', stdout=StringIO())
         self.assertEqual(AdminGameCommand.objects.filter(status='delivered').count(), 3)
+        self.assertEqual(open_url.call_count, 3)
 
     @patch('gamelink.commands.urlopen')
     def test_stale_delivery_failure_cannot_reopen_completed_command(self, open_url):
@@ -253,12 +263,49 @@ class TournamentTaskTests(TransactionTestCase):
 
     def test_runner_continues_after_unexpected_claim_error(self):
         enqueue_admin_command(self.command().pk)
-        with patch('frontend.management.commands.run_tasks.run_task',
-                   side_effect=[RuntimeError('claim failed'), True]) as execute:
+        due_ids = list(Task.objects.values_list('pk', flat=True))
+        self.assertGreater(len(due_ids), 1)
+        failed_id = due_ids[0]
+
+        def claim(task_id):
+            if task_id == failed_id:
+                raise RuntimeError('claim failed')
+            return TaskRunOutcome.COMPLETED
+
+        output = StringIO()
+        with patch('frontend.management.commands.run_tasks.run_task_with_outcome',
+                   side_effect=claim) as execute:
             with self.assertLogs('frontend.management.commands.run_tasks', level='ERROR'):
-                with self.assertRaises(CommandError):
-                    call_command('run_tasks', stdout=StringIO())
-        self.assertEqual(execute.call_count, 2)
+                with self.assertRaisesMessage(CommandError, str(failed_id)):
+                    call_command('run_tasks', stdout=output)
+        self.assertEqual(execute.call_count, len(due_ids))
+        self.assertEqual(execute.call_args_list[0].args[0], failed_id)
+        self.assertEqual({invocation.args[0] for invocation in execute.call_args_list}, set(due_ids))
+        self.assertIn(
+            f'count={len(due_ids)} completed={len(due_ids) - 1} failed=1 deferred=0',
+            output.getvalue(),
+        )
+
+    def test_runner_reports_a_lost_claim_as_deferred_without_failing(self):
+        Task.objects.all().delete()
+        enqueue_admin_command(self.command().pk)
+        output = StringIO()
+        with patch('frontend.management.commands.run_tasks.run_task_with_outcome',
+                   return_value=TaskRunOutcome.NOT_OWNED):
+            call_command('run_tasks', stdout=output)
+        self.assertIn('failed=0 deferred=1', output.getvalue())
+
+    def test_runner_reports_a_claimed_failure_and_exits_nonzero(self):
+        Task.objects.all().delete()
+        task = enqueue_admin_command(self.command().pk)
+        output = StringIO()
+        with patch.dict(HANDLERS, {'deliver_admin_command': MagicMock(return_value=False)}):
+            with self.assertRaises(CommandError):
+                call_command('run_tasks', stdout=output)
+        self.assertIn('failed=1 deferred=0', output.getvalue())
+        task.refresh_from_db()
+        self.assertTrue(task.last_error)
+        self.assertEqual(task.status, 'pending')
 
     def test_data_migration_backfills_only_pending_commands_idempotently(self):
         from importlib import import_module

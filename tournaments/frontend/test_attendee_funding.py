@@ -1,8 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from tournaments.models import Tournament, UserContact, WalletTransaction
 
@@ -16,6 +18,7 @@ class AttendeeFundingTests(TestCase):
         response = self.client.post(reverse('api-admin-tournaments'), data={
             'name': 'Club tournament', 'template': 'knockout', 'min_players': 2,
             'max_players': 8, 'open_registration': True, 'entry_fee': '50.00',
+            'starts_at': (timezone.now() + timedelta(hours=1)).isoformat(),
         }, content_type='application/json')
         self.assertEqual(response.status_code, 201, response.content)
         self.tournament = Tournament.objects.get(pk=response.json()['id'])

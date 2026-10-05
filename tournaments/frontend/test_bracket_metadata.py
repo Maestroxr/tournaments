@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from tournaments.models import Tournament, Participant, Participation
 
@@ -12,6 +15,7 @@ class BracketMetadataTests(TestCase):
         response = self.client.post(reverse('api-admin-tournaments'), {
             'name': 'Six players', 'template': 'knockout', 'min_players': 6,
             'max_players': 8, 'open_registration': True,
+            'starts_at': (timezone.now() + timedelta(hours=1)).isoformat(),
         }, content_type='application/json')
         self.assertEqual(response.status_code, 201, response.content)
         tournament = Tournament.objects.get(pk=response.json()['id'])
@@ -21,6 +25,10 @@ class BracketMetadataTests(TestCase):
         self.client.post(reverse('api-admin-tournament-close-registration', kwargs={'pk': tournament.pk}))
         self.client.post(reverse('api-admin-tournament-draw', kwargs={'pk': tournament.pk}), {}, content_type='application/json')
         self.client.post(reverse('api-admin-tournament-confirm-draw', kwargs={'pk': tournament.pk}))
+        # Creation requires a future schedule; starting requires that it is due.
+        Tournament.objects.filter(pk=tournament.pk).update(
+            starts_at=timezone.now() - timedelta(seconds=1),
+        )
         response = self.client.post(reverse('api-admin-tournament-start', kwargs={'pk': tournament.pk}))
         self.assertEqual(response.status_code, 200, response.content)
         stage = tournament.stages.first()

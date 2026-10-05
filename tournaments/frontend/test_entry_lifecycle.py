@@ -25,8 +25,12 @@ class EntryLifecycleTests(TestCase):
         response = self.create()
         self.assertEqual(response.status_code, 201, response.content)
         table = HeadToHeadTable.objects.get(pk=response.json()['id'])
+        expired_at = timezone.now() - timedelta(minutes=11)
+        # Legacy paired rows derive their entry window from updated_at; aging
+        # created_at alone only makes an unmatched public search expire.
         HeadToHeadTable.objects.filter(pk=table.pk).update(
-            created_at=timezone.now() - timedelta(minutes=11), status=status)
+            created_at=expired_at, updated_at=expired_at, status=status)
+        table.refresh_from_db()
         return table
 
     def test_second_game_rejected_without_another_charge(self):
@@ -68,16 +72,28 @@ class EntryLifecycleTests(TestCase):
     @patch('frontend.entry_lifecycle.remote_expiry', return_value='started')
     def test_actual_started_game_is_preserved(self, remote):
         table = self.old_table('playing')
+        balance_before = WalletTransaction.balance_for_user(self.user)
         expire_unstarted_tables()
         table.refresh_from_db()
         self.assertEqual(table.status, 'playing')
+        self.assertTrue(table.settlement['entry_confirmed'])
+        remote.assert_called_once()
+        self.assertEqual(remote.call_args.args[0].pk, table.pk)
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), balance_before)
 
     @patch('frontend.entry_lifecycle.remote_expiry', side_effect=OSError('offline'))
     def test_network_failure_does_not_cancel_a_game(self, remote):
         table = self.old_table('playing')
-        expire_unstarted_tables()
+        balance_before = WalletTransaction.balance_for_user(self.user)
+        with self.assertRaisesMessage(RuntimeError, 'entry expiry failed for tables'):
+            expire_unstarted_tables()
         table.refresh_from_db()
         self.assertEqual(table.status, 'playing')
+        remote.assert_called_once()
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), balance_before)
+        self.assertFalse(table.wallet_transactions.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+        ).exists())
 
     @patch('frontend.entry_lifecycle.remote_expiry', return_value='missing')
     def test_clicked_link_without_connection_expires(self, remote):
@@ -85,6 +101,14 @@ class EntryLifecycleTests(TestCase):
         expire_unstarted_tables()
         table.refresh_from_db()
         self.assertEqual(table.status, 'cancelled')
+        remote.assert_called_once()
+        self.assertEqual(table.settlement['reason'], 'entry_timeout')
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), 10000)
+        expire_unstarted_tables()
+        self.assertEqual(remote.call_count, 1)
+        self.assertEqual(table.wallet_transactions.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
+        ).count(), 1)
 
     def test_search_expires_at_five_minutes_and_refunds_once(self):
         table = self.old_table()

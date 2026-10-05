@@ -1,11 +1,13 @@
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from tournaments.models import Participant, Tournament, TournamentRegistration, UserContact, WalletTransaction
+from tournaments.models import Fixture, Participant, Tournament, TournamentRegistration, UserContact, WalletTransaction
 
 
 DEFINITION = """
@@ -33,6 +35,7 @@ class AttendeeOperationsTests(TestCase):
             min_players=2,
             max_players=2,
             entry_fee=Decimal('25.00'),
+            starts_at=timezone.now() + timedelta(days=1),
         )
         for player in self.players:
             WalletTransaction.create_entry(
@@ -61,14 +64,16 @@ class AttendeeOperationsTests(TestCase):
     def participant_id(self, player):
         return Participant.objects.get(user=player).pk
 
-    def test_tournament_starts_when_capacity_is_reached(self):
+    def test_capacity_closes_registration_without_starting_before_schedule(self):
         self.assertEqual(self.post_player(self.players[0]).status_code, 200)
         response = self.post_player(self.players[1])
         self.assertEqual(response.status_code, 200)
         self.tournament.refresh_from_db()
-        self.assertEqual(self.tournament.state, 'active')
+        self.assertEqual(self.tournament.state, 'open')
         self.assertEqual(self.tournament.registration_closed_reason, 'capacity')
-        self.assertTrue(self.tournament.draw_confirmed_at)
+        self.assertFalse(self.tournament.registration_open)
+        self.assertIsNone(self.tournament.draw_confirmed_at)
+        self.assertFalse(Fixture.objects.filter(mode__tournament=self.tournament).exists())
         before = WalletTransaction.balance_for_user(self.players[2])
 
         response = self.post_player(self.players[2])
@@ -117,17 +122,23 @@ class AttendeeOperationsTests(TestCase):
                 self.assertTrue(self.tournament.participations.filter(participant__user=player).exists())
                 self.assertEqual(WalletTransaction.balance_for_user(player), Decimal('25.00'))
 
-    def test_public_join_is_closed_after_capacity_starts_tournament(self):
+    def test_public_join_is_waitlisted_at_capacity_before_scheduled_start(self):
         self.post_player(self.players[0])
         self.post_player(self.players[1])
         self.client.force_login(self.players[2])
+        before = WalletTransaction.balance_for_user(self.players[2])
 
         response = self.client.post(reverse('api-join', kwargs={'pk': self.tournament.pk}))
 
-        self.assertEqual(response.status_code, 412, response.content)
-        self.assertFalse(TournamentRegistration.objects.filter(
+        self.assertEqual(response.status_code, 200, response.content)
+        registration = TournamentRegistration.objects.get(
             tournament=self.tournament, participant__user=self.players[2]
-        ).exists())
+        )
+        self.assertEqual(registration.status, TournamentRegistration.STATUS_WAITLISTED)
+        self.assertEqual(registration.payment_status, TournamentRegistration.PAYMENT_UNPAID)
+        self.assertFalse(self.tournament.participations.filter(participant__user=self.players[2]).exists())
+        self.assertEqual(self.tournament.participations.count(), 2)
+        self.assertEqual(WalletTransaction.balance_for_user(self.players[2]), before)
 
     def test_check_in_does_not_affect_readiness_but_payment_does(self):
         self.post_player(self.players[0])

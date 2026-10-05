@@ -3,9 +3,12 @@ import json
 from decimal import Decimal
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransaction
+from .task_runner import expire_unstarted_games
 
 
 class ModeRuleTests(TestCase):
@@ -69,21 +72,57 @@ class ModeRuleTests(TestCase):
         self.assertEqual(table.status, 'open')
         self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('3600'))
 
-    def test_lobby_retires_only_own_legacy_search_and_explains_closure(self):
+    def test_lobby_is_read_only_and_worker_retires_legacy_searches(self):
         own = HeadToHeadTable.objects.create(code='LEG001', host=self.host, mode='match',
                                               game_format='legacy', is_quick_match=True, amount=100,
                                               fee_percent=5, fee_per_player=5)
         other = HeadToHeadTable.objects.create(code='LEG002', host=self.guest, mode='match',
                                                 game_format='legacy', is_quick_match=True, amount=100,
                                                 fee_percent=5, fee_per_player=5)
-        response = self.client.get('/api/head-to-head/tables')
+        WalletTransaction.create_entry(
+            user=self.host, amount=-100,
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY,
+            head_to_head_table=own,
+        )
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get('/api/head-to-head/tables')
         self.assertEqual(response.status_code, 200)
+        self.assertFalse(any(
+            query['sql'].lstrip().upper().startswith(
+                ('INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'BEGIN IMMEDIATE'))
+            for query in queries
+        ), [query['sql'] for query in queries])
+        own.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(own.status, 'open')
+        self.assertEqual(other.status, 'open')
+        self.assertEqual(response.json()['my_history'], [])
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9900)
+
+        # The existing global worker owns cleanup for every player. A lobby
+        # refresh must not compete with match entry for a database writer lock.
+        self.assertTrue(expire_unstarted_games(heartbeat=lambda: True))
         own.refresh_from_db()
         other.refresh_from_db()
         self.assertEqual(own.status, 'cancelled')
-        self.assertEqual(other.status, 'open')
-        self.assertEqual(response.json()['my_history'][0]['settlement']['reason'], 'legacy_search_closed')
-        self.assertEqual(WalletTransaction.objects.count(), 2)
+        self.assertEqual(other.status, 'cancelled')
+        self.assertEqual(own.settlement['reason'], 'legacy_search_closed')
+        self.assertEqual(other.settlement['reason'], 'legacy_search_closed')
+        self.assertEqual(own.settlement['refund'], '100.00')
+        self.assertEqual(other.settlement['refund'], '0.00')
+        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
+        self.assertEqual(WalletTransaction.balance_for_user(self.guest), 10000)
+
+        for player, table in ((self.host, own), (self.guest, other)):
+            self.client.force_login(player)
+            history = self.client.get('/api/head-to-head/tables').json()['my_history']
+            self.assertEqual([item['id'] for item in history], [table.pk])
+            self.assertEqual(history[0]['settlement']['reason'], 'legacy_search_closed')
+
+        self.assertTrue(expire_unstarted_games(heartbeat=lambda: True))
+        self.assertEqual(own.wallet_transactions.filter(
+            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 1)
+        self.assertEqual(WalletTransaction.objects.count(), 4)
 
     def setUp(self):
         self.settings = DirectPlaySettings.load()

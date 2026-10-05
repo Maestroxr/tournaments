@@ -26,7 +26,7 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
 from django.core.exceptions import RequestDataTooBig, ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -36,7 +36,8 @@ from channels.layers import get_channel_layer
 from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, RatingResult, Tournament, WalletTransaction
 
 from .models import DirectPlayRematch, GameLink, IssuedTicket, SeenNonce
-from .signing import SEATS, issue_direct_play_ticket, issue_ticket, redact, verify_result_signature
+from .playability import earliest_unresolved_fixtures, personally_ready_fixture_ids
+from .signing import SEATS, issue_direct_play_ticket, issue_ticket, verify_result_signature
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ class StartDirectPlayView(LoginRequiredMixin, View):
         return response
 
 
-def playable_seat(user, fixture):
+def playable_seat(user, fixture, *, read_snapshot=None):
     """
     Return ``(seat, refusal)`` for `user` playing `fixture`.
 
@@ -180,75 +181,127 @@ def playable_seat(user, fixture):
     is derived here, from the fixture, and is never read from the request.
     """
 
-    # 1. The feature has to be switched on. Checked first, and before anything touches the
-    #    database, so that the button costs nothing on a deployment that does not use it.
+    seat, refusal, _ = _check_playability(user, fixture, read_snapshot=read_snapshot)
+    return seat, refusal
+
+
+def _check_playability(user, fixture, *, read_snapshot=None):
+    """Shared guards; only GET callers may supply a request-scoped read snapshot.
+
+    Write endpoints omit the snapshot and evaluate current state under their
+    tournament/fixture locks. Never attach read caches to writable model objects.
+    """
     if not settings.GAMELINK_ENABLED:
-        return None, 412
-
+        return None, 412, 'disabled'
     if user is None or not user.is_authenticated:
-        return None, 403
-
-    # 2. The tournament has to be running.
+        return None, 403, 'not_authenticated'
     tournament = fixture.mode.tournament
-    if tournament.state != 'active':
-        return None, 412
-
-    # 3. The fixture has to be one that is playable right now.
-    current_stage = tournament.current_stage
-    if current_stage is None or fixture.mode_id != current_stage.id:
-        return None, 412
-
-    # 4. A fixture whose result is settled is not replayable.
-    if fixture.is_confirmed:
-        return None, 412
-
-    # 5. Both seats have to belong to a user of this site; an offline participant cannot be handed
-    #    a ticket, and the game server has nobody to seat opposite.
+    state = read_snapshot.state if read_snapshot is not None else tournament.state
+    if state != 'active':
+        return None, 412, 'tournament_not_active'
+    confirmed = (read_snapshot.is_confirmed(fixture) if read_snapshot is not None
+                 else fixture.is_confirmed)
+    if confirmed:
+        return None, 412, 'fixture_already_confirmed'
     if fixture.player1 is None or fixture.player2 is None:
-        return None, 412
+        return None, 412, 'fixture_missing_player'
     if fixture.player1.user_id is None or fixture.player2.user_id is None:
-        return None, 412
-
-    # 6. Finally, the requester has to be one of the two players, which is what fixes the seat.
+        return None, 412, 'fixture_player_has_no_user'
     if fixture.player1.user_id == user.id:
-        return 'p1', None
-    if fixture.player2.user_id == user.id:
-        return 'p2', None
+        seat = 'p1'
+        opponent = fixture.player2.user
+    elif fixture.player2.user_id == user.id:
+        seat = 'p2'
+        opponent = fixture.player1.user
+    else:
+        return None, 403, 'user_not_in_fixture'
+    if fixture.playable_at is None or fixture.playable_at > timezone.now():
+        return None, 412, 'fixture_not_activated'
+    if read_snapshot is not None:
+        candidates = {
+            person.pk: read_snapshot.current_user_fixtures(person)
+            for person in (user, opponent)
+        }
+    else:
+        candidates = _fresh_personal_fixtures(tournament, (user.pk, opponent.pk))
+    for person, ambiguous, unavailable in (
+        (user, 'ambiguous_current_fixtures', 'fixture_not_personal_current'),
+        (opponent, 'opponent_ambiguous_current_fixtures', 'opponent_not_personal_current'),
+    ):
+        current = candidates[person.pk]
+        if len(current) > 1:
+            return None, 412, ambiguous
+        if not current or current[0].pk != fixture.pk:
+            return None, 412, unavailable
+    return seat, None, 'ready'
 
-    return None, 403
+
+def _fresh_personal_fixtures(tournament, user_ids):
+    """Bounded fresh queries; callers hold the tournament lock on write paths."""
+    rows = Fixture.objects.filter(mode__tournament_id=tournament.pk).filter(
+        Q(player1__user_id__in=user_ids) | Q(player2__user_id__in=user_ids),
+    ).select_related('mode__tournament', 'player1__user', 'player2__user').annotate(
+        entry_confirmation_count=Count('confirmations'),
+    ).order_by('mode_id', 'level', 'pk')
+    rows = list(rows)
+    required = 1 + tournament.participations.filter(participant__user__isnull=False).count() // 2
+    def confirmed(item):
+        return item.confirmed_result(
+            confirmation_count=item.entry_confirmation_count, required_confirmations=required,
+        )
+    return {
+        user_id: earliest_unresolved_fixtures(rows, user_id, is_confirmed=confirmed)
+        for user_id in user_ids
+    }
 
 
-def _playable_refusal_reason(user, fixture):
+def _playable_refusal_reason(user, fixture, *, read_snapshot=None):
     """Return a development-only label for the first failed playability guard."""
-    if not settings.GAMELINK_ENABLED:
-        return 'disabled'
-    if user is None or not user.is_authenticated:
-        return 'not_authenticated'
-
-    tournament = fixture.mode.tournament
-    if tournament.state != 'active':
-        return 'tournament_not_active'
-    current_stage = tournament.current_stage
-    if current_stage is None or fixture.mode_id != current_stage.id:
-        return 'fixture_not_in_current_stage'
-    if fixture.is_confirmed:
-        return 'fixture_already_confirmed'
-    if fixture.player1 is None or fixture.player2 is None:
-        return 'fixture_missing_player'
-    if fixture.player1.user_id is None or fixture.player2.user_id is None:
-        return 'fixture_player_has_no_user'
-    return 'user_not_in_fixture'
+    return _check_playability(user, fixture, read_snapshot=read_snapshot)[2]
 
 
-def _start_refusal(status, reason):
+def _entry_event(request, event, *, fixture=None, link=None, reason='', seat=None):
+    log = logger.warning if event == 'entry_refused' else logger.info
+    log(
+        'event=%s request_id=%s tournament_id=%s fixture_id=%s user_id=%s '
+        'link_status=%s seat=%s reason=%s',
+        event, getattr(request, 'incident_request_id', '-'),
+        fixture.mode.tournament_id if fixture is not None else '-',
+        fixture.pk if fixture is not None else '-',
+        getattr(getattr(request, 'user', None), 'pk', None),
+        link.status if link is not None else '-', seat or '-', reason or '-',
+    )
+
+
+def _start_refusal(status, reason, *, request=None, fixture=None, link=None):
     """Keep production refusals opaque while making local integration debugging practical."""
     response = HttpResponse(status=status)
+    if request is not None:
+        _entry_event(request, 'entry_refused', fixture=fixture, link=link, reason=reason)
     if settings.DEBUG:
         response['X-GameLink-Debug'] = reason
     return response
 
 
-class StartGameView(LoginRequiredMixin, View):
+def _wants_entry_json(request):
+    return any(
+        media.split(';', 1)[0].strip().lower() == 'application/json'
+        for media in request.headers.get('Accept', '').split(',')
+    )
+
+
+class GameEntryLoginRequiredMixin(LoginRequiredMixin):
+    always_json_auth_response = False
+
+    def handle_no_permission(self):
+        if self.always_json_auth_response or _wants_entry_json(self.request):
+            response = JsonResponse({'detail': 'Authentication required'}, status=401)
+            response['Cache-Control'] = 'no-store'
+            return response
+        return super().handle_no_permission()
+
+
+class StartGameView(GameEntryLoginRequiredMixin, View):
     """
     Mint a ticket for the requesting player and redirect them to the game server.
 
@@ -291,12 +344,12 @@ class StartGameView(LoginRequiredMixin, View):
                 fixture.player1.user_id if fixture.player1 else None,
                 fixture.player2.user_id if fixture.player2 else None,
             )
-            return _start_refusal(refusal, reason)
+            return _start_refusal(refusal, reason, request=request, fixture=fixture)
 
         return _issue_game_ticket(request, fixture, seat)
 
 
-class StartTournamentGameView(LoginRequiredMixin, View):
+class StartTournamentGameView(GameEntryLoginRequiredMixin, View):
     """Start the signed-in player's one current fixture in ``pk``.
 
     The Vue client deliberately posts a tournament id rather than a fixture id.  A player can
@@ -333,7 +386,7 @@ class StartTournamentGameView(LoginRequiredMixin, View):
                     'gamelink tournament start refused: %s '
                     '[tournament=%s user=%s fixtures=%s]',
                     reason, pk, request.user.pk, detail)
-            return _start_refusal(status, reason)
+            return _start_refusal(status, reason, request=request)
 
         return _issue_game_ticket(request, fixture, seat)
 
@@ -352,30 +405,19 @@ def _resolve_current_fixture(request, pk):
     except Tournament.DoesNotExist:
         return None, None, None, (412, 'tournament_does_not_exist', None)
 
-    current_stage = tournament.current_stage
-    if tournament.state != 'active' or current_stage is None:
+    if tournament.state != 'active':
         return tournament, None, None, (412, 'tournament_not_active', None)
 
-    fixtures = list(
-        Fixture.objects.select_for_update().select_related(
-            'mode__tournament', 'player1__user', 'player2__user')
-        .filter(
-            mode_id=current_stage.pk,
-        )
-        .filter(Q(player1__user=request.user) | Q(player2__user=request.user))
-        .order_by('pk')
-    )
-    playable = []
-    for fixture in fixtures:
-        seat, _ = playable_seat(request.user, fixture)
-        if seat is not None:
-            playable.append((fixture, seat))
-
-    if len(playable) != 1:
-        reason = 'current_fixture_not_found' if not playable else 'ambiguous_current_fixtures'
-        return tournament, None, None, (412, reason, [fixture.pk for fixture, _ in playable])
-
-    fixture, seat = playable[0]
+    current = _fresh_personal_fixtures(tournament, (request.user.pk,))[request.user.pk]
+    if len(current) != 1:
+        reason = 'current_fixture_not_found' if not current else 'ambiguous_current_fixtures'
+        return tournament, None, None, (412, reason, [fixture.pk for fixture in current])
+    fixture = Fixture.objects.select_for_update().select_related(
+        'mode__tournament', 'player1__user', 'player2__user',
+    ).get(pk=current[0].pk)
+    seat, refusal, reason = _check_playability(request.user, fixture)
+    if refusal is not None:
+        return tournament, None, None, (refusal, reason, [fixture.pk])
     return tournament, fixture, seat, None
 
 
@@ -398,7 +440,7 @@ def _entry_deadline_fields(fixture, now):
     never goes negative; an expired deadline reports ``0`` without resolving
     anything — no-show resolution happens elsewhere.
     """
-    if fixture.playable_at is None:
+    if fixture.mode.tournament.entry_deadline_paused or fixture.playable_at is None:
         return None, None
     entry_deadline = fixture.playable_at + TOURNAMENT_ENTRY_WINDOW
     remaining_seconds = max(
@@ -439,6 +481,23 @@ def _is_double_no_show(fixture):
     return FixtureAudit.objects.filter(fixture=fixture, action='double_no_show').exists()
 
 
+def _fixture_personally_ready(fixture):
+    """Expiry must not settle a later match blocked by either participant's earlier one."""
+    participant_ids = (fixture.player1_id, fixture.player2_id)
+    if None in participant_ids:
+        return False
+    tournament = fixture.mode.tournament
+    rows = list(Fixture.objects.filter(mode__tournament_id=tournament.pk).filter(
+        Q(player1_id__in=participant_ids) | Q(player2_id__in=participant_ids),
+    ).annotate(entry_confirmation_count=Count('confirmations')))
+    required = 1 + tournament.participations.filter(participant__user__isnull=False).count() // 2
+    return fixture.pk in personally_ready_fixture_ids(
+        rows, is_confirmed=lambda item: item.confirmed_result(
+            confirmation_count=item.entry_confirmation_count, required_confirmations=required,
+        ),
+    )
+
+
 def _resolve_double_no_show_locked(fixture, locked_link, now):
     """Resolve an expired fixture where neither player entered. Caller holds locks.
 
@@ -456,10 +515,13 @@ def _resolve_double_no_show_locked(fixture, locked_link, now):
     if entry_deadline is None or now < entry_deadline:
         return False
     if locked_link is not None:
-        if locked_link.status != 'pending':
+        if (locked_link.status != 'pending' or locked_link.entry_authorized_at
+                or locked_link.external_room_id):
             return False
         if _fresh_seat(locked_link, 'p1', now) or _fresh_seat(locked_link, 'p2', now):
             return False
+    if not _fixture_personally_ready(fixture):
+        return False
     fixture.admin_result = 'double_no_show'
     fixture.admin_winner = None
     fixture.admin_resolved_at = now
@@ -476,6 +538,11 @@ def _resolve_double_no_show_locked(fixture, locked_link, now):
         locked_link.status = 'cancelled'
         locked_link.save(update_fields=['status'])
     fixture.mode.tournament.update_state()
+    transaction.on_commit(lambda: logger.info(
+        'event=entry_deadline_resolved tournament_id=%s fixture_id=%s winner_seat=none '
+        'deadline_utc=%s cause=double_no_show',
+        fixture.mode.tournament_id, fixture.pk, entry_deadline.isoformat(),
+    ))
     return True
 
 
@@ -503,6 +570,9 @@ def _try_resolve_no_show(fixture, game_link, now):
     if game_link.status != 'pending':
         return None
     locked_link = GameLink.objects.select_for_update().get(pk=game_link.pk)
+    if (locked_link.status != 'pending' or locked_link.entry_authorized_at
+            or locked_link.external_room_id):
+        return None
     p1_here = _fresh_seat(locked_link, 'p1', now)
     p2_here = _fresh_seat(locked_link, 'p2', now)
     if p1_here == p2_here:
@@ -513,6 +583,8 @@ def _try_resolve_no_show(fixture, game_link, now):
             return None
         # Both entered — the normal both_ready flow owns that race.
         # Never award or invent a winner here.
+        return None
+    if not _fixture_personally_ready(fixture):
         return None
     winner_seat = 'p1' if p1_here else 'p2'
     winner = fixture.player1 if winner_seat == 'p1' else fixture.player2
@@ -535,6 +607,11 @@ def _try_resolve_no_show(fixture, game_link, now):
     # Existing tournament flow: mark resolved, confirm via admin_result, and
     # propagate the winner through the bracket.
     fixture.mode.tournament.update_state()
+    transaction.on_commit(lambda: logger.info(
+        'event=entry_deadline_resolved tournament_id=%s fixture_id=%s winner_seat=%s '
+        'deadline_utc=%s cause=opponent_no_show',
+        fixture.mode.tournament_id, fixture.pk, winner_seat, entry_deadline.isoformat(),
+    ))
     return winner_seat
 
 
@@ -704,15 +781,27 @@ def _readiness_fresh(game_link, now):
     return game_link.p1_ready_at >= cutoff and game_link.p2_ready_at >= cutoff
 
 
-def _has_prior_entry(game_link, user):
-    """
-    True when this backend already issued `user` a ticket for `game_link`.
+def _authorize_entry_pair(request, fixture, game_link, now, *, seat=None):
+    """Persist shared readiness under the caller's tournament/fixture locks.
 
-    An issued ticket is the tournaments side's authoritative evidence that this player
-    entered the linked room before, which is what distinguishes re-entry into a `playing`
-    link from a first entry that must still go through readiness.
+    A successful ready response is a durable admission decision, even if the
+    subsequent ticket request waits longer than the heartbeat freshness window.
     """
-    return IssuedTicket.objects.filter(game_link=game_link, user=user).exists()
+    if (game_link.status not in ('pending', 'playing')
+            or (game_link.live_snapshot or {}).get('status') in ('completed', 'cancelled')):
+        return False
+    if game_link.entry_authorized_at:
+        return game_link.entry_authorized_for(fixture)
+    if game_link.status != 'pending' or not _readiness_fresh(game_link, now):
+        return False
+    game_link.entry_authorized_at = now
+    game_link.entry_player1_id = fixture.player1.user_id
+    game_link.entry_player2_id = fixture.player2.user_id
+    game_link.save(update_fields=[
+        'entry_authorized_at', 'entry_player1', 'entry_player2'])
+    transaction.on_commit(lambda: _entry_event(
+        request, 'entry_pair_authorized', fixture=fixture, link=game_link, seat=seat))
+    return True
 
 
 def _opponent_info(fixture, seat, game_link, now):
@@ -747,12 +836,18 @@ def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_f
     candidate_ids = list(
         Fixture.objects.filter(
             mode__tournament_id=tournament_id,
+            mode__tournament__entry_deadline_paused=False,
             playable_at__lte=cutoff,
             player1__isnull=False,
             player2__isnull=False,
             admin_result='',
             score1__isnull=True,
             score2__isnull=True,
+        ).filter(
+            Q(game_link__isnull=True) | Q(
+                game_link__status='pending', game_link__external_room_id='',
+                game_link__entry_authorized_at__isnull=True,
+            )
         ).values_list('pk', flat=True)
     )
     resolved = 0
@@ -761,6 +856,7 @@ def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_f
             continue
         try:
             with db_transaction.atomic():
+                Tournament.objects.select_for_update().get(pk=tournament_id)
                 fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
                 if fixture.is_confirmed or fixture.admin_result:
                     continue
@@ -903,18 +999,19 @@ class DirectPlayReadyView(LoginRequiredMixin, View):
         })
 
 
-class TournamentGameReadyView(LoginRequiredMixin, View):
+class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
     """
     Record one player's readiness heartbeat for their current tournament fixture.
 
     POST only, session-authenticated and CSRF-protected like the play endpoint. Each browser
     posts roughly every two seconds while the loading overlay waits; `both_ready` turns true
     once both seats have a fresh heartbeat, and only then does the client submit the game
-    entry form. There is no countdown, no cancellation and no entry-timeout behavior here —
-    waiting simply continues until both players are ready.
+    entry form. Once authorized, the pair can finish entry without another shared
+    heartbeat. An unreserved fixture remains subject to its tournament's entry policy.
     """
 
     http_method_names = ['post']
+    always_json_auth_response = True
 
     @transaction.atomic
     def post(self, request, pk):
@@ -930,7 +1027,7 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             if finished is not None:
                 return finished
             status, reason, _ = refusal
-            return _start_refusal(status, reason)
+            return _start_refusal(status, reason, request=request)
 
         now = timezone.now()
         game_link, _ = GameLink.objects.get_or_create(
@@ -944,11 +1041,16 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
         )
 
         if game_link.status in ('completed', 'cancelled', 'failed'):
-            return _start_refusal(412, 'link_terminal')
+            return _start_refusal(412, 'link_terminal', request=request, fixture=fixture, link=game_link)
+        if (game_link.live_snapshot or {}).get('status') in ('completed', 'cancelled'):
+            return _start_refusal(412, 'room_terminal', request=request, fixture=fixture, link=game_link)
 
-        if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
-            # Already underway and this player entered before: straight back in. Anyone
-            # else falls through to the readiness check below instead of bypassing it.
+        if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
+            return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
+
+        if game_link.entry_authorized_for(fixture):
+            # Both seats already passed readiness together. One player's departure
+            # from the lobby must not revoke the other's room entry.
             entry_deadline, remaining_seconds = _entry_deadline_fields(
                 fixture, now)
             return JsonResponse({
@@ -976,15 +1078,14 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
         if (new_waiting_attempt and opponent_user_id is not None
                 and not _readiness_fresh(game_link, now)):
             from frontend.push import notify_tournament_opponent_waiting
-            transaction.on_commit(
-                lambda fixture=fixture, opponent_user_id=opponent_user_id:
-                    notify_tournament_opponent_waiting(
-                        fixture,
-                        recipient_id=opponent_user_id,
-                    )
-            )
+            # Queue rows and the heartbeat commit together. Delivery belongs to
+            # the push worker; a queue write failure must roll this request back.
+            notify_tournament_opponent_waiting(fixture, recipient_id=opponent_user_id)
         both_ready = _readiness_fresh(game_link, now)
         if both_ready:
+            if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat):
+                return _start_refusal(412, 'entry_not_authorized', request=request,
+                                      fixture=fixture, link=game_link)
             entry_deadline, remaining_seconds = _entry_deadline_fields(
                 fixture, now)
             return JsonResponse({
@@ -1001,12 +1102,8 @@ class TournamentGameReadyView(LoginRequiredMixin, View):
             return _double_no_show_terminal_response(fixture, seat, now)
         if winner_seat is not None:
             return _no_show_terminal_response(fixture, seat, winner_seat, now)
-        try:
-            resolve_expired_double_no_shows_for_tournament(
-                fixture.mode.tournament_id, now, exclude_fixture_id=fixture.pk,
-            )
-        except Exception:
-            pass
+        # Unrelated fixtures are processed by the bounded background task scanner.
+        # A player's heartbeat must not sweep the bracket under its write lock.
         entry_deadline, remaining_seconds = _entry_deadline_fields(
             fixture, now)
         return JsonResponse({
@@ -1043,18 +1140,17 @@ def _issue_game_ticket(request, fixture, seat):
             ),
         )
 
-        # Readiness gate for real tournament fixtures. `playing` allows a ticket only as a
-        # re-entry for a player this backend already issued a ticket to; `pending` starts
-        # only once both seats have sent a fresh readiness heartbeat (see
-        # TournamentGameReadyView). Anything else — a link that is completed, cancelled or
-        # failed, a first entry into a `playing` link, or a pending link nobody is waiting
-        # on — refuses, so posting straight at a play endpoint cannot bypass readiness.
-        if game_link.status == 'playing' and _has_prior_entry(game_link, request.user):
-            pass
-        elif game_link.status == 'pending' and _readiness_fresh(game_link, now):
-            pass
-        else:
-            return HttpResponse(status=412)
+        if game_link.status not in ('pending', 'playing'):
+            return _start_refusal(412, 'link_terminal', request=request, fixture=fixture, link=game_link)
+        if (game_link.live_snapshot or {}).get('status') in ('completed', 'cancelled'):
+            return _start_refusal(412, 'room_terminal', request=request, fixture=fixture, link=game_link)
+        if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
+            return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
+        # Retain the same gate for callers that post directly to this endpoint;
+        # normal readiness already persisted the grant before returning success.
+        if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat):
+            return _start_refusal(412, 'entry_not_authorized', request=request,
+                                  fixture=fixture, link=game_link)
 
         update_fields = []
         if game_link.target_points != fixture.mode.tournament.target_points:
@@ -1083,8 +1179,9 @@ def _issue_game_ticket(request, fixture, seat):
             datetime.timedelta(seconds=settings.GAMELINK_TICKET_TTL),
         )
 
-    response = HttpResponseRedirect(
-        f'{base_url}/api/link/enter/?ticket={quote(token)}')
+    enter_url = f'{base_url}/api/link/enter/?ticket={quote(token)}'
+    response = (JsonResponse({'enter_url': enter_url}) if _wants_entry_json(request)
+                else HttpResponseRedirect(enter_url))
 
     # The ticket is in the URL, so keep it out of the next request's `Referer` and out of any
     # shared cache (plan §2, threat 5).
@@ -1479,7 +1576,9 @@ class LiveSnapshotCallbackView(View):
             sequence = body['sequence']
             if not all(_is_integer(value) for value in (fixture_id, tournament_id, sequence)):
                 raise ValueError
-            if not isinstance(room_id, str) or not isinstance(body.get('state'), dict):
+            if (not isinstance(room_id, str) or not room_id or len(room_id) > 64
+                    or sequence < 0 or not isinstance(body.get('state'), dict)
+                    or body.get('status') not in ('waiting', 'playing', 'completed', 'cancelled')):
                 raise ValueError
         except (KeyError, TypeError, ValueError, UnicodeDecodeError):
             return _reject(request, 400, 'invalid live snapshot')
@@ -1500,12 +1599,30 @@ class LiveSnapshotCallbackView(View):
                     return _reject(request, 409, 'live snapshot does not match fixture', fixture_id=fixture_id)
                 if link.fixture.admin_result:
                     return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id)
+                if link.status not in OPEN_LINK_STATUSES or link.fixture.is_confirmed:
+                    _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
+                                 link=link, reason='terminal_fixture')
+                    return JsonResponse({'status': 'already_recorded'})
+                if (link.live_snapshot or {}).get('status') in ('completed', 'cancelled'):
+                    _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
+                                 link=link, reason='terminal_room_snapshot')
+                    return JsonResponse({'status': 'already_recorded'})
+                if link.entry_authorized_at and not link.entry_authorized_for(link.fixture):
+                    return _reject(request, 409, 'entry pairing changed', fixture_id=fixture_id)
+                if link.status == 'playing' and body['status'] == 'waiting':
+                    _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
+                                 link=link, reason='status_regression')
+                    return JsonResponse({'status': 'already_recorded'})
                 previous = (link.live_snapshot or {}).get('sequence', -1)
                 if sequence >= previous:
                     link.live_snapshot = body
                     link.live_updated_at = timezone.now()
                     link.external_room_id = room_id
-                    link.status = 'playing' if link.status == 'pending' else link.status
+                    # Binding a reserved room is not evidence that both seats entered.
+                    if link.status == 'pending' and body['status'] == 'playing':
+                        link.status = 'playing'
+                        transaction.on_commit(lambda: _entry_event(
+                            request, 'linked_game_started', fixture=link.fixture, link=link))
                     link.save(update_fields=[
                               'live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
                     if body.get('status') == 'playing' and not FixtureAudit.objects.filter(fixture_id=fixture_id, action='live_started').exists():
@@ -1513,6 +1630,13 @@ class LiveSnapshotCallbackView(View):
                             fixture_id=fixture_id, action='live_started')
                     transaction.on_commit(lambda: _broadcast_live_snapshot(
                         tournament_id, fixture_id, body))
+                else:
+                    logger.info(
+                        'event=snapshot_ignored request_id=%s tournament_id=%s fixture_id=%s '
+                        'reason=stale_sequence sequence=%s previous_sequence=%s',
+                        getattr(request, 'incident_request_id', '-'), tournament_id, fixture_id,
+                        sequence, previous,
+                    )
         except IntegrityError:
             return _reject(request, 401, 'nonce has been seen before')
         except (GameLink.DoesNotExist, Fixture.DoesNotExist):
@@ -2072,12 +2196,8 @@ def _reject(request, status, reason, fixture_id=None, *, code=None):
     Log the full reason. Only validated result handlers opt in to a public, fixed error code.
     """
     logger.warning(
-        'gamelink result refused with %s: %s [fixture=%s remote=%s signature=%s]',
-        status,
-        reason,
-        fixture_id,
-        request.META.get('REMOTE_ADDR', ''),
-        redact(request.headers.get('X-Gamelink-Signature', '')))
+        'event=callback_refused request_id=%s status=%s fixture_id=%s code=%s reason=%s',
+        getattr(request, 'incident_request_id', '-'), status, fixture_id, code or '-', reason)
     payload = {'error': _ERRORS[status]}
     if code is not None:
         payload['code'] = code

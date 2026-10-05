@@ -21,6 +21,8 @@ urlpatterns = [
          views.StartGameView.as_view(), name='gamelink-start'),
     path('t/tournament/<int:pk>/play', views.StartTournamentGameView.as_view(),
          name='gamelink-tournament-start'),
+    path('api/gamelink/tournament/<int:pk>/play/', views.StartTournamentGameView.as_view(),
+         name='gamelink-tournament-start-api'),
     path('t/head-to-head/<str:code>/play', views.StartDirectPlayView.as_view(),
          name='gamelink-direct-play-start'),
     path(

@@ -1,11 +1,13 @@
 """Run durable tasks with expiring, token-checked ownership."""
 import logging
+import time
 import uuid
 from datetime import timedelta
+from enum import Enum
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import Count, Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from .models import Task
@@ -14,17 +16,34 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 120
 EXPIRY_INTERVAL_SECONDS = 60
 MAX_RETRY_SECONDS = 300
+ENTRY_EXPIRY_BATCH_SIZE = 200
+
+
+class TaskRunOutcome(Enum):
+    COMPLETED = 'completed'
+    RETRY_SCHEDULED = 'failed; retry scheduled'
+    NOT_OWNED = 'deferred; not owned'
 
 
 def deliver_admin_command(*, command_id, heartbeat):
     from gamelink.commands import deliver_admin_command as deliver
 
+    if heartbeat is not None and not heartbeat():
+        logger.warning('event=task_lease_lost handler=deliver_admin_command command_id=%s', command_id)
+        return False
     return deliver(command_id)
 
 
 def expire_unstarted_games(*, heartbeat):
     from .entry_lifecycle import expire_unstarted_tables
+    from .search_lifecycle import reconcile_searches_locked
 
+    if heartbeat is not None and not heartbeat():
+        logger.warning('event=task_lease_lost handler=expire_unstarted_games')
+        return False
+    # Cleanup used to run from lobby GETs. Keep unmatched searches compatible
+    # with current rules in the worker, without changing paired game contracts.
+    reconcile_searches_locked()
     return expire_unstarted_tables(heartbeat=heartbeat)
 
 
@@ -65,18 +84,24 @@ def start_scheduled_tournaments(*, heartbeat):
     the existing start flow runs, so concurrent workers cannot double-start.
     Tournaments below the minimum are cancelled and their entry fees refunded.
     """
-    from tournaments.models import Tournament
+    from tournaments.models import Fixture, Tournament
 
     from .api import _start_tournament_at_capacity
 
     now = timezone.now()
     candidate_ids = list(
-        Tournament.objects.filter(published=True, starts_at__lte=now).values_list('pk', flat=True)
+        Tournament.objects.filter(
+            published=True, starts_at__lte=now, results_confirmed_at__isnull=True,
+        ).annotate(
+            has_fixtures=Exists(Fixture.objects.filter(mode__tournament_id=OuterRef('pk'))),
+        ).filter(has_fixtures=False).order_by('starts_at', 'pk').values_list('pk', flat=True)
     )
     started = 0
+    deferred_ids = []
     for tournament_id in candidate_ids:
-        if heartbeat is not None:
-            heartbeat()
+        if heartbeat is not None and not heartbeat():
+            logger.warning('event=task_lease_lost handler=start_scheduled_tournaments tournament_id=%s', tournament_id)
+            return False
         try:
             with transaction.atomic():
                 try:
@@ -103,10 +128,35 @@ def start_scheduled_tournaments(*, heartbeat):
             # definition): leave the tournament open and retry on the next
             # scheduled cycle. Short rosters never reach this branch — they
             # are cancelled, not retried.
-            logger.info('Scheduled start deferred tournament=%s', tournament_id)
+            logger.warning('event=tournament_start_deferred tournament_id=%s reason=validation_error', tournament_id,
+                           exc_info=True)
+            deferred_ids.append(tournament_id)
             continue
         started += 1
+        logger.info('event=tournament_start_processed tournament_id=%s outcome=%s',
+                    tournament_id, 'started' if tournament.published else 'cancelled_insufficient_players')
+    if deferred_ids:
+        raise RuntimeError(f'Tournament start validation failed for tournaments: {deferred_ids}')
     return started
+
+
+def _personally_ready_fixture_ids(tournament_id):
+    """Fresh, read-only candidate filtering; admission policy has no feature gate."""
+    from gamelink.playability import personally_ready_fixture_ids
+    from tournaments.models import Fixture, Participation
+
+    fixtures = list(Fixture.objects.filter(mode__tournament_id=tournament_id)
+                    .select_related('player1', 'player2')
+                    .annotate(read_confirmation_count=Count('confirmations')))
+    required = 1 + Participation.objects.filter(
+        tournament_id=tournament_id, participant__user__isnull=False,
+    ).count() // 2
+    return personally_ready_fixture_ids(
+        fixtures, is_confirmed=lambda fixture: fixture.confirmed_result(
+            confirmation_count=fixture.read_confirmation_count,
+            required_confirmations=required,
+        ),
+    )
 
 
 def expire_tournament_entry_deadlines(*, heartbeat):
@@ -125,10 +175,14 @@ def expire_tournament_entry_deadlines(*, heartbeat):
     )
     from tournaments.models import Fixture, Tournament
 
+    batch_started = time.perf_counter()
     now = timezone.now()
     cutoff = now - TOURNAMENT_ENTRY_WINDOW
-    candidate_ids = list(
+    potential_candidates = list(
         Fixture.objects.filter(
+            mode__tournament__published=True,
+            mode__tournament__results_confirmed_at__isnull=True,
+            mode__tournament__entry_deadline_paused=False,
             playable_at__lte=cutoff,
             playable_at__isnull=False,
             player1__isnull=False,
@@ -136,53 +190,107 @@ def expire_tournament_entry_deadlines(*, heartbeat):
             admin_result='',
             score1__isnull=True,
             score2__isnull=True,
-        ).order_by('playable_at').values_list('pk', flat=True)[:200]
+        ).filter(
+            Q(game_link__isnull=True) | Q(
+                game_link__status='pending',
+                game_link__external_room_id='',
+                game_link__entry_authorized_at__isnull=True,
+            ),
+        ).order_by('playable_at', 'pk').values_list(
+            'pk', 'mode__tournament_id',
+        )
     )
+    # Legacy schedules may have clocks on every future group fixture. Exclude
+    # personally blocked rows before the bounded mutation batch, otherwise
+    # they can occupy every slot and starve eligible matches indefinitely.
+    eligible_by_tournament = {}
+    candidates = []
+    for fixture_id, tournament_id in potential_candidates:
+        if tournament_id not in eligible_by_tournament:
+            if heartbeat is not None and heartbeat() is False:
+                return False
+            eligible_by_tournament[tournament_id] = _personally_ready_fixture_ids(tournament_id)
+        if fixture_id in eligible_by_tournament[tournament_id]:
+            candidates.append((fixture_id, tournament_id))
+            if len(candidates) >= ENTRY_EXPIRY_BATCH_SIZE:
+                break
     resolved = 0
-    for fixture_id in candidate_ids:
-        if heartbeat is not None:
-            heartbeat()
+    failed_ids = []
+    for fixture_id, tournament_id in candidates:
+        if heartbeat is not None and not heartbeat():
+            logger.warning(
+                'event=task_lease_lost handler=expire_tournament_entry_deadlines '
+                'tournament_id=%s fixture_id=%s resolved=%s', tournament_id, fixture_id, resolved,
+            )
+            return False
         try:
             with transaction.atomic():
+                # Admission and administrative results take these locks in the
+                # same order. Avoid a fixture -> tournament lock inversion.
                 try:
-                    fixture = Fixture.objects.select_for_update().get(pk=fixture_id)
+                    tournament = Tournament.objects.select_for_update().get(pk=tournament_id)
+                except Tournament.DoesNotExist:
+                    continue
+                if tournament.entry_deadline_paused or tournament.state != 'active':
+                    logger.debug('event=entry_expiry_skipped tournament_id=%s fixture_id=%s reason=paused_or_inactive',
+                                 tournament_id, fixture_id)
+                    continue
+                try:
+                    fixture = Fixture.objects.select_for_update().select_related('mode').get(
+                        pk=fixture_id, mode__tournament_id=tournament.pk,
+                    )
                 except Fixture.DoesNotExist:
                     continue
+                # Reuse the locked tournament for deadline and progression
+                # checks; a separately loaded object could have stale policy.
+                fixture.mode.tournament = tournament
                 if fixture.is_confirmed or fixture.admin_result:
                     continue
                 if fixture.playable_at is None:
                     continue
                 if fixture.player1_id is None or fixture.player2_id is None:
                     continue
-                entry_deadline, _ = _entry_deadline_fields(fixture, now)
-                if entry_deadline is None or now < entry_deadline:
+                # The prefilter is only a scheduling hint. Re-read while the
+                # tournament is locked, including results written this batch.
+                if fixture.pk not in _personally_ready_fixture_ids(tournament.pk):
+                    logger.debug('event=entry_expiry_skipped tournament_id=%s fixture_id=%s reason=personal_match_blocked',
+                                 tournament_id, fixture_id)
                     continue
-                try:
-                    tournament = Tournament.objects.select_for_update().get(
-                        pk=fixture.mode.tournament_id,
-                    )
-                except Tournament.DoesNotExist:
-                    continue
-                if tournament.state != 'active':
+                fixture_now = timezone.now()
+                entry_deadline, _ = _entry_deadline_fields(fixture, fixture_now)
+                if entry_deadline is None or fixture_now < entry_deadline:
                     continue
                 from gamelink.models import GameLink
 
-                try:
-                    game_link = GameLink.objects.select_for_update().filter(
-                        fixture_id=fixture.pk,
-                    ).first()
-                except Exception:
-                    continue
+                game_link = GameLink.objects.select_for_update().filter(
+                    fixture_id=fixture.pk,
+                ).first()
                 if game_link is not None:
-                    outcome = _try_resolve_no_show(fixture, game_link, now)
+                    if (game_link.status != 'pending' or game_link.external_room_id
+                            or game_link.entry_authorized_at is not None):
+                        logger.debug('event=entry_expiry_skipped tournament_id=%s fixture_id=%s reason=admitted_or_terminal',
+                                     tournament_id, fixture_id)
+                        continue
+                    outcome = _try_resolve_no_show(fixture, game_link, fixture_now)
                     if outcome is not None:
                         resolved += 1
                 else:
-                    if _resolve_double_no_show_locked(fixture, None, now):
+                    if _resolve_double_no_show_locked(fixture, None, fixture_now):
                         resolved += 1
         except Exception:
-            logger.exception('Tournament entry expiry failed fixture=%s', fixture_id)
+            failed_ids.append(fixture_id)
+            logger.exception('event=entry_expiry_failed tournament_id=%s fixture_id=%s', tournament_id, fixture_id)
             continue
+    batch_log = logger.warning if failed_ids else logger.info if resolved else logger.debug
+    batch_log(
+        'event=entry_expiry_batch candidates=%s resolved=%s failed=%s skipped=%s duration_ms=%s',
+        len(candidates), resolved, len(failed_ids), len(candidates) - resolved - len(failed_ids),
+        int((time.perf_counter() - batch_started) * 1000),
+    )
+    if failed_ids:
+        # Successful fixtures remain committed, but this batch must retain its
+        # attempts/error and retry instead of looking like a successful no-op.
+        raise RuntimeError(f'Tournament entry expiry failed for fixtures: {failed_ids}')
     return resolved
 
 
@@ -210,6 +318,13 @@ def refresh_lease(task_id, lease_token):
 
 
 def run_task(task_id):
+    """Boolean compatibility API for immediate callers."""
+    return run_task_with_outcome(task_id) is TaskRunOutcome.COMPLETED
+
+
+def run_task_with_outcome(task_id):
+    """Distinguish a failed claimed attempt from a concurrent worker's task."""
+    started_at = time.perf_counter()
     now = timezone.now()
     lease_token = uuid.uuid4()
     with transaction.atomic():
@@ -221,11 +336,14 @@ def run_task(task_id):
             updated_at=now,
         )
     if not claimed:
-        return False
+        logger.debug('event=task_not_owned task_id=%s reason=not_runnable', task_id)
+        return TaskRunOutcome.NOT_OWNED
     owned = Task.objects.filter(pk=task_id, status=Task.STATUS_RUNNING, lease_token=lease_token)
     task = owned.first()
     if task is None:
-        return False
+        logger.warning('event=task_lease_lost task_id=%s reason=claim_replaced', task_id)
+        return TaskRunOutcome.NOT_OWNED
+    logger.debug('event=task_claimed task_id=%s task_name=%s attempt=%s', task.pk, task.name, task.attempts)
     try:
         handler = HANDLERS[task.name]
         result = handler(
@@ -237,7 +355,7 @@ def run_task(task_id):
     except Exception as error:
         finished_at = timezone.now()
         retry_seconds = min(5 * 2 ** min(task.attempts - 1, 6), MAX_RETRY_SECONDS)
-        owned.update(
+        retried = owned.update(
             status=Task.STATUS_PENDING,
             run_at=finished_at + timedelta(seconds=retry_seconds),
             lease_token=None,
@@ -246,8 +364,13 @@ def run_task(task_id):
             last_finished_at=finished_at,
             updated_at=finished_at,
         )
-        logger.exception('Tournament task failed task=%s name=%s', task.pk, task.name)
-        return False
+        logger.exception(
+            'event=task_failed task_id=%s task_name=%s attempt=%s retry_scheduled=%s '
+            'retry_seconds=%s duration_ms=%s error_type=%s',
+            task.pk, task.name, task.attempts, bool(retried), retry_seconds,
+            int((time.perf_counter() - started_at) * 1000), type(error).__name__,
+        )
+        return TaskRunOutcome.RETRY_SCHEDULED if retried else TaskRunOutcome.NOT_OWNED
     finished_at = timezone.now()
     changes = {
         'status': Task.STATUS_DONE,
@@ -263,4 +386,14 @@ def run_task(task_id):
             run_at=finished_at + timedelta(seconds=EXPIRY_INTERVAL_SECONDS),
             attempts=0,
         )
-    return bool(owned.update(**changes))
+    completed = bool(owned.update(**changes))
+    if not completed:
+        logger.warning('event=task_lease_lost task_id=%s task_name=%s phase=completion', task.pk, task.name)
+        return TaskRunOutcome.NOT_OWNED
+    # Recurring no-op scans need not produce an INFO line on every tick.
+    completion_log = logger.info if (
+        task.name == Task.NAME_DELIVER_ADMIN_COMMAND or (type(result) is int and result > 0)
+    ) else logger.debug
+    completion_log('event=task_completed task_id=%s task_name=%s attempt=%s duration_ms=%s',
+                   task.pk, task.name, task.attempts, int((time.perf_counter() - started_at) * 1000))
+    return TaskRunOutcome.COMPLETED

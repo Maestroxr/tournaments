@@ -45,6 +45,25 @@ class PushDelivery(models.Model):
         constraints = [models.UniqueConstraint(fields=['subscription', 'fixture'], name='unique_match_push_per_device')]
 
 
+class FixturePushDelivery(models.Model):
+    """Retryable opponent-waiting event, independent from match-ready discovery."""
+    KIND_OPPONENT_WAITING = 'opponent_waiting'
+    subscription = models.ForeignKey(PushSubscription, on_delete=models.CASCADE)
+    fixture = models.ForeignKey('tournaments.Fixture', on_delete=models.CASCADE)
+    kind = models.CharField(max_length=24, choices=[(KIND_OPPONENT_WAITING, 'Opponent waiting')])
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField()
+    lease_token = models.UUIDField(null=True, blank=True)
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    discarded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['subscription', 'fixture', 'kind'], name='unique_fixture_push_device_event',
+        )]
+
+
 class TablePushDelivery(models.Model):
     KIND_GUEST_JOINED = 'guest_joined'
     KIND_HOST_ENTERED = 'host_entered'
@@ -64,6 +83,23 @@ class TablePushDelivery(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(
             fields=['subscription', 'table', 'kind'], name='unique_table_push_per_device_event',
+        )]
+
+
+class TournamentReminderDelivery(models.Model):
+    subscription = models.ForeignKey(PushSubscription, on_delete=models.CASCADE)
+    tournament = models.ForeignKey('tournaments.Tournament', on_delete=models.CASCADE)
+    scheduled_start = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField()
+    last_failure_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    discarded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['subscription', 'tournament', 'scheduled_start'],
+            name='unique_tournament_reminder',
         )]
 
 

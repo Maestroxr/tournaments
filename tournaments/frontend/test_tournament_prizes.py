@@ -1,8 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from tournaments.models import Participant, Participation, Tournament, WalletTransaction
 
@@ -23,6 +25,7 @@ class TournamentPrizeTests(TestCase):
             'min_players': 2, 'max_players': 8, 'open_registration': True,
             'entry_fee': 100, 'prize_money': 1000, 'prize_type': 'coins',
             'prize_text': '', 'platform_fee_percent': 10,
+            'starts_at': (timezone.now() + timedelta(days=1)).isoformat(),
         }
 
     def create_tournament(self, **overrides):

@@ -1,8 +1,8 @@
 from django.test import TestCase, RequestFactory, override_settings
 from django.contrib.auth.models import User
 from tournaments.models import HeadToHeadTable
-from tournaments.gamelink.views import RematchCallbackView
-from tournaments.gamelink.signing import sign_result_body
+from gamelink.views import RematchCallbackView
+from gamelink.signing import sign_result_body
 import json, time, uuid
 
 def _signed_request(factory, body, secret="test-secret"):

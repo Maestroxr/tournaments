@@ -9,8 +9,8 @@ Three kinds of row accumulate here and each stops being useful at a different mo
   than trusted;
 * an **issued ticket** is an audit record of a credential that has since expired. The ticket itself
   was never stored, only its `jti` (plan §2, threat 13);
-* a **game link** that is still `pending` past its own expiry describes a game nobody ever played.
-  Closing it as `cancelled` is what hands the fixture back to manual scoring.
+* a **game link** can age out only before either room binding or paired entry authorization.
+  A pending room can already have one player in it; it must remain joinable.
 
 Nothing in here deletes anything a human might still want to read about a game that *happened*: a
 `completed` or `cancelled` link is left exactly where it is, along with its `raw_result`.
@@ -62,6 +62,10 @@ def purge_expired(nonce_retention = None, now = None):
 
     # Only `pending`. A link that reached `completed` or `cancelled` has said what it had to say,
     # and re-closing one would overwrite a real outcome with a housekeeping guess.
-    links = GameLink.objects.filter(status = 'pending', expires_at__lt = now).update(status = 'cancelled')
+    links = GameLink.objects.filter(
+        status='pending', expires_at__lt=now,
+        external_room_id='', entry_authorized_at__isnull=True,
+        fixture__mode__tournament__entry_deadline_paused=False,
+    ).update(status='cancelled')
 
     return dict(nonces = nonces, tickets = tickets, links = links)

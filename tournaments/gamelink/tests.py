@@ -55,7 +55,9 @@ gamelink_settings = override_settings(
 class GameLinkTestBase(TestCase):
 
     def setUp(self):
-        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list())
+        self.tournament = Tournament.objects.create(
+            name = 'Test', podium_spec = list(),
+            starts_at = timezone.now() + datetime.timedelta(days = 1))
         self.knockout   = Knockout.objects.create(tournament = self.tournament)
         self.users      = [
             User.objects.create_user(
@@ -576,7 +578,8 @@ class StartGameTestBase(TestCase):
     def setUp(self):
         self.tournament = Tournament.objects.create(
             name = 'Test', podium_spec = list(), published = True, target_points = 7,
-            doubling_enabled = False)
+            doubling_enabled = False,
+            starts_at = timezone.now() - datetime.timedelta(minutes = 1))
         self.knockout   = Knockout.objects.create(tournament = self.tournament)
 
         self.user1, self.user2, self.user3 = [
@@ -1040,7 +1043,9 @@ class ResultCallbackTestBase(TestCase):
     MATCH_ID = '3a1f0c2b-4d5e-4a6b-8c7d-9e0f1a2b3c4d'
 
     def setUp(self):
-        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list(), published = True)
+        self.tournament = Tournament.objects.create(
+            name = 'Test', podium_spec = list(), published = True,
+            starts_at = timezone.now() - datetime.timedelta(minutes = 1))
         self.knockout   = Knockout.objects.create(tournament = self.tournament)
 
         self.user1, self.user2 = [
@@ -1849,7 +1854,9 @@ class ResultContractTest(ResultCallbackTestBase):
         The timestamp and nonce are fresh because the receiver rejects a stale one, which is
         exactly what a retry does.
         """
-        tournament = Tournament.objects.create(id = 17, name = 'Vector', podium_spec = list(), published = True)
+        tournament = Tournament.objects.create(
+            id = 17, name = 'Vector', podium_spec = list(), published = True,
+            starts_at = timezone.now() - datetime.timedelta(minutes = 1))
         knockout = Knockout.objects.create(tournament = tournament)
         alice, bob = [
             User.objects.create_user(username = name, password = 'password')
@@ -1945,7 +1952,9 @@ class TicketContractTest(TestCase):
         # The pinned token is a snapshot; this is the check that `issue_ticket` has not since moved
         # away from it. Claim *names* and types are the contract — `jti`, `iat` and `exp` are
         # minted fresh and are not comparable.
-        tournament = Tournament.objects.create(name = 'Test', podium_spec = list())
+        tournament = Tournament.objects.create(
+            name = 'Test', podium_spec = list(),
+            starts_at = timezone.now() + datetime.timedelta(days = 1))
         knockout = Knockout.objects.create(tournament = tournament)
         user = User.objects.create_user(username = 'alice', password = 'password')
         fixture = Fixture.objects.create(
@@ -1987,7 +1996,9 @@ class LinkedRoundEndToEndTest(TestCase):
     """
 
     def setUp(self):
-        self.tournament = Tournament.load(self.DEFINITION, 'Cup', published = True)
+        self.tournament = Tournament.load(
+            self.DEFINITION, 'Cup', published = True,
+            starts_at = timezone.now() - datetime.timedelta(minutes = 1))
         self.users = [
             User.objects.create_user(username = f'player-{idx}', password = 'password')
             for idx in range(4)

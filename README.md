@@ -246,3 +246,35 @@ For missing configuration, set `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` and
 deliveries, inspect the worker process and provider connectivity. Exhausted
 deliveries remain reported while their records are unresolved; viewing the warning
 does not retry, remove, or mark deliveries successful.
+
+### Tournament start reminders
+
+The existing `run_push_notifications` worker queues an opt-in reminder during
+the five minutes before a published tournament's scheduled start. It targets the
+current roster and excludes disqualified players and the waiting list. Messages
+use each device's Hebrew/English preference and link to the tournament. The
+remaining minutes are calculated at delivery so a late worker does not promise
+five minutes when less time remains.
+
+Apply `frontend.0010_tournament_reminder_delivery` before starting the updated
+API or push worker. From the `tournaments` directory:
+
+```powershell
+python manage.py migrate
+python manage.py test frontend.test_tournament_reminders
+python manage.py run_push_notifications --interval 5
+```
+
+The local `startServersBackgamon.bat` currently starts the tournament task
+worker, but does not start the push worker; run the last command separately.
+The existing Web Push settings and notification permission are required.
+Production uses the supervised push worker with the same environment/database
+as the API; restart it after applying the migration.
+
+A unique record per device, tournament and scheduled start prevents repeated
+reminders on subsequent scans. Failed deliveries retry before the start time.
+Cancelled, started, rescheduled or withdrawn entries are discarded before
+delivery. A changed start time can generate a new reminder for the new schedule.
+The push TTL ends at the scheduled start so queued reminders expire at the
+provider. Delivery health includes this queue; actual phone receipt still needs
+a device check.

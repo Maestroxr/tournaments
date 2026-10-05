@@ -1,10 +1,12 @@
 import json
 import re
+from datetime import timedelta
 from unittest import skip
 
 from django.contrib.auth.views import LoginView
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from tournaments import models
 from tournaments.tests import _confirm_fixture, test_tournament1_yml
@@ -86,14 +88,14 @@ class IndexViewTests(TestCase):
         self.assertNotContains(response, 'Finished')
 
     def test_authenticated_draft_of_other_user(self):
-        models.Tournament.load(definition = test_tournament1_yml, name = 'Test')
+        models.Tournament.load(definition = test_tournament1_yml, name = 'Test', starts_at = timezone.now() - timedelta(minutes=1))
         self.test_authenticated_empty()
 
     def test_authenticated_draft(self):
         user = models.User.objects.create(username = 'test1')
         self.client.force_login(user)
 
-        models.Tournament.load(definition = test_tournament1_yml, name = 'Test', creator = user)
+        models.Tournament.load(definition = test_tournament1_yml, name = 'Test', creator = user, starts_at = timezone.now() - timedelta(minutes=1))
 
         response = self.client.get(reverse('index'))
         self.assertEqual(response.status_code, 200)
@@ -249,8 +251,8 @@ class UpdateTournamentViewTests(TestCase):
         user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -331,8 +333,8 @@ class PublishTournamentViewTests(TestCase):
         user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -404,6 +406,7 @@ class ApiJoinAutoCloseRegistrationTests(TestCase):
             published=True,
             min_players=6,
             max_players=6,
+            starts_at=timezone.now() + timedelta(hours=1),
         )
         add_participants(tournament, num_users=5)
         final_user = models.User.objects.create_user(username='final-player', password=password1)
@@ -426,6 +429,7 @@ class ApiTournamentPlayabilitySummaryTests(TestCase):
             definition=test_tournament1_yml,
             name='Playable tournament',
             published=True,
+            starts_at=timezone.now() - timedelta(minutes=1),
         )
         self.users = start_tournament(self.tournament, num_users=10)
         for index, user in enumerate(self.users):
@@ -457,6 +461,7 @@ class ApiTournamentProgressPermissionTests(TestCase):
             name='Permission test',
             creator=self.creator,
             published=True,
+            starts_at=timezone.now() - timedelta(minutes=1),
         )
         self.users = start_tournament(self.tournament, num_users=10)
         self.fixture = self.tournament.current_stage.fixtures.filter(
@@ -475,6 +480,7 @@ class ApiTournamentProgressPermissionTests(TestCase):
             name='Still open',
             creator=self.creator,
             published=True,
+            starts_at=timezone.now() + timedelta(hours=1),
         )
         add_participants(tournament, num_users=10)
         self.client.force_login(self.creator)
@@ -538,8 +544,8 @@ class DraftTournamentViewTests(TestCase):
         user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1, published = True)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2, published = True)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -589,8 +595,8 @@ class DeleteTournamentViewTests(TestCase):
         user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = user1, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = user2, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -638,8 +644,8 @@ class JoinTournamentViewTests(TestCase):
         self.user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(self.user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -687,8 +693,8 @@ class WithdrawTournamentViewTests(TestCase):
         self.user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(self.user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
         for tournament in models.Participation.objects.all():
             for user in models.User.objects.all():
@@ -741,8 +747,8 @@ class CloneTournamentViewTests(TestCase):
         self.user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(self.user1)
 
-        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True)
-        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True)
+        self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
     def test_unauthenticated(self):
         self.client.logout()
@@ -798,8 +804,8 @@ class TournamentProgressViewTests(TestCase):
         self.user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(self.user1)
 
-        self.tournament1 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True)
-        self.tournament2 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True)
+        self.tournament1 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.tournament2 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
         self.users = add_participants(self.tournament1, num_users = 10)
 
@@ -1002,8 +1008,8 @@ class ManageParticipantsViewTests(TestCase):
         self.user2 = models.User.objects.create(username = 'test2')
         self.client.force_login(self.user1)
 
-        self.tournament1 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True)
-        self.tournament2 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user1, published = True)
+        self.tournament1 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
+        self.tournament2 = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
         self.assertTrue(self.tournament1.state == 'open')
         self.assertTrue(self.tournament2.state == 'open')

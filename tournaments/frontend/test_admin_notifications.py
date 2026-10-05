@@ -26,6 +26,8 @@ class AdminNotificationsTests(TestCase):
         self.client.force_login(self.staff)
 
     def create_tournament(self, name, *, published=True, min_players=2, starts_at=None):
+        if starts_at is None:
+            starts_at = timezone.now() + timedelta(days=1)
         return Tournament.load(
             DEFINITION,
             name,
@@ -143,9 +145,9 @@ class AdminNotificationsTests(TestCase):
             )
 
     def test_includes_pending_active_tournaments_and_excludes_finished_ones(self):
-        active = self.create_tournament("Active")
+        active = self.create_tournament("Active", starts_at=timezone.now() - timedelta(minutes=1))
         self.start_tournament(active, "active")
-        finished = self.create_tournament("Finished")
+        finished = self.create_tournament("Finished", starts_at=timezone.now() - timedelta(minutes=1))
         self.start_tournament(finished, "finished")
         fixture = Fixture.objects.get(mode__tournament=finished)
         fixture.score = (1, 0)

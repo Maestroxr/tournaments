@@ -1,7 +1,10 @@
+from datetime import timedelta
+
 import numpy as np
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 from django_test_migrations.contrib.unittest_case import MigratorTestCase
 
 from tournaments.models import (
@@ -260,7 +263,9 @@ def _confirm_fixture(participating_users, fixture, score1 = 0, score2 = 0):
 class ModeTestBase:
 
     def setUp(self):
-        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list())
+        self.tournament = Tournament.objects.create(
+            name='Test', podium_spec=[], starts_at=timezone.now() - timedelta(minutes=1),
+        )
         self.participating_users = list()
         for user_idx in range(16):
             user = User.objects.create_user(
@@ -1548,7 +1553,9 @@ class KnockoutTest(ModeTestBase, TestCase):
 class FixtureTest(TestCase):
 
     def setUp(self):
-        self.tournament = Tournament.objects.create(name = 'Test', podium_spec = list())
+        self.tournament = Tournament.objects.create(
+            name='Test', podium_spec=[], starts_at=timezone.now() - timedelta(minutes=1),
+        )
         self.knockout   = Knockout.objects.create(tournament = self.tournament)
         self.players    = [
             User.objects.create(
@@ -1602,7 +1609,9 @@ class TournamentTest(TestCase):
         ]
 
     def test_load_tournament1(self):
-        tournament = Tournament.load(test_tournament1_yml, 'Test Cup')
+        tournament = Tournament.load(
+            test_tournament1_yml, 'Test Cup', starts_at=timezone.now() - timedelta(minutes=1),
+        )
         actual_stages = [type(stage) for stage in tournament.stages.all()]
         expected_stages = [
             Groups,
@@ -1613,7 +1622,9 @@ class TournamentTest(TestCase):
         return tournament
 
     def test_load_tournament2(self):
-        tournament = Tournament.load(test_tournament2_yml, 'Test Cup')
+        tournament = Tournament.load(
+            test_tournament2_yml, 'Test Cup', starts_at=timezone.now() - timedelta(minutes=1),
+        )
         actual_stages = [type(stage) for stage in tournament.stages.all()]
         expected_stages = [
             Knockout,
@@ -1761,7 +1772,9 @@ class TournamentTest(TestCase):
         - main_round.placements[:2]
         - main_round.placements[2]
         """
-        tournament = Tournament.load(yml, 'Test Cup')
+        tournament = Tournament.load(
+            yml, 'Test Cup', starts_at=timezone.now() + timedelta(hours=1),
+        )
         self.assertRaises(ValidationError, tournament.full_clean)
 
     def test_mode_played_by_duplicates(self):
@@ -1784,7 +1797,9 @@ class TournamentTest(TestCase):
         - playoffs.placements[0]
         - playoffs.placements[1]
         """
-        tournament = Tournament.load(yml, 'Test Cup')
+        tournament = Tournament.load(
+            yml, 'Test Cup', starts_at=timezone.now() + timedelta(hours=1),
+        )
         tournament.full_clean()
         tournament.stages.all()[0].full_clean()
         self.assertRaises(ValidationError, tournament.stages.all()[1].full_clean)
@@ -1798,15 +1813,51 @@ class MigrationTest_0002_to_0003(MigratorTestCase):
     usernames1   = [f'user-{uidx}' for uidx in range(8)]  # Users attending tournament 1
     usernames2   = [f'user-{uidx}' for uidx in range(4)]  # Users attending tournament 2
 
+    def setUp(self):
+        self._historical_tournament_ids = []
+        self._migration_cleanup_done = False
+        # unittest skips tearDown when setUp fails; cleanup must still restore
+        # the current schema before the remaining tests use current models.
+        self.addCleanup(self._restore_migration_schema)
+        super().setUp()
+
+    def tearDown(self):
+        self._restore_migration_schema()
+
+    def _restore_migration_schema(self):
+        if self._migration_cleanup_done:
+            return
+        self._migration_cleanup_done = True
+        try:
+            state = getattr(self, 'new_state', None) or getattr(self, 'old_state', None)
+            if state is not None and self._historical_tournament_ids:
+                HistoricalTournament = state.apps.get_model('tournaments', 'Tournament')
+                # These 0002 fixtures have no starts_at. Remove only this test's
+                # rows before reset traverses 0031's required starts_at field.
+                HistoricalTournament.objects.using(self.database_name or 'default').filter(
+                    pk__in=self._historical_tournament_ids,
+                ).delete()
+        finally:
+            if hasattr(self, '_migrator'):
+                # Also restores the migration signal receivers muted by the
+                # library's _pre_setup, then migrates to the current leaves.
+                super().tearDown()
+            else:
+                # Migrator construction itself failed before setUp finished.
+                from django.db.models.signals import post_migrate, pre_migrate
+                pre_migrate.receivers = self._pre_migrate_receivers
+                post_migrate.receivers = self._post_migrate_receivers
+
     def prepare(self):
         OldTournament    = self.old_state.apps.get_model('tournaments', 'Tournament')
         OldParticipation = self.old_state.apps.get_model('tournaments', 'Participation')
         OldUser          = self.old_state.apps.get_model('auth', 'User')
 
-        tournaments = [
-            OldTournament.objects.create(name = f'Test Cup {tidx}', podium_spec = list())
-            for tidx in range(2)
-        ]
+        tournaments = []
+        for tidx in range(2):
+            tournament = OldTournament.objects.create(name=f'Test Cup {tidx}', podium_spec=list())
+            self._historical_tournament_ids.append(tournament.pk)
+            tournaments.append(tournament)
         self.participation_id_to_user_name = dict()
         for tournament, usernames in zip(tournaments, [self.usernames1, self.usernames2]):
             for uidx, username in enumerate(usernames):

@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import logging
 from datetime import timedelta
 from urllib.parse import urlsplit
 
@@ -13,7 +14,8 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
-from .models import PushDelivery, PushSubscription, TablePushDelivery
+from tournaments.observability import incident_event
+from .models import FixturePushDelivery, PushDelivery, PushSubscription, TablePushDelivery, TournamentReminderDelivery
 
 
 DELIVERY_RETRY_DELAY = timedelta(seconds=60)
@@ -74,7 +76,7 @@ def recent_delivery_issue(user, now):
                      next_attempt_at__lte=now - timedelta(minutes=2)),
     }
     issues = set()
-    for model in (PushDelivery, TablePushDelivery):
+    for model in (PushDelivery, FixturePushDelivery, TablePushDelivery, TournamentReminderDelivery):
         counts = model.objects.filter(
             subscription__user=user,
             delivered_at=None,
@@ -132,6 +134,8 @@ def subscription(request):
         if existing and existing.user_id != request.user.pk:
             PushDelivery.objects.filter(subscription=existing).delete()
             TablePushDelivery.objects.filter(subscription=existing).delete()
+            FixturePushDelivery.objects.filter(subscription=existing).delete()
+            TournamentReminderDelivery.objects.filter(subscription=existing).delete()
         PushSubscription.objects.update_or_create(endpoint_hash=digest, defaults={
             'user': request.user, 'endpoint': endpoint, 'p256dh': keys['p256dh'], 'auth': keys['auth'],
             'language': 'en' if data.get('language') == 'en' else 'he',
@@ -141,24 +145,39 @@ def subscription(request):
 
 def discover_ready_matches():
     """Worker discovers newly playable fixtures even when the website is closed."""
+    from django.contrib.auth.models import AnonymousUser
     from tournaments.models import Tournament
-    from gamelink.views import playable_seat
+    from gamelink.views import _check_playability
+    from .tournament_reads import TournamentReadSnapshot
     if not configured() or not settings.GAMELINK_ENABLED:
         return 0
     created = 0
     for tournament in Tournament.objects.filter(published=True, stages__fixtures__isnull=False).distinct():
-        stage = tournament.current_stage
-        if stage is None:
+        # Assigned branches can advance before unrelated earlier matches.
+        # This snapshot is only a discovery hint. Delivery and ticket admission
+        # still validate current state afresh, never using this read cache.
+        snapshot = TournamentReadSnapshot(tournament, AnonymousUser())
+        if snapshot.state != 'active':
             continue
-        fixtures = stage.current_fixtures
-        if fixtures is None:
-            continue
-        for fixture in fixtures.select_related('player1__user', 'player2__user'):
+        by_user = {}
+        by_fixture = {}
+        for fixture in snapshot.fixtures:
             for player in (fixture.player1, fixture.player2):
-                if not player or not player.user_id or playable_seat(player.user, fixture)[0] is None:
+                if (not player or not player.user_id
+                        or _check_playability(player.user, fixture, read_snapshot=snapshot)[0] is None):
                     continue
-                for device in PushSubscription.objects.filter(user_id=player.user_id):
-                    _, new = PushDelivery.objects.get_or_create(subscription=device, fixture=fixture,
+                by_user.setdefault(player.user_id, set()).add(fixture.pk)
+                by_fixture[fixture.pk] = fixture
+        devices = list(PushSubscription.objects.filter(user_id__in=by_user).values_list('pk', 'user_id'))
+        existing = set(PushDelivery.objects.filter(
+            subscription_id__in=[device_id for device_id, _ in devices],
+            fixture_id__in=by_fixture,
+        ).values_list('subscription_id', 'fixture_id'))
+        for device_id, user_id in devices:
+            for fixture_id in by_user[user_id]:
+                if (device_id, fixture_id) not in existing:
+                    fixture = by_fixture[fixture_id]
+                    _, new = PushDelivery.objects.get_or_create(subscription_id=device_id, fixture=fixture,
                                                                defaults={'next_attempt_at': timezone.now()})
                     created += int(new)
     return created
@@ -203,58 +222,22 @@ def queue_guest_entered_push(table):
 
 
 def notify_tournament_opponent_waiting(fixture, *, recipient_id):
-    """Immediately push "opponent is waiting" to one tournament player's devices."""
+    """Queue the event; HTTP readiness never waits for a push provider."""
     if not configured():
         return 0
-    sent = 0
-    name = fixture.mode.tournament.name
-    for device in PushSubscription.objects.filter(user_id=recipient_id):
-        english = device.language == 'en'
-        payload = {
-            'title': 'Your opponent is waiting' if english else 'היריב שלך מחכה לך',
-            'body': f'{name} — your opponent is waiting for you. Enter the game.' if english else f'{name} — היריב שלך מחכה לך. היכנס למשחק.',
-            'url': '/tournaments/my-games',
-            'tag': f'tournament-opponent-waiting:{fixture.pk}',
-        }
-        try:
-            send_notification(device, payload)
-        except Exception as error:
-            response = getattr(error, 'response', None)
-            if getattr(response, 'status_code', None) in (404, 410):
-                PushSubscription.objects.filter(pk=device.pk).delete()
-            # Any other failure must not reach the readiness request; try the next device.
-            continue
-        sent += 1
-    return sent
+    from .fixture_push import queue_opponent_waiting
+    return queue_opponent_waiting(fixture, recipient_id)
 
 
 def notify_tournament_match_ready(fixture, *, recipient_id):
-    """Immediately push "match is ready, 10 minutes to enter" to one tournament player's devices."""
+    """Queue the canonical per-device match-ready delivery."""
     if not configured():
         return 0
-    sent = 0
-    name = fixture.mode.tournament.name
-    for device in PushSubscription.objects.filter(user_id=recipient_id):
-        english = device.language == 'en'
-        payload = {
-            'title': 'Your tournament match is ready.' if english else 'המשחק שלך בטורניר מוכן.',
-            'body': f'{name} — you have 10 minutes to enter the match.' if english else f'{name} — יש לך 10 דקות להיכנס למשחק.',
-            'url': '/tournaments/my-games',
-            'tag': f'tournament-match-ready:{fixture.pk}',
-        }
-        try:
-            send_notification(device, payload)
-        except Exception as error:
-            response = getattr(error, 'response', None)
-            if getattr(response, 'status_code', None) in (404, 410):
-                PushSubscription.objects.filter(pk=device.pk).delete()
-            # Any other failure must not reach the fixture flow; try the next device.
-            continue
-        sent += 1
-    return sent
+    from .fixture_push import queue_match_ready
+    return queue_match_ready(fixture, recipient_id)
 
 
-def send_notification(device, payload):
+def send_notification(device, payload, *, ttl=300):
     # Keep provider encryption/signing in the maintained Web Push library.
     import requests
     from pywebpush import webpush
@@ -270,34 +253,60 @@ def send_notification(device, payload):
             data=json.dumps(payload, ensure_ascii=False),
             vapid_private_key=settings.WEB_PUSH_PRIVATE_KEY,
             vapid_claims={'sub': settings.WEB_PUSH_SUBJECT},
-            ttl=300, timeout=10, requests_session=session,
+            ttl=ttl, timeout=10, requests_session=session,
         )
         if not 200 <= response.status_code < 300:
             raise ValueError('Push service rejected delivery')
 
 
 def deliver_pending(limit=100, heartbeat=None):
-    from gamelink.views import playable_seat
+    from gamelink.views import _check_playability
+    from .tournament_reminders import deliver_tournament_reminders
+    from .fixture_push import deliver_fixture_pushes
     if not configured():
         return 0
-    sent = 0
+    # Reminders expire at start time, so deliver them before the other queues.
+    sent = deliver_tournament_reminders(limit=limit, heartbeat=heartbeat)
+    sent += deliver_fixture_pushes(limit=limit, heartbeat=heartbeat)
     due = PushDelivery.objects.filter(delivered_at=None, discarded_at=None, attempts__lt=5,
                                      next_attempt_at__lte=timezone.now()).order_by('pk')
     for delivery_id in list(due.values_list('pk', flat=True)[:limit]):
-        if heartbeat:
-            heartbeat()
+        if heartbeat is not None and heartbeat() is False:
+            return sent
         now = timezone.now()
+        lease_until = now + DELIVERY_RETRY_DELAY
         # Atomic lease prevents two workers sending the same item concurrently.
         claimed = PushDelivery.objects.filter(pk=delivery_id, delivered_at=None, discarded_at=None,
-            next_attempt_at__lte=now, attempts__lt=5).update(attempts=F('attempts') + 1, next_attempt_at=now + DELIVERY_RETRY_DELAY)
+            next_attempt_at__lte=now, attempts__lt=5).update(attempts=F('attempts') + 1, next_attempt_at=lease_until)
         if not claimed:
             continue
-        delivery = PushDelivery.objects.select_related('subscription__user', 'fixture__mode__tournament').filter(pk=delivery_id).first()
+        delivery = PushDelivery.objects.select_related(
+            'subscription__user', 'fixture__mode__tournament',
+            'fixture__player1__user', 'fixture__player2__user',
+        ).filter(pk=delivery_id, next_attempt_at=lease_until).first()
         if not delivery:
             continue
         device = delivery.subscription
-        if playable_seat(device.user, delivery.fixture)[0] is None:
-            PushDelivery.objects.filter(pk=delivery_id).update(discarded_at=now)
+        owned = PushDelivery.objects.filter(
+            pk=delivery_id, next_attempt_at=lease_until, attempts=delivery.attempts,
+            delivered_at=None, discarded_at=None,
+        )
+        seat, _, reason = _check_playability(device.user, delivery.fixture)
+        if seat is None:
+            fixture = delivery.fixture
+            terminal = fixture.is_confirmed or device.user_id not in (
+                fixture.player1.user_id if fixture.player1 else None,
+                fixture.player2.user_id if fixture.player2 else None,
+            ) or (reason == 'tournament_not_active' and fixture.mode.tournament.state == 'finished')
+            if terminal:
+                owned.update(discarded_at=now)
+            else:
+                # A later personal match may already have both assignments.
+                # Keep its unique queue row retryable while an earlier match
+                # blocks admission; waiting is not a failed provider attempt.
+                owned.update(attempts=F('attempts') - 1)
+                incident_event('match_push_deferred', level=logging.DEBUG,
+                               fixture_id=fixture.pk, delivery_id=delivery_id, reason=reason)
             continue
         name = delivery.fixture.mode.tournament.name
         english = device.language == 'en'
@@ -312,14 +321,24 @@ def deliver_pending(limit=100, heartbeat=None):
         except Exception as error:
             response = getattr(error, 'response', None)
             status = getattr(response, 'status_code', None)
+            incident_event('match_push_failed', level=logging.WARNING,
+                           fixture_id=delivery.fixture_id, tournament_id=delivery.fixture.mode.tournament_id,
+                           delivery_id=delivery_id, device_id=device.pk, provider_status=status,
+                           attempt=delivery.attempts, error_type=type(error).__name__)
             if status in (404, 410):
                 PushSubscription.objects.filter(pk=device.pk).delete()
             else:
-                PushDelivery.objects.filter(pk=delivery_id).update(last_failure_at=timezone.now())
+                owned.update(last_failure_at=timezone.now())
             # Do not log endpoints, encryption keys or provider response bodies.
             continue
-        PushDelivery.objects.filter(pk=delivery_id).update(delivered_at=timezone.now())
-        sent += 1
+        if owned.update(delivered_at=timezone.now()):
+            sent += 1
+            incident_event('match_push_accepted', fixture_id=delivery.fixture_id,
+                           tournament_id=delivery.fixture.mode.tournament_id,
+                           delivery_id=delivery_id, device_id=device.pk, attempt=delivery.attempts)
+        else:
+            incident_event('match_push_lease_lost', level=logging.WARNING,
+                           fixture_id=delivery.fixture_id, delivery_id=delivery_id)
     return sent + deliver_pending_table_events(limit=limit, heartbeat=heartbeat)
 
 

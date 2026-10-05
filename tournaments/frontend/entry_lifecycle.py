@@ -20,15 +20,25 @@ SEARCH_PRESENCE_SECONDS = 90
 
 
 def touch_open_searches(user_id):
-    """Visible lobby polling keeps only the owner's unmatched searches alive."""
+    """Explicit presence keeps only the owner's unmatched searches alive."""
+    candidates = HeadToHeadTable.objects.filter(
+        host_id=user_id, status=HeadToHeadTable.STATUS_OPEN, guest__isnull=True,
+    ).filter(Q(mode=HeadToHeadTable.MODE_MATCH) | Q(is_quick_match=True))
+    if not candidates.exists():
+        return 0
+    updated = 0
+    now_ts = int(timezone.now().timestamp())
     with transaction.atomic():
-        searches = HeadToHeadTable.objects.select_for_update().filter(
-            host_id=user_id, status=HeadToHeadTable.STATUS_OPEN, guest__isnull=True,
-        ).filter(Q(mode=HeadToHeadTable.MODE_MATCH) | Q(is_quick_match=True))
+        searches = candidates.select_for_update()
         for table in searches:
+            last_seen = (table.settlement or {}).get('search_seen_at')
+            if type(last_seen) is int and now_ts - last_seen < 25:
+                continue
             table.settlement = {**(table.settlement or {}),
-                                'search_seen_at': int(timezone.now().timestamp())}
+                                'search_seen_at': now_ts}
             table.save(update_fields=['settlement'])
+            updated += 1
+    return updated
 
 
 def mark_entry_ready(table):
@@ -73,17 +83,20 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
     if user_id is not None:
         tables = tables.filter(
             Q(host_id=user_id) |
-            Q(guest_id=user_id) |
-            Q(status=HeadToHeadTable.STATUS_OPEN)
+            Q(guest_id=user_id)
         )
 
     ids = list(tables.values_list('pk', flat=True))
+    failed_ids = []
 
     for pk in ids:
         if heartbeat is not None and not heartbeat():
+            logger.warning('event=task_lease_lost handler=expire_unstarted_tables table_id=%s phase=before_item', pk)
             return False
 
-        observed = HeadToHeadTable.objects.get(pk=pk)
+        observed = HeadToHeadTable.objects.filter(pk=pk).first()
+        if observed is None:
+            continue
 
         if (observed.settlement or {}).get('entry_confirmed'):
             continue
@@ -116,9 +129,14 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
             try:
                 result = remote_expiry(observed)
             except Exception:
+                failed_ids.append(pk)
                 logger.warning(
-                    'Entry expiry deferred for table %s: game server unavailable', pk)
+                    'event=direct_entry_expiry_failed table_id=%s phase=remote_request', pk,
+                    exc_info=True)
                 continue
+            if heartbeat is not None and not heartbeat():
+                logger.warning('event=task_lease_lost handler=expire_unstarted_tables table_id=%s phase=after_remote', pk)
+                return False
             if result == 'started':
                 with transaction.atomic():
                     current = HeadToHeadTable.objects.select_for_update().get(pk=pk)
@@ -159,4 +177,9 @@ def expire_unstarted_tables(user_id=None, heartbeat=None):
                                 if observed.status == 'open' else 'entry_timeout',
                                 'reservation_released': True}
             table.save(update_fields=['status', 'completed_at', 'settlement', 'updated_at'])
+            transaction.on_commit(lambda table_id=pk, reason=table.settlement['reason']: logger.info(
+                'event=direct_entry_expired table_id=%s reason=%s', table_id, reason,
+            ))
+    if failed_ids:
+        raise RuntimeError(f'Direct game entry expiry failed for tables: {failed_ids}')
     return True

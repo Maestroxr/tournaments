@@ -30,6 +30,7 @@ class TournamentControlRoomTests(TestCase):
             published=True,
             min_players=8,
             max_players=8,
+            starts_at=timezone.now() - timedelta(minutes=1),
         )
         for index in range(8):
             user = User.objects.create_user(username=f'control-player-{index}')

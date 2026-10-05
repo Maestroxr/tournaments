@@ -34,7 +34,10 @@ class PushHealthTests(TestCase):
         )
         params = {'subscription': device, 'next_attempt_at': timezone.now() - timedelta(minutes=3), **values}
         if model is PushDelivery:
-            tournament = Tournament.objects.create(name='Player health test', podium_spec=[])
+            tournament = Tournament.objects.create(
+                name='Player health test', podium_spec=[],
+                starts_at=timezone.now() - timedelta(hours=1),
+            )
             mode = Knockout.objects.create(tournament=tournament)
             params['fixture'] = Fixture.objects.create(mode=mode, level=0)
         else:
@@ -171,7 +174,9 @@ class PushHealthTests(TestCase):
         now = timezone.now()
         device = PushSubscription.objects.create(user=self.user, endpoint_hash='test',
             endpoint='https://fcm.googleapis.com/secret-endpoint', p256dh='secret-key', auth='secret-auth')
-        tournament = Tournament.objects.create(name='Health test', podium_spec=[])
+        tournament = Tournament.objects.create(
+            name='Health test', podium_spec=[], starts_at=now - timedelta(hours=1),
+        )
         mode = Knockout.objects.create(tournament=tournament)
         cases = [
             {'attempts': 5},

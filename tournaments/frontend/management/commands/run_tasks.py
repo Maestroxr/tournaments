@@ -4,7 +4,7 @@ import time
 from django.core.management.base import BaseCommand, CommandError
 from django.db import close_old_connections
 
-from frontend.task_runner import runnable, run_task
+from frontend.task_runner import TaskRunOutcome, runnable, run_task_with_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -23,20 +23,26 @@ class Command(BaseCommand):
         ids = list(runnable().values_list('pk', flat=True)[:options['limit']])
         failed = []
         completed = 0
+        deferred = 0
         for task_id in ids:
             try:
                 close_old_connections()
-                done = run_task(task_id)
+                outcome = run_task_with_outcome(task_id)
             except Exception:
-                logger.exception('Could not execute tournament Task %s', task_id)
+                logger.exception('event=task_dispatch_failed task_id=%s', task_id)
                 failed.append(str(task_id))
             else:
-                if done:
+                if outcome is TaskRunOutcome.COMPLETED:
                     completed += 1
-                self.stdout.write(f'Task {task_id}: {"completed" if done else "deferred or retry scheduled"}')
+                elif outcome is TaskRunOutcome.RETRY_SCHEDULED:
+                    failed.append(str(task_id))
+                else:
+                    deferred += 1
+                self.stdout.write(f'Task {task_id}: {outcome.value}')
         total_ms = int((time.perf_counter() - batch_started) * 1000)
         self.stdout.write(
-            f'TASK_BATCH_DONE count={len(ids)} completed={completed} total_ms={total_ms}'
+            f'TASK_BATCH_DONE count={len(ids)} completed={completed} '
+            f'failed={len(failed)} deferred={deferred} total_ms={total_ms}'
         )
         if failed:
             raise CommandError(f'Could not execute tournament Tasks: {", ".join(failed)}')

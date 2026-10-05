@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from importlib import import_module
 from decimal import Decimal
 from urllib.parse import parse_qs, urlparse
@@ -8,6 +9,7 @@ from django.contrib.auth.models import User
 from django.apps import apps
 from django.db import connection
 from django.test import RequestFactory, TestCase, override_settings
+from django.utils import timezone
 
 from gamelink.views import ResultCallbackView
 from gamelink.signing import verify_ticket
@@ -658,6 +660,7 @@ class HeadToHeadApiTests(TestCase):
         tournament = Tournament.objects.create(
             name="Fee tournament", podium_spec=[], entry_fee=Decimal("100.00"),
             platform_fee_percent=Decimal("10.00"),
+            starts_at=timezone.now() - timedelta(days=1),
         )
         for user in (self.host, self.guest):
             WalletTransaction.create_entry(

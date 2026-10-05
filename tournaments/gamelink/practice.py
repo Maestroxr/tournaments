@@ -14,6 +14,7 @@ from django.core import signing
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.http import HttpResponseRedirect, JsonResponse
+from django.utils.decorators import method_decorator
 from django.views import View
 
 from tournaments.models import DirectPlaySettings, WalletTransaction
@@ -46,11 +47,12 @@ def practice_status(base, token):
         return json.load(response)
 
 
+@method_decorator(transaction.non_atomic_requests, name='dispatch')
 class StartPracticeView(LoginRequiredMixin, View):
     http_method_names = ['get', 'post']
 
     def get(self, request):
-        row = DirectPlaySettings.load()
+        row = DirectPlaySettings.for_read()
         response = JsonResponse({'fee': str(row.ai_game_fee), 'target_points': POINTS,
             'time_controls': TIMES, 'balance': str(WalletTransaction.balance_for_user(request.user))})
         response['Cache-Control'] = 'private, no-store'

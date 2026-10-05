@@ -6,6 +6,7 @@ from django.db.models import Count, Q
 from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils.decorators import method_decorator
 from django.views.generic import ListView, View
 from django.views.generic.detail import SingleObjectMixin
 from django.views.generic.edit import FormView
@@ -491,6 +492,7 @@ class ManageParticipantsView(AdminRequiredMixin, IsCreatorMixin, SingleObjectMix
         return context
 
 
+@method_decorator(transaction.non_atomic_requests, name='dispatch')
 class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoMixin, AlertMixin, View):
 
     model = models.Tournament
@@ -498,31 +500,10 @@ class TournamentProgressView(AdminRequiredMixin, SingleObjectMixin, VersionInfoM
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
 
-        # Drafted tournaments cannot be started.
-        if self.object.state == 'draft':
+        # Reading the legacy page must never simulate or start a tournament.
+        # Scheduled starts and explicit admin POSTs own those transitions.
+        if self.object.state in ('draft', 'open'):
             return HttpResponse(status=412)
-
-        if self.object.state == 'open':
-
-            # Tournament can only be started by the creator.
-            if self.object.creator is not None and self.object.creator.id != request.user.id:
-                return HttpResponseForbidden()
-
-            # Check whether there are at least 3 participants.
-            if self.object.participations.count() < 3:
-                return HttpResponse(status=412)
-
-            # Perform a test run.
-            try:
-                self.object.test()
-            except ValidationError as error:
-                request.session['alert'] = dict(
-                    status='danger', text='\n'.join(error))
-                return redirect('update-tournament', pk=self.object.id)
-
-            # Change tournament state to "active".
-            self.object.shuffle_participants()
-            self.object.update_state()
 
         if self.object.state in ('active', 'finished'):
             return render(request, 'frontend/tournament-progress.html', self.get_context_data())

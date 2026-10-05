@@ -21,8 +21,10 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from gamelink.views import _entry_deadline_fields, _playable_refusal_reason, playable_seat
+from gamelink.views import _check_playability, _entry_deadline_fields
+from gamelink.playability import earliest_unresolved_fixtures
 from tournaments import models
+from .tournament_reads import TournamentReadSnapshot
 from .forms import (
     SignupForm,
     AdminUserCreateForm,
@@ -51,18 +53,25 @@ PLAYABILITY_MESSAGES = {
     "tournament_not_active": "The tournament has not started yet.",
     "fixture_not_in_current_stage": "This match is not in the current tournament stage.",
     "fixture_not_in_current_level": "This match is not in the current round.",
+    "fixture_not_in_current_round": "This match is not in the current round.",
     "fixture_already_confirmed": "This match already has a confirmed result.",
     "fixture_missing_player": "This match is still missing one of the players.",
     "fixture_player_has_no_user": "One of the matched players is not linked to a user account.",
+    "fixture_not_activated": "This pair is not ready to start its match yet.",
+    "fixture_not_personal_current": "The player still has an earlier unfinished match.",
+    "ambiguous_current_fixtures": "The player has more than one matching unfinished fixture.",
+    "opponent_not_personal_current": "The opponent still has an earlier unfinished match.",
+    "opponent_ambiguous_current_fixtures": "The opponent has more than one matching unfinished fixture.",
     "user_not_in_fixture": "The signed-in player is not assigned to this match.",
     "backgammon_url_is_empty": "The Backgammon game URL is not configured.",
     "ready": "Ready to start the match.",
 }
 
 
-def _playability_payload(request, fixture):
-    seat, refusal = playable_seat(request.user, fixture)
-    reason = "ready" if seat is not None else _playable_refusal_reason(request.user, fixture)
+def _playability_payload(request, fixture, *, read_snapshot=None):
+    seat, refusal, reason = _check_playability(
+        request.user, fixture, read_snapshot=read_snapshot,
+    )
     if reason == "ready" and not getattr(settings, "GAMELINK_BACKGAMMON_URL", "").strip():
         reason = "backgammon_url_is_empty"
         refusal = 412
@@ -146,8 +155,9 @@ def _build_definition_from_template(template, opts=None):
     raise ValueError(f"Unknown template: {template}")
 
 
-def _serialize_tournament(t, request):
+def _serialize_tournament(t, request, *, read_snapshot=None):
     # mirrors frontend/views.py:87 state logic
+    snapshot = read_snapshot or TournamentReadSnapshot(t, request.user)
     is_joined = False
     is_eliminated = False
     can_play = False
@@ -156,53 +166,42 @@ def _serialize_tournament(t, request):
     entry_status = None
     registration_status = None
     if request.user.is_authenticated:
-        is_joined = t.participations.filter(
-            participant__user=request.user).exists()
-        participation = t.participations.filter(
-            participant__user=request.user).select_related("participant").first()
-        own_registration = t.registrations.filter(participant__user=request.user).first()
+        participation = next((item for item in snapshot.participations
+                              if item.participant.user_id == request.user.pk), None)
+        is_joined = participation is not None
+        own_registration = next((item for item in snapshot.registrations
+                                 if item.participant.user_id == request.user.pk), None)
         if own_registration:
             registration_status = own_registration.status
         elif participation:
             registration_status = models.TournamentRegistration.STATUS_REGISTERED
         if participation:
             participant = participation.participant
-            user_fixtures = models.Fixture.objects.filter(
-                mode__tournament=t
-            ).filter(Q(player1=participant) | Q(player2=participant))
-            current_stage = t.current_stage if t.state == "active" else None
-            if current_stage is not None:
-                current_fixtures = user_fixtures.select_related(
-                    "mode__tournament", "player1__user", "player2__user"
-                ).filter(
-                    mode=current_stage,
-                    level=current_stage.current_level,
-                )
-                # Keep the tournament-card status aligned with the exact predicate used when a
-                # ticket is issued. This prevents a stale/future fixture or disabled GameLink from
-                # being advertised as playable.
+            user_fixtures = [item for item in snapshot.fixtures
+                             if participant.pk in (item.player1_id, item.player2_id)]
+            if snapshot.state == 'active':
+                current_fixtures = snapshot.current_user_fixtures(request.user)
+                # Card status and ticket issuance use the same personal pairing
+                # policy, even while unrelated earlier-round games continue.
                 for fixture in current_fixtures:
-                    playability = _playability_payload(request, fixture)
+                    playability = _playability_payload(request, fixture, read_snapshot=snapshot)
                     if playability["can_play"]:
                         can_play = True
                         entry_deadline = playability["entry_deadline"]
                         remaining_seconds = playability["remaining_seconds"]
                         entry_status = playability["entry_status"]
                         break
-            lost_confirmed = user_fixtures.filter(
-                Q(
-                    Q(player1=participant, score1__lt=F("score2"))
-                    | Q(player2=participant, score2__lt=F("score1")),
-                    score1__isnull=False,
-                    score2__isnull=False,
-                )
-                | Q(
-                    admin_result__in=("advance", "disqualify"),
-                    admin_winner__isnull=False,
-                )
-                & ~Q(admin_winner=participant)
-            ).exists()
-            is_eliminated = t.state in ("active", "finished") and lost_confirmed and not can_play
+            lost_confirmed = any(
+                snapshot.is_confirmed(item) and (
+                    item.admin_result == 'double_no_show'
+                    or (item.admin_winner_id is not None and item.admin_winner_id != participant.pk)
+                    or (item.score1 is not None and item.score2 is not None and (
+                        (item.player1_id == participant.pk and item.score1 < item.score2)
+                        or (item.player2_id == participant.pk and item.score2 < item.score1)
+                    ))
+                ) for item in user_fixtures
+            )
+            is_eliminated = snapshot.state in ('active', 'finished') and lost_confirmed and not can_play
     starts = t.starts_at.isoformat() if getattr(t, "starts_at", None) else None
     # handle case where starts_at was stored as string (naive)
     if isinstance(getattr(t, "starts_at", None), str):
@@ -213,26 +212,35 @@ def _serialize_tournament(t, request):
             "name": participation.participant.name,
             "position": participation.podium_position,
         }
-        for participation in t.participations.filter(
-            podium_position__isnull=False
-        ).select_related("participant").order_by("podium_position")
+        for participation in sorted(
+            (item for item in snapshot.participations if item.podium_position is not None),
+            key=lambda item: item.podium_position,
+        )
     ]
     champion = podium[0] if podium else None
     is_winner = bool(
         request.user.is_authenticated
         and champion
-        and t.participations.filter(
-            participant_id=champion["id"], participant__user=request.user
-        ).exists()
+        and any(item.participant_id == champion['id'] and item.participant.user_id == request.user.pk
+                for item in snapshot.participations)
     )
+    current_fixtures = snapshot.current_user_fixtures(request.user)
+    current_fixture = current_fixtures[0] if len(current_fixtures) == 1 else None
+    lifecycle_state = snapshot.state
+    if lifecycle_state == 'open':
+        lifecycle_state = (
+            'registration_open' if t.registration_closed_at is None else
+            'registration_closed' if t.draw_generated_at is None or not t.draw_order else
+            'draw_ready' if t.draw_confirmed_at is None else 'ready_to_start'
+        )
     payload = {
         "id": t.id,
         "name": t.name,
-        "state": t.state,  # draft/open/active/finished
-        "status": t.state,  # alias for Vue frontend
-        "lifecycle_state": t.lifecycle_state,
+        "state": snapshot.state,  # draft/open/active/finished
+        "status": snapshot.state,  # alias for Vue frontend
+        "lifecycle_state": lifecycle_state,
         "published": t.published,
-        "registration_open": t.registration_open,
+        "registration_open": snapshot.state == 'open' and t.registration_closed_at is None,
         "registration_closed_at": t.registration_closed_at.isoformat() if t.registration_closed_at else None,
         "registration_closed_reason": t.registration_closed_reason if request.user.is_authenticated and request.user.is_staff else "",
         "draw_order": list(t.draw_order or []) if request.user.is_authenticated and request.user.is_staff else [],
@@ -247,12 +255,16 @@ def _serialize_tournament(t, request):
         "registration_status": registration_status,
         "is_eliminated": is_eliminated,
         "can_play": can_play,
+        "current_fixture_id": current_fixture.pk if current_fixture else None,
+        "current_stage_id": (str(current_fixture.mode_id) if current_fixture else
+                             str(snapshot.current_stage.pk) if snapshot.current_stage else None),
+        "current_round": current_fixture.level if current_fixture else snapshot.current_level,
         "entry_deadline": entry_deadline,
         "remaining_seconds": remaining_seconds,
         "entry_status": entry_status,
         "champion": champion,
         "podium": podium,
-        "participant_count": t.participations.count(),
+        "participant_count": len(snapshot.participations),
         "starts_at": starts,
         "min_players": getattr(t, "min_players", 6),
         "max_players": getattr(t, "max_players", None),
@@ -267,16 +279,16 @@ def _serialize_tournament(t, request):
         "is_winner": is_winner,
         # Forms must round-trip the configured amount, not the computed pool.
         "configured_prize_money": str(t.prize_money),
-        "prize_money": str(t.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
+        "prize_money": str(snapshot.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
         "platform_fee_percent": str(t.platform_fee_percent),
-        "collected_entry_fees": str(t.collected_entry_fees),
+        "collected_entry_fees": str(snapshot.collected_entry_fees),
         # placeholders for your Vue fields (map backend -> frontend)
         "enterPrice": float(getattr(t, "entry_fee", Decimal("0.00"))),
-        "prizeMoney": float(t.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
+        "prizeMoney": float(snapshot.effective_prize_money if t.prize_type == 'coins' else Decimal("0.00")),
         "capacity": t.max_players or 8,
     }
     if request.user.is_authenticated and request.user.is_staff:
-        payload["registration_summary"] = _registration_summary(t)
+        payload["registration_summary"] = _registration_summary(t, read_snapshot=snapshot)
     return payload
 
 
@@ -433,11 +445,12 @@ def _capacity_error(tournament):
     return None
 
 
-def _registration_summary(tournament):
-    active_ids = list(tournament.participations.values_list('participant_id', flat=True))
+def _registration_summary(tournament, *, read_snapshot=None):
+    active_ids = [item.participant_id for item in read_snapshot.participations] if read_snapshot else list(
+        tournament.participations.values_list('participant_id', flat=True))
     registrations = {
         registration.participant_id: registration
-        for registration in tournament.registrations.all()
+        for registration in (read_snapshot.registrations if read_snapshot else tournament.registrations.all())
     }
     checked_in = 0
     unpaid = 0
@@ -668,11 +681,7 @@ def api_logout(request):
 
 @require_http_methods(["GET"])
 def api_tournaments(request):
-    qs = models.Tournament.objects.filter(published=True).annotate(
-        fixtures=Count('stages__fixtures'),
-        podium_size=Count('participations', filter=Q(
-            participations__podium_position__isnull=False))
-    )
+    qs = models.Tournament.objects.filter(published=True).select_related('creator')
     # optional ?state=open|active|finished or ?q=search
     state = request.GET.get("state")
     q = request.GET.get("q")
@@ -681,23 +690,25 @@ def api_tournaments(request):
     tournaments = []
     for t in qs:
         # reuse state filter like IndexView
-        if state and t.state != state:
+        snapshot = TournamentReadSnapshot(t, request.user)
+        if state and snapshot.state != state:
             continue
-        tournaments.append(_serialize_tournament(t, request))
+        tournaments.append(_serialize_tournament(t, request, read_snapshot=snapshot))
     return JsonResponse(tournaments, safe=False)
 
 
 @require_http_methods(["GET"])
 def api_tournament_detail(request, pk):
-    t = get_object_or_404(models.Tournament, pk=pk)
+    t = get_object_or_404(models.Tournament.objects.select_related('creator'), pk=pk)
+    snapshot = TournamentReadSnapshot(t, request.user)
     # allow draft only for creator (like UpdateTournamentView:128)
-    if t.state == "draft" and (not request.user.is_authenticated or t.creator_id != request.user.id):
+    if snapshot.state == "draft" and (not request.user.is_authenticated or t.creator_id != request.user.id):
         return JsonResponse({"detail": "Not found"}, status=404)
-    data = _serialize_tournament(t, request)
+    data = _serialize_tournament(t, request, read_snapshot=snapshot)
     data["definition"] = t.definition
     data["participants"] = [
         participation.participant.user.username if participation.participant.user_id else participation.participant.name
-        for participation in t.participations.select_related("participant__user")
+        for participation in snapshot.participations
     ]
     return JsonResponse(data)
 
@@ -847,17 +858,15 @@ def _create_friend_table(**fields):
 
 
 @require_http_methods(["GET", "POST"])
+@transaction.non_atomic_requests
 def api_head_to_head_tables(request):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    settings_row = models.DirectPlaySettings.load()
     if request.method == "GET":
-        from .search_lifecycle import reconcile_searches_locked
-        reconcile_searches_locked(host_id=request.user.pk)
-        from .entry_lifecycle import expire_unstarted_tables, touch_open_searches
-        expire_unstarted_tables(user_id=request.user.pk)
-        touch_open_searches(request.user.pk)
-        settings_row.refresh_from_db()
+        # Display never reconciles searches, expires games, or writes presence.
+        # A new deployment can display default settings before any POST creates
+        # the singleton; get_or_create would acquire a write lock here.
+        settings_row = models.DirectPlaySettings.for_read()
         tables = models.HeadToHeadTable.objects.filter(
             mode=models.HeadToHeadTable.MODE_MATCH,
             game_format__in=['match', 'money'],
@@ -888,13 +897,19 @@ def api_head_to_head_tables(request):
     return create_or_match(request)
 
 
+@require_http_methods(['POST'])
+def api_head_to_head_search_presence(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({'detail': 'Authentication required'}, status=401)
+    from .entry_lifecycle import touch_open_searches
+    return JsonResponse({'updated': touch_open_searches(request.user.pk)})
+
+
 @require_http_methods(["GET"])
 def api_head_to_head_table(request, code):
     """Preview every table rule before the player commits coins."""
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    from .entry_lifecycle import expire_unstarted_tables
-    expire_unstarted_tables(user_id=request.user.pk)
     table = get_object_or_404(
         models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner'),
         code=code.upper(),
@@ -943,12 +958,15 @@ def _recurring_bonus_payload(user, settings_row):
 
 
 @require_http_methods(["GET", "POST"])
+@transaction.non_atomic_requests
 def api_recurring_coin_bonus(request):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    settings_row = models.DirectPlaySettings.load()
     if request.method == "GET":
-        return JsonResponse(_recurring_bonus_payload(request.user, settings_row))
+        return JsonResponse(_recurring_bonus_payload(
+            request.user, models.DirectPlaySettings.for_read(),
+        ))
+    settings_row = models.DirectPlaySettings.load()
     with transaction.atomic():
         locked_user = User.objects.select_for_update().get(pk=request.user.pk)
         payload = _recurring_bonus_payload(locked_user, settings_row)
@@ -1064,11 +1082,13 @@ def api_head_to_head_cancel(request, code):
 
 
 @require_http_methods(["GET", "PUT"])
+@transaction.non_atomic_requests
 def api_admin_direct_play_settings(request):
     err = _require_staff(request)
     if err:
         return err
-    row = models.DirectPlaySettings.load()
+    row = (models.DirectPlaySettings.for_read() if request.method == "GET"
+           else models.DirectPlaySettings.load())
     if request.method == "PUT":
         try:
             with transaction.atomic():
@@ -1116,7 +1136,7 @@ def api_admin_direct_play_settings(request):
         "coin_grant_enabled": row.coin_grant_enabled,
         "coin_grant_amount": str(row.coin_grant_amount),
         "coin_grant_interval_hours": row.coin_grant_interval_hours,
-        "updated_at": row.updated_at.isoformat(),
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     })
 
 
@@ -1440,8 +1460,15 @@ def _attendee_csv(tournament, rows):
 
 
 @require_http_methods(["GET", "POST", "PATCH", "DELETE"])
-@transaction.atomic
+@transaction.non_atomic_requests
 def api_admin_tournament_attendees(request, pk):
+    if request.method != 'GET':
+        with transaction.atomic():
+            return _admin_tournament_attendees(request, pk)
+    return _admin_tournament_attendees(request, pk)
+
+
+def _admin_tournament_attendees(request, pk):
     err = _require_staff(request)
     if err:
         return err
@@ -1662,235 +1689,104 @@ def api_admin_tournament_attendees(request, pk):
     })
 
 
-@require_http_methods(["GET", "POST"])
-@transaction.atomic
-def api_admin_tournament_progress(request, pk):
+@require_http_methods(["GET"])
+@transaction.non_atomic_requests
+def api_tournament_current_match(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    t = get_object_or_404(models.Tournament.objects.select_for_update() if request.method == 'POST' else models.Tournament.objects.all(), pk=pk)
-    if t.state == "draft":
+    t = get_object_or_404(models.Tournament.objects.select_related('creator'), pk=pk)
+    snapshot = TournamentReadSnapshot(t, request.user, include_live=True)
+    if snapshot.state == 'draft':
+        return JsonResponse({"detail": "Not found"}, status=404)
+    current = snapshot.current_user_fixtures(request.user)
+    fixture = current[0] if len(current) == 1 else None
+    from .progress_reads import serialize_fixture
+    payload = serialize_fixture(
+        fixture, snapshot, request.user, timezone.now(),
+        _playability_payload(request, fixture, read_snapshot=snapshot),
+    ) if fixture else None
+    return JsonResponse({
+        'fixture': payload,
+        'tournament': _serialize_tournament(t, request, read_snapshot=snapshot),
+    })
+
+
+@require_http_methods(["GET", "POST"])
+@transaction.non_atomic_requests
+def api_admin_tournament_progress(request, pk):
+    if request.method == 'POST':
+        with transaction.atomic():
+            return _admin_tournament_progress(request, pk)
+    return _admin_tournament_progress(request, pk)
+
+
+def _admin_tournament_progress(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required"}, status=401)
+    queryset = models.Tournament.objects.select_related('creator')
+    if request.method == 'POST':
+        queryset = queryset.select_for_update()
+    t = get_object_or_404(queryset, pk=pk)
+    snapshot = TournamentReadSnapshot(t, request.user, include_live=True) if request.method == 'GET' else None
+    state = snapshot.state if snapshot else t.state
+    if state == 'draft':
         return JsonResponse({"detail": "Tournament is draft"}, status=412)
-    if t.state == "open":
+    if state == 'open':
         return JsonResponse({"detail": "Tournament has not started"}, status=412)
-    if request.method == "GET":
+    if request.method == 'GET':
+        from .progress_reads import serialize_fixture
         stages = {}
-        current_stage_idx = None
         operational_fixtures = []
         waiting_players = []
         now = timezone.now()
-        for idx, stage in enumerate(t.stages.all()):
+        current_stage_idx = len(snapshot.stages) + 1 if snapshot.current_stage is None else None
+        for idx, stage in enumerate(snapshot.stages):
             levels = []
-            for level in range(stage.levels):
+            for level in range(snapshot.stage_levels[stage.pk]):
                 fixtures = []
-                for fixture in stage.fixtures.select_related(
-                    "player1__user",
-                    "player2__user",
-                    "game_link",
-                ).filter(level=level):
-
-                    player1 = fixture.player1
-                    player2 = fixture.player2
-
-                    player1_user = player1.user if player1 and player1.user else None
-                    player2_user = player2.user if player2 and player2.user else None
-
-                    is_player1 = (
-                        player1_user is not None
-                        and player1_user.id == request.user.id
+                for fixture in snapshot.by_stage[stage.pk]:
+                    if fixture.level != level:
+                        continue
+                    payload = serialize_fixture(
+                        fixture, snapshot, request.user, now,
+                        _playability_payload(request, fixture, read_snapshot=snapshot),
                     )
-
-                    is_player2 = (
-                        player2_user is not None
-                        and player2_user.id == request.user.id
-                    )
-
-                    current_user = player1_user if is_player1 else player2_user if is_player2 else None
-                    opponent = player2_user if is_player1 else player1_user if is_player2 else None
-                    playability = _playability_payload(request, fixture)
-                    game_link = fixture.game_link if hasattr(fixture, 'game_link') else None
-                    live_snapshot = game_link.live_snapshot if game_link else None
-                    start_event = fixture.audit_events.filter(
-                        action='live_started').order_by('created_at').first()
-                    is_current_round = bool(
-                        t.current_stage and stage.id == t.current_stage.id
-                        and level == stage.current_level
-                    )
-                    started_at = (
-                        start_event.created_at if start_event else
-                        game_link.created_at if game_link and game_link.status in {'playing', 'completed'} else None
-                    )
-                    ended_at = fixture.admin_resolved_at or (
-                        game_link.completed_at if game_link else None)
-                    last_activity_at = (
-                        game_link.live_updated_at if game_link else None
-                    ) or started_at or fixture.created_at
-                    live_status = live_snapshot.get('status') if isinstance(live_snapshot, dict) else None
-                    live_playing = bool(
-                        game_link and (
-                            game_link.status == 'playing'
-                            or live_status == 'playing'
-                        )
-                    )
-                    stalled = bool(
-                        live_playing and last_activity_at
-                        and (now - last_activity_at).total_seconds() >= 120
-                    )
-                    if fixture.is_confirmed:
-                        operational_status = 'completed'
-                    elif fixture.score1 is not None or fixture.confirmations.exists():
-                        operational_status = 'review'
-                    elif stalled:
-                        operational_status = 'stalled'
-                    elif live_playing:
-                        operational_status = 'playing'
-                    elif is_current_round and player1 and player2:
-                        operational_status = 'waiting'
-                    elif is_current_round and (player1 or player2):
-                        operational_status = 'waiting_opponent'
-                    else:
-                        operational_status = 'upcoming'
-                    duration_seconds = None
-                    if started_at:
-                        duration_seconds = max(0, int(((ended_at or now) - started_at).total_seconds()))
-
-                    fixture_payload = {
-                        "id": fixture.id,
-                        "stage_id": str(stage.id),
-                        "stage_name": stage.name or stage.identifier,
-                        "round_name": stage.get_level_name(level),
-                        "round_index": level,
-                        "is_current_round": is_current_round,
-                        "operational_status": operational_status,
-                        "ready_at": fixture.created_at.isoformat(),
-                        "started_at": started_at.isoformat() if started_at else None,
-                        "last_activity_at": last_activity_at.isoformat() if last_activity_at else None,
-                        "ended_at": ended_at.isoformat() if ended_at else None,
-                        "duration_seconds": duration_seconds,
-                        "stalled": stalled,
-                        "admin_resolution": fixture.admin_result,
-                        "winner_id": fixture.winner.pk if fixture.is_confirmed and fixture.winner else None,
-                        "bracket": ({
-                            "position": fixture.extras.get("position"),
-                            "winner_to": fixture.extras.get("propagate", {}).get("winner"),
-                        } if isinstance(stage, models.Knockout) and not stage.double_elimination
-                           and isinstance(fixture.extras, dict) else None),
-
-                        "player1": {
-                            "id": player1.id if player1 else None,
-                            "user_id": player1_user.id if player1_user else None,
-                            "name": player1.name if player1 else None,
-                            "username": player1_user.username if player1_user else None,
-                        } if player1 else None,
-
-                        "player2": {
-                            "id": player2.id if player2 else None,
-                            "user_id": player2_user.id if player2_user else None,
-                            "name": player2.name if player2 else None,
-                            "username": player2_user.username if player2_user else None,
-                        } if player2 else None,
-
-                        "current_user": {
-                            "id": current_user.id,
-                            "username": current_user.username,
-                            "participant_id": (
-                                player1.id if is_player1
-                                else player2.id if is_player2
-                                else None
-                            ),
-                        } if current_user else None,
-
-                        "opponent": {
-                            "id": opponent.id,
-                            "username": opponent.username,
-                            "participant_id": (
-                                player2.id if is_player1
-                                else player1.id if is_player2
-                                else None
-                            ),
-                        } if opponent else None,
-
-                        "is_current_user": current_user is not None,
-                        # Use the exact predicate that StartGameView uses, so the Vue client
-                        # never offers a game link for an old, settled, or otherwise unavailable
-                        # fixture.  StartGameView repeats this check when the form is submitted.
-                        "can_play": playability["can_play"],
-                        "playability": playability,
-
-                        "score1": fixture.score1,
-                        "score2": fixture.score2,
-                        "is_confirmed": fixture.is_confirmed,
-                        "confirmations": fixture.confirmations.count(),
-                        "required_confirmations": fixture.required_confirmations_count,
-
-                        "editable": (
-                            not fixture.is_confirmed
-                            and level == stage.current_level
-                        ),
-
-                        "has_confirmed": fixture.confirmations.filter(
-                            id=request.user.id
-                        ).exists(),
-                        "game_result": (
-                            game_link.raw_result
-                            if game_link and game_link.raw_result
-                            else None
-                        ),
-                        "external_room_id": (
-                            game_link.external_room_id if game_link else None
-                        ),
-                        "live": live_snapshot,
-                    }
-                    fixtures.append(fixture_payload)
-                    operational_fixtures.append(fixture_payload)
-                    if operational_status == 'waiting_opponent':
-                        waiting_player = player1 or player2
+                    fixtures.append(payload)
+                    operational_fixtures.append(payload)
+                    if payload['operational_status'] == 'waiting_opponent':
+                        player = fixture.player1 or fixture.player2
                         waiting_players.append({
-                            'id': waiting_player.id,
-                            'name': waiting_player.name,
-                            'user_id': waiting_player.user_id,
-                            'fixture_id': fixture.id,
-                            'round_name': stage.get_level_name(level),
+                            'id': player.pk, 'name': player.name, 'user_id': player.user_id,
+                            'fixture_id': fixture.pk, 'round_name': payload['round_name'],
                         })
-                levels.append(
-                    {"fixtures": fixtures, "name": stage.get_level_name(level)})
-            stages[stage.id] = {
-                "levels": levels,
-                "bracket_kind": "single_elimination" if isinstance(stage, models.Knockout)
+                levels.append({'fixtures': fixtures, 'name': snapshot.round_names[(stage.pk, level)]})
+            stages[stage.pk] = {
+                'levels': levels,
+                'bracket_kind': 'single_elimination' if isinstance(stage, models.Knockout)
                     and not stage.double_elimination else None,
             }
-            if t.current_stage and stage.id == t.current_stage.id:
+            if snapshot.current_stage and stage.pk == snapshot.current_stage.pk:
                 current_stage_idx = idx + 1
-        if t.current_stage is None:
-            current_stage_idx = t.stages.count() + 1
+        current_stage = snapshot.current_stage
         return JsonResponse({
-            "tournament": _serialize_tournament(t, request),
-            "stages": stages,
-            "current_stage": current_stage_idx,
-            "is_finished": t.state == "finished",
-            "podium": list(t.podium.values("id", "name")) if t.state == "finished" else [],
-            "control_room": {
-                "current_stage": (
-                    t.current_stage.name or t.current_stage.identifier
-                    if t.current_stage else None
-                ),
-                "current_round": t.current_stage.get_level_name(t.current_stage.current_level) if t.current_stage else None,
-                "counts": {
-                    status: sum(
-                        fixture['operational_status'] == status
-                        for fixture in operational_fixtures
-                    )
-                    for status in ['playing', 'waiting', 'waiting_opponent', 'review', 'stalled', 'completed', 'upcoming']
-                },
-                "waiting_players": waiting_players,
-                "round_total": sum(
-                    bool(fixture['is_current_round']) for fixture in operational_fixtures
-                ),
-                "round_completed": sum(
-                    fixture['is_current_round'] and fixture['operational_status'] == 'completed'
-                    for fixture in operational_fixtures
-                ),
-                "stale_after_seconds": 120,
-                "generated_at": now.isoformat(),
+            'tournament': _serialize_tournament(t, request, read_snapshot=snapshot),
+            'stages': stages, 'current_stage': current_stage_idx,
+            'is_finished': snapshot.state == 'finished',
+            'podium': [{'id': item.participant_id, 'name': item.participant.name}
+                       for item in sorted(
+                           (item for item in snapshot.participations if item.podium_position is not None),
+                           key=lambda item: item.podium_position,
+                       )] if snapshot.state == 'finished' else [],
+            'control_room': {
+                'current_stage': current_stage.name or current_stage.identifier if current_stage else None,
+                'current_round': snapshot.round_names.get((current_stage.pk, snapshot.current_level)) if current_stage else None,
+                'counts': {status: sum(item['operational_status'] == status for item in operational_fixtures)
+                           for status in ('playing', 'waiting', 'waiting_opponent', 'review', 'stalled', 'completed', 'upcoming')},
+                'waiting_players': waiting_players,
+                'round_total': sum(bool(item['is_current_round']) for item in operational_fixtures),
+                'round_completed': sum(item['is_current_round'] and item['operational_status'] == 'completed'
+                                       for item in operational_fixtures),
+                'stale_after_seconds': 120, 'generated_at': now.isoformat(),
             },
         })
     # POST - submit score
@@ -1899,20 +1795,41 @@ def api_admin_tournament_progress(request, pk):
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
     try:
-        fixture = models.Fixture.objects.select_for_update().get(id=data.get("fixture_id"))
+        fixture = models.Fixture.objects.select_for_update().select_related(
+            'mode__tournament', 'player1__user', 'player2__user',
+        ).get(id=data.get("fixture_id"), mode__tournament=t)
     except models.Fixture.DoesNotExist:
         return JsonResponse({"detail": "Fixture not found"}, status=404)
     # checks
     if t.state != "active":
         return JsonResponse({"detail": f"Tournament not active, state={t.state}"}, status=412)
-    if fixture.mode_id != t.current_stage.id:
-        return JsonResponse({"detail": "Fixture not in current stage"}, status=412)
-    if fixture.level != t.current_stage.current_level:
-        return JsonResponse({"detail": "Fixture not in current level"}, status=412)
     if not fixture.players.filter(id=request.user.id).exists():
         return JsonResponse({"detail": "You are not a player in this match"}, status=403)
     if not t.participations.filter(participant__user=request.user).exists():
         return JsonResponse({"detail": "You are not a participant in this tournament"}, status=403)
+    if (fixture.playable_at is None or fixture.playable_at > timezone.now()
+            or not fixture.player1_id or not fixture.player2_id):
+        return JsonResponse({"detail": "Fixture is not ready to play"}, status=412)
+    # Scores and confirmations follow each pair's progression, independently of
+    # unrelated matches in the tournament's oldest unfinished round. Keep this
+    # fresh under the tournament lock; do not use a GET response snapshot here.
+    pair_ids = (fixture.player1_id, fixture.player2_id)
+    assigned = list(models.Fixture.objects.filter(mode__tournament=t).filter(
+        Q(player1_id__in=pair_ids) | Q(player2_id__in=pair_ids),
+    ).annotate(personal_confirmation_count=Count('confirmations')))
+    required = 1 + t.participations.filter(participant__user__isnull=False).count() // 2
+
+    def confirmed(item):
+        return item.confirmed_result(
+            confirmation_count=item.personal_confirmation_count,
+            required_confirmations=required,
+        )
+
+    for participant_id in pair_ids:
+        personal = earliest_unresolved_fixtures(assigned, participant_id=participant_id,
+                                              is_confirmed=confirmed)
+        if len(personal) != 1 or personal[0].pk != fixture.pk:
+            return JsonResponse({"detail": "One player still has another unfinished match"}, status=412)
     try:
         new_score = (int(str(data.get("score1")).strip()),
                      int(str(data.get("score2")).strip()))
@@ -2012,8 +1929,15 @@ def api_admin_tournament_reopen_registration(request, pk):
 
 
 @require_http_methods(["GET", "POST"])
-@transaction.atomic
+@transaction.non_atomic_requests
 def api_admin_tournament_draw(request, pk):
+    if request.method == 'POST':
+        with transaction.atomic():
+            return _admin_tournament_draw(request, pk)
+    return _admin_tournament_draw(request, pk)
+
+
+def _admin_tournament_draw(request, pk):
     err = _require_staff(request)
     if err:
         return err

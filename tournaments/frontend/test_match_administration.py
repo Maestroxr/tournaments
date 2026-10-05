@@ -18,7 +18,9 @@ class MatchAdministrationTests(TestCase):
         response = self.client.post(reverse('api-admin-tournaments'), {
             'name': 'Admin cup', 'template': 'knockout', 'min_players': 4,
             'max_players': 4, 'open_registration': True, 'entry_fee': '50',
+            'starts_at': (timezone.now() + timedelta(days=1)).isoformat(),
         }, content_type='application/json')
+        self.assertEqual(response.status_code, 201, response.content)
         self.tournament = Tournament.objects.get(pk=response.json()['id'])
         for i in range(4):
             user = User.objects.create_user(username=f'player{i}')
@@ -29,7 +31,11 @@ class MatchAdministrationTests(TestCase):
         self.client.post(reverse('api-admin-tournament-close-registration', kwargs={'pk': self.tournament.pk}))
         self.client.post(reverse('api-admin-tournament-draw', kwargs={'pk': self.tournament.pk}), {}, content_type='application/json')
         self.client.post(reverse('api-admin-tournament-confirm-draw', kwargs={'pk': self.tournament.pk}))
-        self.client.post(reverse('api-admin-tournament-start', kwargs={'pk': self.tournament.pk}))
+        # Creation requires a future schedule; this fixture models that time having passed.
+        self.tournament.starts_at = timezone.now() - timedelta(minutes=1)
+        self.tournament.save(update_fields=['starts_at'])
+        started = self.client.post(reverse('api-admin-tournament-start', kwargs={'pk': self.tournament.pk}))
+        self.assertEqual(started.status_code, 200, started.content)
         self.fixture = Fixture.objects.filter(mode__tournament=self.tournament, level=0).first()
         self.url = reverse('api-admin-match', kwargs={'pk': self.tournament.pk, 'fixture_id': self.fixture.pk})
 

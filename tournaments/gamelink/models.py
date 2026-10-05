@@ -71,6 +71,23 @@ class GameLink(models.Model):
     live_updated_at = models.DateTimeField(null=True, blank=True)
     p1_ready_at = models.DateTimeField(null=True, blank=True)
     p2_ready_at = models.DateTimeField(null=True, blank=True)
+    # Readiness authorizes a pair once; expiring bearer-ticket audit rows must not
+    # revoke the second seat's first entry or either player's reconnect.
+    entry_authorized_at = models.DateTimeField(null=True, blank=True)
+    entry_player1 = models.ForeignKey(
+        'auth.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    entry_player2 = models.ForeignKey(
+        'auth.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+
+    def entry_authorized_for(self, fixture):
+        """A grant is valid only for the exact pair that passed readiness."""
+        return bool(
+            self.fixture_id == fixture.pk and self.entry_authorized_at
+            and fixture.player1_id and fixture.player2_id
+            and self.entry_player1_id and self.entry_player2_id
+            and self.entry_player1_id == fixture.player1.user_id
+            and self.entry_player2_id == fixture.player2.user_id
+        )
 
     def __str__(self):
         return f'{self.provider} game for fixture {self.fixture_id} ({self.status})'

@@ -7,6 +7,7 @@ from django.db import close_old_connections
 
 from frontend.push import configured, discover_ready_matches, deliver_pending
 from frontend.push_health import heartbeat
+from frontend.tournament_reminders import discover_tournament_reminders
 
 
 class Command(BaseCommand):
@@ -28,6 +29,7 @@ class Command(BaseCommand):
             report_alive = partial(heartbeat, options['interval'])
             report_alive()
             queued = discover_ready_matches()
+            queued += discover_tournament_reminders()
             sent = deliver_pending(heartbeat=report_alive)
             if queued or sent or options['once']:
                 self.stdout.write(f'Queued {queued}; delivered {sent}.')

@@ -69,6 +69,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'tournaments.observability.IncidentDiagnosticsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -77,6 +78,19 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# Operational events must reach the service's stderr/journal with DEBUG=False.
+# Django's default development console filter alone suppresses these messages.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {'incident': {'format': '%(levelname)s %(asctime)s %(name)s %(message)s'}},
+    'handlers': {'incident_console': {'class': 'logging.StreamHandler', 'formatter': 'incident', 'level': 'INFO'}},
+    'loggers': {
+        name: {'handlers': ['incident_console'], 'level': 'INFO', 'propagate': False}
+        for name in ('django.incident', 'frontend', 'gamelink', 'tournaments')
+    },
+}
 
 ROOT_URLCONF = 'tournaments.urls'
 
