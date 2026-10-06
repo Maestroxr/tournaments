@@ -3,22 +3,52 @@ import datetime
 import os
 import uuid
 from types import SimpleNamespace
-from unittest.mock import ANY, patch
 from unittest import skipUnless
+from unittest.mock import ANY, AsyncMock, patch
 
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
 
 from gamelink import entry_presence
 from gamelink.consumers import ClubUpdatesConsumer
 from gamelink.entry_waiting import release, state
 from gamelink.models import GameLink
 from gamelink.views import _fresh_seat
-from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
 
 MEMORY_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+
+
+class ClubInvalidationTests(SimpleTestCase):
+    async def test_repeated_revision_is_skipped_but_new_generation_is_sent(self):
+        consumer = ClubUpdatesConsumer()
+        consumer.scope = {'user': SimpleNamespace(pk=1)}
+        consumer.sent_revisions = {'tournaments': {'generation': 'old', 'sequence': 5}}
+        consumer.send_json = AsyncMock()
+        revisions = [
+            {'generation': 'old', 'sequence': 5},
+            {'generation': 'old', 'sequence': 6},
+            {'generation': 'old', 'sequence': 6},
+            {'generation': 'new', 'sequence': 1},
+        ]
+        with patch('frontend.lobby_revisions.current', side_effect=revisions):
+            for _ in revisions:
+                await consumer.club_invalidate({'resource': 'tournaments'})
+        self.assertEqual(consumer.send_json.await_count, 2)
+        self.assertEqual(consumer.sent_revisions['tournaments'], revisions[-1])
+
+    async def test_failed_send_does_not_acknowledge_the_revision(self):
+        consumer = ClubUpdatesConsumer()
+        consumer.scope = {'user': SimpleNamespace(pk=1)}
+        previous = {'generation': 'old', 'sequence': 5}
+        consumer.sent_revisions = {'tournaments': previous}
+        consumer.send_json = AsyncMock(side_effect=RuntimeError('send failed'))
+        with patch('frontend.lobby_revisions.current', return_value={'generation': 'old', 'sequence': 6}):
+            with self.assertRaisesRegex(RuntimeError, 'send failed'):
+                await consumer.club_invalidate({'resource': 'tournaments'})
+        self.assertEqual(consumer.sent_revisions['tournaments'], previous)
 
 
 @override_settings(CHANNEL_LAYERS=MEMORY_LAYERS)

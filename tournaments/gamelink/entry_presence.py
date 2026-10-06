@@ -1,6 +1,7 @@
 """Connection-owned waiting presence; heartbeats touch Redis, never game rows."""
-import logging
 import hashlib
+import logging
+import uuid
 from functools import lru_cache
 from threading import RLock
 
@@ -108,6 +109,8 @@ def notify_fixture(fixture_id):
     try:
         async_to_sync(get_channel_layer().group_send)(group_name(fixture_id), {
             'type': 'club.entry_changed', 'fixture_id': fixture_id,
+            'notification_id': uuid.uuid4().hex,
+            'published_at': timezone.now().isoformat(),
         })
     except Exception:
         logger.exception('event=entry_state_delivery_failed fixture_id=%s', fixture_id)

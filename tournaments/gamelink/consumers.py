@@ -6,8 +6,8 @@ from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.db.models import Q
-
 from tournaments.models import Fixture, Tournament
+
 from .entry_presence import group_name
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
         # Register first, then read versions to cover changes during connection.
         revisions = await database_sync_to_async(current_revisions)(user.pk)
         await self.send_json({'type': 'connected', 'revisions': revisions})
+        self.sent_revisions = dict(revisions)
         self.entry = None
         self.pong = None
         self.probe_task = asyncio.create_task(self._probe_connection())
@@ -57,7 +58,10 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
         # Read the latest committed version, not the possibly delayed event's
         # version. Several writes in one action therefore announce the same value.
         revision = await database_sync_to_async(current)(resource, self.scope['user'].pk)
+        if self.sent_revisions.get(resource) == revision:
+            return
         await self.send_json({'type': 'invalidate', 'resource': resource, 'revision': revision})
+        self.sent_revisions[resource] = revision
 
     async def receive_json(self, content, **kwargs):
         if not isinstance(content, dict):
