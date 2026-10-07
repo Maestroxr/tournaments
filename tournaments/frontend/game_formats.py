@@ -578,6 +578,17 @@ def create_or_match(request, *, quick=False, match_search=False):
         return JsonResponse({'detail': '; '.join(getattr(error, 'messages', [str(error)]))}, status=400)
 
 
+def lock_join_players(table, user):
+    """Lock both accounts in ID order before checking their current games."""
+    list(User.objects.select_for_update().filter(
+        pk__in=(table.host_id, user.pk)).order_by('pk'))
+    from .entry_lifecycle import active_table
+    if active_table(user.pk, exclude=table.pk):
+        raise ValidationError('יש לך כבר משחק פעיל.', code='active_game_exists')
+    if active_table(table.host_id, exclude=table.pk):
+        raise ValidationError('לאחד השחקנים כבר יש משחק פעיל.', code='opponent_active_game')
+
+
 def join_table(table, user, settings):
     from .search_lifecycle import _cancellation_reason
     if table.is_quick_match and _cancellation_reason(table, settings):
@@ -586,11 +597,7 @@ def join_table(table, user, settings):
     access = 'private' if table.mode == 'friend' else 'public'
     if not settings.enabled or not profile['enabled'] or not profile[access]:
         raise ValidationError('This game format or access method is disabled.')
-    list(User.objects.select_for_update().filter(
-        pk__in=sorted((table.host_id, user.pk))).order_by('pk'))
-    from .entry_lifecycle import active_table, mark_entry_ready
-    if active_table(user.pk, exclude=table.pk) or active_table(table.host_id, exclude=table.pk):
-        raise ValidationError('לאחד השחקנים כבר יש משחק פעיל.')
+    lock_join_players(table, user)
     required = required_reserve(table)
     if held(table, table.host) < required:
         raise ValidationError('The host reservation is missing.')

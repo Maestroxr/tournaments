@@ -79,7 +79,8 @@ def _playability_payload(request, fixture, *, read_snapshot=None):
     can_play = seat is not None and reason == "ready"
     # Read-only entry deadline: same fixture.playable_at + 10-minute window
     # the ready endpoint uses. Never marks readiness, never resolves no-show.
-    entry_deadline, remaining_seconds = _entry_deadline_fields(fixture, timezone.now())
+    entry_deadline, remaining_seconds = _entry_deadline_fields(
+        fixture, timezone.now())
     return {
         "can_play": can_play,
         "seat": seat,
@@ -185,7 +186,8 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
                 # Card status and ticket issuance use the same personal pairing
                 # policy, even while unrelated earlier-round games continue.
                 for fixture in current_fixtures:
-                    playability = _playability_payload(request, fixture, read_snapshot=snapshot)
+                    playability = _playability_payload(
+                        request, fixture, read_snapshot=snapshot)
                     if playability["can_play"]:
                         can_play = True
                         entry_deadline = playability["entry_deadline"]
@@ -202,7 +204,8 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
                     ))
                 ) for item in user_fixtures
             )
-            is_eliminated = snapshot.state in ('active', 'finished') and lost_confirmed and not can_play
+            is_eliminated = snapshot.state in (
+                'active', 'finished') and lost_confirmed and not can_play
     starts = t.starts_at.isoformat() if getattr(t, "starts_at", None) else None
     # handle case where starts_at was stored as string (naive)
     if isinstance(getattr(t, "starts_at", None), str):
@@ -226,7 +229,8 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
                 for item in snapshot.participations)
     )
     current_fixtures = snapshot.current_user_fixtures(request.user)
-    current_fixture = current_fixtures[0] if len(current_fixtures) == 1 else None
+    current_fixture = current_fixtures[0] if len(
+        current_fixtures) == 1 else None
     lifecycle_state = snapshot.state
     if lifecycle_state == 'open':
         lifecycle_state = (
@@ -289,14 +293,16 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
         "capacity": t.max_players or 8,
     }
     if request.user.is_authenticated and request.user.is_staff:
-        payload["registration_summary"] = _registration_summary(t, read_snapshot=snapshot)
+        payload["registration_summary"] = _registration_summary(
+            t, read_snapshot=snapshot)
     return payload
 
 
 def _serialize_user(user):
     from tournaments.ratings import serialize_rating
     contact = models.UserContact.objects.filter(user=user).first()
-    phone_number = contact.phone_number.strip() if contact and contact.phone_number else ""
+    phone_number = contact.phone_number.strip(
+    ) if contact and contact.phone_number else ""
     missing_username = not bool((user.username or "").strip())
     missing_phone = not bool(phone_number)
     return {
@@ -377,12 +383,14 @@ def _validated_tournament_metadata(data):
         errors["target_points"] = "Must be a whole number."
 
     try:
-        cleaned["entry_fee"] = _parse_money(data.get("entry_fee", data.get("enterPrice", 0)), "entry_fee")
+        cleaned["entry_fee"] = _parse_money(
+            data.get("entry_fee", data.get("enterPrice", 0)), "entry_fee")
     except ValueError as error:
         errors["entry_fee"] = str(error)
 
     try:
-        cleaned["prize_money"] = _parse_money(data.get("prize_money", data.get("prizeMoney", 0)), "prize_money")
+        cleaned["prize_money"] = _parse_money(
+            data.get("prize_money", data.get("prizeMoney", 0)), "prize_money")
     except ValueError as error:
         errors["prize_money"] = str(error)
 
@@ -405,7 +413,8 @@ def _validated_tournament_metadata(data):
 
     try:
         cleaned["platform_fee_percent"] = _parse_money(
-            data.get("platform_fee_percent", models.DirectPlaySettings.load().tournament_fee_percent),
+            data.get("platform_fee_percent",
+                     models.DirectPlaySettings.load().tournament_fee_percent),
             "platform_fee_percent",
         )
         if not Decimal("8") <= cleaned["platform_fee_percent"] <= Decimal("10"):
@@ -419,7 +428,8 @@ def _validated_tournament_metadata(data):
     else:
         cleaned["time_control"] = time_control
 
-    cleaned["doubling_enabled"] = _parse_bool(data.get("doubling_enabled"), True)
+    cleaned["doubling_enabled"] = _parse_bool(
+        data.get("doubling_enabled"), True)
 
     starts_at = data.get("starts_at")
     if starts_at in (None, ""):
@@ -551,11 +561,14 @@ def _refund_registration(tournament, registration, actor):
 def _refund_tournament_roster(tournament, actor):
     """Caller holds the tournament lock; wallets always lock in user ID order."""
     from django.contrib.auth.models import User
-    participations = list(tournament.participations.select_related('participant__user'))
-    user_ids = [p.participant.user_id for p in participations if p.participant.user_id is not None]
+    participations = list(
+        tournament.participations.select_related('participant__user'))
+    user_ids = [
+        p.participant.user_id for p in participations if p.participant.user_id is not None]
     list(User.objects.select_for_update().filter(pk__in=user_ids).order_by('pk'))
     for participation in participations:
-        registration = _ensure_registration(tournament, participation.participant)
+        registration = _ensure_registration(
+            tournament, participation.participant)
         _refund_registration(tournament, registration, actor)
 
 
@@ -563,10 +576,16 @@ def _add_to_active_roster(tournament, registration, actor):
     if tournament.participations.filter(participant=registration.participant).exists():
         registration.status = models.TournamentRegistration.STATUS_REGISTERED
         registration.withdrawn_at = None
-        registration.save(update_fields=['status', 'withdrawn_at', 'updated_at'])
+        registration.save(
+            update_fields=['status', 'withdrawn_at', 'updated_at'])
         return
     if tournament.max_players is not None and tournament.participations.count() >= tournament.max_players:
         raise ValidationError('Tournament is full.')
+    _create_active_roster_entry(tournament, registration, actor)
+
+
+def _create_active_roster_entry(tournament, registration, actor):
+    """Caller holds the tournament lock and has checked membership and capacity."""
     if (
         registration.status == models.TournamentRegistration.STATUS_WITHDRAWN
         and tournament.entry_fee > 0
@@ -580,7 +599,8 @@ def _add_to_active_roster(tournament, registration, actor):
     )
     registration.status = models.TournamentRegistration.STATUS_REGISTERED
     registration.withdrawn_at = None
-    registration.save(update_fields=['status', 'payment_status', 'withdrawn_at', 'updated_at'])
+    registration.save(
+        update_fields=['status', 'payment_status', 'withdrawn_at', 'updated_at'])
 
 
 @ensure_csrf_cookie
@@ -663,7 +683,8 @@ def api_profile(request):
                 request.user.username = username
                 request.user.save(update_fields=['username'])
             if 'phone_number' in data:
-                models.UserContact.objects.update_or_create(user=request.user, defaults={"phone_number": phone_number})
+                models.UserContact.objects.update_or_create(
+                    user=request.user, defaults={"phone_number": phone_number})
     except IntegrityError:
         return JsonResponse({"errors": {"username": ["This username is already taken."]}}, status=400)
     return JsonResponse(_serialize_user(request.user))
@@ -692,7 +713,8 @@ def api_logout(request):
 @require_http_methods(["GET"])
 @versioned_read('tournaments')
 def api_tournaments(request):
-    qs = models.Tournament.objects.filter(published=True).select_related('creator')
+    qs = models.Tournament.objects.filter(
+        published=True).select_related('creator')
     # optional ?state=open|active|finished or ?q=search
     state = request.GET.get("state")
     q = request.GET.get("q")
@@ -704,13 +726,15 @@ def api_tournaments(request):
         snapshot = TournamentReadSnapshot(t, request.user)
         if state and snapshot.state != state:
             continue
-        tournaments.append(_serialize_tournament(t, request, read_snapshot=snapshot))
+        tournaments.append(_serialize_tournament(
+            t, request, read_snapshot=snapshot))
     return JsonResponse(tournaments, safe=False)
 
 
 @require_http_methods(["GET"])
 def api_tournament_detail(request, pk):
-    t = get_object_or_404(models.Tournament.objects.select_related('creator'), pk=pk)
+    t = get_object_or_404(
+        models.Tournament.objects.select_related('creator'), pk=pk)
     snapshot = TournamentReadSnapshot(t, request.user)
     # allow draft only for creator (like UpdateTournamentView:128)
     if snapshot.state == "draft" and (not request.user.is_authenticated or t.creator_id != request.user.id):
@@ -724,46 +748,66 @@ def api_tournament_detail(request, pk):
     return JsonResponse(data)
 
 
+def _registration_allowed(tournament, *, is_full):
+    return (
+        tournament.published
+        and (
+            tournament.registration_closed_at is None
+            or (is_full and tournament.registration_closed_reason == 'capacity')
+        )
+        and not models.Fixture.objects.filter(mode__tournament=tournament).exists()
+    )
+
+
 @require_http_methods(["POST"])
 def api_join(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
     try:
+        # Validate the target before preparing the account's participant identity.
+        models.Tournament.objects.only('pk').get(pk=pk)
+        try:
+            participant = models.Participant.get_or_create_for_user(request.user)
+        except IntegrityError:
+            # A concurrent request for this account may have created its identity.
+            participant = models.Participant.objects.filter(user=request.user).first()
+            if participant is None:
+                raise
+
         with transaction.atomic():
             t = models.Tournament.objects.select_for_update().get(pk=pk)
+            # Check mutable registration conditions once, under the tournament lock.
             is_full = t.max_players is not None and t.participations.count() >= t.max_players
-            if not t.registration_open and not (
-                t.state == 'open' and is_full and t.registration_closed_reason == 'capacity'
-            ):
+            if not _registration_allowed(t, is_full=is_full):
                 return JsonResponse({"detail": "Registration is closed"}, status=412)
-            if t.participations.filter(participant__user=request.user).exists():
-                return JsonResponse(_serialize_tournament(t, request))
+            if not t.participations.filter(participant=participant).exists():
+                registration = _ensure_registration(
+                    t,
+                    participant,
+                    status=(
+                        models.TournamentRegistration.STATUS_WAITLISTED
+                        if is_full else models.TournamentRegistration.STATUS_REGISTERED
+                    ),
+                    payment_status=(
+                        models.TournamentRegistration.PAYMENT_PAID
+                        if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
+                    ),
+                )
+                if is_full:
+                    registration.checked_in_at = None
+                    registration.withdrawn_at = None
+                    registration.save(update_fields=[
+                        'status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at',
+                    ])
+                else:
+                    try:
+                        _create_active_roster_entry(t, registration, request.user)
+                    except ValidationError:
+                        return JsonResponse({"detail": "Insufficient funds to join this tournament."}, status=412)
+                    t.close_registration_if_full()
 
-            participant = models.Participant.get_or_create_for_user(request.user)
-            registration = _ensure_registration(
-                t,
-                participant,
-                status=(
-                    models.TournamentRegistration.STATUS_WAITLISTED
-                    if is_full else models.TournamentRegistration.STATUS_REGISTERED
-                ),
-                payment_status=(
-                    models.TournamentRegistration.PAYMENT_PAID
-                    if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
-                ),
-            )
-            if is_full:
-                registration.checked_in_at = None
-                registration.withdrawn_at = None
-                registration.save(update_fields=['status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at'])
-                payload = _serialize_tournament(t, request)
-                payload['registration_status'] = models.TournamentRegistration.STATUS_WAITLISTED
-                return JsonResponse(payload)
-            try:
-                _add_to_active_roster(t, registration, request.user)
-            except ValidationError:
-                return JsonResponse({"detail": "Insufficient funds to join this tournament."}, status=412)
-            t.close_registration_if_full()
+        # Release any row lock before fetching current state and building the response.
+        t = models.Tournament.objects.select_related('creator').get(pk=pk)
     except models.Tournament.DoesNotExist:
         return JsonResponse({"detail": "Not found"}, status=404)
     except ValidationError as error:
@@ -775,18 +819,22 @@ def api_join(request, pk):
 def api_withdraw(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
+    participant = models.Participant.objects.filter(user=request.user).first()
     with transaction.atomic():
-        t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
-        if t.state != 'open':
+        t = get_object_or_404(
+            models.Tournament.objects.select_for_update(), pk=pk)
+        if not t.published or models.Fixture.objects.filter(mode__tournament=t).exists():
             return JsonResponse({"detail": "Registration is closed"}, status=412)
-        participant = models.Participant.objects.filter(user=request.user).first()
-        participation = t.participations.filter(participant=participant).first() if participant else None
-        registration = t.registrations.select_for_update().filter(participant=participant).first() if participant else None
+        participation = t.participations.filter(
+            participant=participant).first() if participant else None
+        registration = t.registrations.select_for_update().filter(
+            participant=participant).first() if participant else None
         if participation or registration:
             if registration is None:
                 registration = _ensure_registration(t, participant)
-            if participation and not (
-                t.registration_open or t.registration_closed_reason == 'capacity'
+            if participation and (
+                t.registration_closed_at is not None
+                and t.registration_closed_reason != 'capacity'
             ):
                 return JsonResponse({"detail": "Registration is closed"}, status=412)
             if participation:
@@ -811,7 +859,8 @@ def api_withdraw(request, pk):
 
 def _serialize_head_to_head(table):
     from .game_formats import required_reserve
-    reserve_stake = max(Decimal(value) for value in table.quick_stakes) if table.is_quick_match and table.status == 'open' and table.quick_stakes else table.amount
+    reserve_stake = max(Decimal(
+        value) for value in table.quick_stakes) if table.is_quick_match and table.status == 'open' and table.quick_stakes else table.amount
     return {
         "game_format": table.game_format,
         "rules_snapshot": table.rules_snapshot,
@@ -852,8 +901,10 @@ class FriendCodesUnavailable(Exception):
 
 def _create_friend_table(**fields):
     # Keep historical identifiers stable; never reuse a cancelled/completed code.
-    occupied = set(models.HeadToHeadTable.objects.values_list('code', flat=True))
-    available = [f'{number:04d}' for number in range(10000) if f'{number:04d}' not in occupied]
+    occupied = set(
+        models.HeadToHeadTable.objects.values_list('code', flat=True))
+    available = [f'{number:04d}' for number in range(
+        10000) if f'{number:04d}' not in occupied]
     while available:
         code = secrets.choice(available)
         try:
@@ -893,7 +944,8 @@ def api_head_to_head_tables(request):
             models.HeadToHeadTable.STATUS_CANCELLED,
         )
         my_tables = my_game_tables.exclude(status__in=closed_statuses)[:20]
-        my_history = my_game_tables.filter(status__in=closed_statuses).order_by('-updated_at', '-pk')[:50]
+        my_history = my_game_tables.filter(
+            status__in=closed_statuses).order_by('-updated_at', '-pk')[:50]
         return JsonResponse({
             "enabled": settings_row.enabled,
             "friend_game_fee": str(settings_row.friend_game_fee),
@@ -923,7 +975,8 @@ def api_head_to_head_table(request, code):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
     table = get_object_or_404(
-        models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner'),
+        models.HeadToHeadTable.objects.select_related(
+            'host', 'guest', 'winner'),
         code=code.upper(),
     )
     if table.status != models.HeadToHeadTable.STATUS_OPEN or table.guest_id:
@@ -950,13 +1003,15 @@ def api_head_to_head_match_search(request):
     from .game_formats import create_or_match
     return create_or_match(request, quick=True, match_search=True)
 
+
 def _recurring_bonus_payload(user, settings_row):
     latest = models.WalletTransaction.objects.filter(
         user=user,
         kind=models.WalletTransaction.KIND_RECURRING_BONUS,
     ).order_by('-created_at').first()
     next_available_at = (
-        latest.created_at + timedelta(hours=settings_row.coin_grant_interval_hours)
+        latest.created_at +
+        timedelta(hours=settings_row.coin_grant_interval_hours)
         if latest else timezone.now()
     )
     return {
@@ -1010,7 +1065,9 @@ def api_head_to_head_join(request, code):
     try:
         with transaction.atomic():
             settings_row = models.DirectPlaySettings.objects.select_for_update().get(pk=1)
-            table = models.HeadToHeadTable.objects.select_for_update().select_related('host').get(code=code.upper())
+            table = models.HeadToHeadTable.objects.select_for_update(
+                of=('self',),
+            ).select_related('host').get(code=code.upper())
             if table.game_format == 'legacy' and not settings_row.mode_enabled('quick' if table.is_quick_match else table.mode):
                 return JsonResponse({"detail": "This game mode is currently disabled."}, status=412)
             if table.game_format == 'legacy':
@@ -1025,9 +1082,6 @@ def api_head_to_head_join(request, code):
                 return JsonResponse({"detail": "This table is no longer available."}, status=409)
             if table.game_format == 'money' or (table.game_format == 'legacy' and table.is_quick_match):
                 return JsonResponse({"detail": "Quick Match tables can only be joined through matchmaking."}, status=409)
-            from .entry_lifecycle import active_table
-            if active_table(request.user.pk, exclude=table.pk):
-                return JsonResponse({'code': 'active_game_exists', 'detail': 'יש לך כבר משחק פעיל.'}, status=409)
             if table.host_id == request.user.id:
                 return JsonResponse({"detail": "You cannot join your own table."}, status=400)
             if table.game_format != 'legacy':
@@ -1035,29 +1089,32 @@ def api_head_to_head_join(request, code):
                 try:
                     join_table(table, request.user, settings_row)
                 except ValidationError as error:
+                    if getattr(error, 'code', None) == 'active_game_exists':
+                        return JsonResponse({'code': 'active_game_exists', 'detail': '; '.join(error.messages)}, status=409)
                     return JsonResponse({'detail': '; '.join(error.messages)}, status=400)
-                return JsonResponse(_serialize_head_to_head(table))
-            # Lock both balances in a stable order before charging either player.
-            list(User.objects.select_for_update().filter(pk__in=sorted([table.host_id, request.user.id])).order_by('pk'))
-            if active_table(request.user.pk, exclude=table.pk) or active_table(table.host_id, exclude=table.pk):
-                return JsonResponse({'code': 'active_game_exists', 'detail': 'לאחד השחקנים כבר יש משחק פעיל.'}, status=409)
-            charge = table.fee_per_player if table.is_friend_game else table.amount
-            kind = models.WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else models.WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
-            guest_balance = models.WalletTransaction.balance_for_user(request.user)
-            if guest_balance < charge:
-                return JsonResponse({"detail": "Insufficient coins to join this table.", "code": "insufficient_coins", "required": str(charge), "balance": str(guest_balance), "shortfall": str(charge - guest_balance)}, status=412)
-            if models.WalletTransaction.balance_for_user(table.host) < charge:
-                return JsonResponse({"detail": "The host no longer has enough coins for this table.", "code": "opponent_insufficient_coins"}, status=412)
-            for player in (table.host, request.user):
-                models.WalletTransaction.create_entry(
-                    user=player, amount=-charge, kind=kind, head_to_head_table=table,
-                    note=f"{table.get_mode_display()} table {table.code}",
-                )
-            table.guest = request.user
-            table.status = models.HeadToHeadTable.STATUS_READY
-            table.save(update_fields=['guest', 'status', 'updated_at'])
-            from .push import queue_guest_joined_push
-            queue_guest_joined_push(table)
+            else:
+                from .game_formats import lock_join_players
+                try:
+                    lock_join_players(table, request.user)
+                except ValidationError as error:
+                    return JsonResponse({'code': 'active_game_exists', 'detail': '; '.join(error.messages)}, status=409)
+                charge = table.fee_per_player if table.is_friend_game else table.amount
+                kind = models.WalletTransaction.KIND_FRIEND_GAME_FEE if table.is_friend_game else models.WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY
+                guest_balance = models.WalletTransaction.balance_for_user(request.user)
+                if guest_balance < charge:
+                    return JsonResponse({"detail": "Insufficient coins to join this table.", "code": "insufficient_coins", "required": str(charge), "balance": str(guest_balance), "shortfall": str(charge - guest_balance)}, status=412)
+                if models.WalletTransaction.balance_for_user(table.host) < charge:
+                    return JsonResponse({"detail": "The host no longer has enough coins for this table.", "code": "opponent_insufficient_coins"}, status=412)
+                for player in (table.host, request.user):
+                    models.WalletTransaction.create_entry(
+                        user=player, amount=-charge, kind=kind, head_to_head_table=table,
+                        note=f"{table.get_mode_display()} table {table.code}",
+                    )
+                table.guest = request.user
+                table.status = models.HeadToHeadTable.STATUS_READY
+                table.save(update_fields=['guest', 'status', 'updated_at'])
+                from .push import queue_guest_joined_push
+                queue_guest_joined_push(table)
     except models.HeadToHeadTable.DoesNotExist:
         return JsonResponse({"detail": "Table not found."}, status=404)
     return JsonResponse(_serialize_head_to_head(table))
@@ -1082,7 +1139,8 @@ def api_head_to_head_cancel(request, code):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
     with transaction.atomic():
-        table = get_object_or_404(models.HeadToHeadTable.objects.select_for_update(), code=code.upper())
+        table = get_object_or_404(
+            models.HeadToHeadTable.objects.select_for_update(), code=code.upper())
         if request.user.id not in (table.host_id, table.guest_id):
             return JsonResponse({"detail": "Only a player at this table can cancel it."}, status=403)
         if table.status not in (models.HeadToHeadTable.STATUS_OPEN, models.HeadToHeadTable.STATUS_READY):
@@ -1122,17 +1180,26 @@ def api_admin_direct_play_settings(request):
                 if "stake_amounts" in data:
                     models.validate_stake_amounts(data["stake_amounts"])
                     row.stake_amounts = sorted(data["stake_amounts"])
-                row.friend_game_fee = _parse_money(data.get("friend_game_fee", row.friend_game_fee), "friend_game_fee")
-                row.ai_game_fee = _parse_money(data.get("ai_game_fee", row.ai_game_fee), "ai_game_fee")
-                row.head_to_head_fee_percent = _parse_money(data.get("head_to_head_fee_percent", row.head_to_head_fee_percent), "head_to_head_fee_percent")
-                row.tournament_fee_percent = _parse_money(data.get("tournament_fee_percent", row.tournament_fee_percent), "tournament_fee_percent")
-                row.coin_grant_enabled = _parse_bool(data.get("coin_grant_enabled"), row.coin_grant_enabled)
-                row.coin_grant_amount = _parse_money(data.get("coin_grant_amount", row.coin_grant_amount), "coin_grant_amount")
-                row.coin_grant_interval_hours = int(data.get("coin_grant_interval_hours", row.coin_grant_interval_hours))
+                row.friend_game_fee = _parse_money(
+                    data.get("friend_game_fee", row.friend_game_fee), "friend_game_fee")
+                row.ai_game_fee = _parse_money(
+                    data.get("ai_game_fee", row.ai_game_fee), "ai_game_fee")
+                row.head_to_head_fee_percent = _parse_money(data.get(
+                    "head_to_head_fee_percent", row.head_to_head_fee_percent), "head_to_head_fee_percent")
+                row.tournament_fee_percent = _parse_money(data.get(
+                    "tournament_fee_percent", row.tournament_fee_percent), "tournament_fee_percent")
+                row.coin_grant_enabled = _parse_bool(
+                    data.get("coin_grant_enabled"), row.coin_grant_enabled)
+                row.coin_grant_amount = _parse_money(
+                    data.get("coin_grant_amount", row.coin_grant_amount), "coin_grant_amount")
+                row.coin_grant_interval_hours = int(
+                    data.get("coin_grant_interval_hours", row.coin_grant_interval_hours))
                 if row.head_to_head_fee_percent > 100:
-                    raise ValidationError("The Match Play fee cannot exceed 100%.")
+                    raise ValidationError(
+                        "The Match Play fee cannot exceed 100%.")
                 if not Decimal("8") <= row.tournament_fee_percent <= Decimal("10"):
-                    raise ValidationError("The tournament fee must be between 8% and 10%.")
+                    raise ValidationError(
+                        "The tournament fee must be between 8% and 10%.")
                 row.full_clean()
                 row.save()
         except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
@@ -1159,12 +1226,14 @@ def api_admin_head_to_head_tables(request):
     err = _require_staff(request)
     if err:
         return err
-    tables = models.HeadToHeadTable.objects.select_related('host', 'guest', 'winner')
+    tables = models.HeadToHeadTable.objects.select_related(
+        'host', 'guest', 'winner')
     status_filter = request.GET.get('status')
     if status_filter:
         tables = tables.filter(status=status_filter)
     # Never let recent history hide a player who is still waiting or playing.
-    closed = (models.HeadToHeadTable.STATUS_COMPLETED, models.HeadToHeadTable.STATUS_CANCELLED)
+    closed = (models.HeadToHeadTable.STATUS_COMPLETED,
+              models.HeadToHeadTable.STATUS_CANCELLED)
     active = list(tables.exclude(status__in=closed))
     history = tables.filter(status__in=closed)
     return JsonResponse({
@@ -1191,7 +1260,8 @@ def api_admin_head_to_head_cancel(request, pk):
     if err:
         return err
     with transaction.atomic():
-        table = get_object_or_404(models.HeadToHeadTable.objects.select_for_update(), pk=pk)
+        table = get_object_or_404(
+            models.HeadToHeadTable.objects.select_for_update(), pk=pk)
         if table.status in (models.HeadToHeadTable.STATUS_COMPLETED, models.HeadToHeadTable.STATUS_CANCELLED):
             return JsonResponse({"detail": "This table is already closed."}, status=409)
         _refund_head_to_head(table, actor=request.user)
@@ -1226,7 +1296,8 @@ def api_admin_tournaments(request):
                 qs = qs.filter(name__icontains=q)
             else:
                 q_lower = q.lower()
-                qs = [tournament for tournament in qs if q_lower in tournament.name.lower()]
+                qs = [
+                    tournament for tournament in qs if q_lower in tournament.name.lower()]
         return JsonResponse([_serialize_tournament(t, request) for t in qs], safe=False)
     # POST create
     try:
@@ -1372,7 +1443,8 @@ def api_admin_tournament_draft(request, pk):
     if err:
         return err
     with transaction.atomic():
-        t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+        t = get_object_or_404(
+            models.Tournament.objects.select_for_update(), pk=pk)
         if t.state != "open":
             return JsonResponse({"detail": f"Cannot draft, state={t.state}"}, status=412)
         if t.entry_fee > 0:
@@ -1405,7 +1477,8 @@ def _attendee_rows(tournament):
         set(participations) | set(registrations),
         key=lambda item: (
             participations[item].slot_id if item in participations else 10**9,
-            registrations[item].registered_at if item in registrations else timezone.now(),
+            registrations[item].registered_at if item in registrations else timezone.now(
+            ),
         ),
     ):
         participation = participations.get(participant_id)
@@ -1474,160 +1547,218 @@ def _attendee_csv(tournament, rows):
 @require_http_methods(["GET", "POST", "PATCH", "DELETE"])
 @transaction.non_atomic_requests
 def api_admin_tournament_attendees(request, pk):
-    if request.method != 'GET':
-        with transaction.atomic():
-            return _admin_tournament_attendees(request, pk)
     return _admin_tournament_attendees(request, pk)
+
+
+class _AttendeeActionError(Exception):
+    def __init__(self, detail, status=400, **payload):
+        super().__init__(detail)
+        self.payload = {'detail': detail, **payload}
+        self.status = status
 
 
 def _admin_tournament_attendees(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    queryset = models.Tournament.objects.select_for_update() if request.method != 'GET' else models.Tournament.objects.all()
-    t = get_object_or_404(queryset, pk=pk)
-
     if request.method == 'GET':
-        q = request.GET.get('q', '').strip().lower()
-        rows = _attendee_rows(t)
-        if q:
-            rows = [
-                row for row in rows
-                if q in row['name'].lower() or q in (row['username'] or '').lower()
-            ]
-        if request.GET.get('format') == 'csv':
-            return _attendee_csv(t, rows)
-        excluded_user_ids = [
-            row['user_id'] for row in rows
-            if row['user_id'] and row['status'] in {'registered', 'waitlisted', 'disqualified'}
-        ]
-        avail_qs = User.objects.exclude(pk__in=excluded_user_ids).order_by('username')
-        if q:
-            avail_qs = avail_qs.filter(username__icontains=q)
-        available = [
-            {
-                'id': user.id,
-                'username': user.username,
-                'phone_number': user.contact.phone_number if hasattr(user, 'contact') else '',
-                'balance': str(user.wallet_balance or Decimal('0.00')),
-            }
-            for user in avail_qs.select_related('contact').annotate(
-                wallet_balance=Sum('wallet_transactions__amount')
-            )[:50]
-        ]
-        return JsonResponse({
-            'participants': rows,
-            'available': available,
-            'summary': _registration_summary(t),
-            'tournament': _serialize_tournament(t, request),
-        })
+        return _admin_attendees_read(request, get_object_or_404(models.Tournament, pk=pk))
 
     try:
         data = json.loads(request.body or '{}')
     except json.JSONDecodeError:
         return JsonResponse({'detail': 'Invalid JSON'}, status=400)
+    if not isinstance(data, dict):
+        return JsonResponse({'detail': 'Expected a JSON object'}, status=400)
 
+    user = None
     if request.method == 'POST':
-        is_full = t.max_players is not None and t.participations.count() >= t.max_players
-        if t.state != 'open':
-            return JsonResponse({'detail': 'Registration is closed'}, status=412)
-        if is_full:
-            return JsonResponse({
-                'code': 'capacity_full',
-                'detail': 'Tournament is full.',
-            }, status=412)
         try:
             if data.get('user_id'):
                 user = User.objects.get(pk=int(data['user_id']))
-                participant = models.Participant.get_or_create_for_user(user)
             elif data.get('name'):
-                name = str(data['name']).strip()
-                if not name:
+                data['name'] = str(data['name']).strip()
+                if not data['name']:
                     return JsonResponse({'detail': 'Name required'}, status=400)
-                participant = models.Participant.objects.get_or_create(name=name)[0]
             else:
                 return JsonResponse({'detail': 'Provide user_id or name'}, status=400)
-
-            existing = t.registrations.filter(participant=participant).first()
-            if existing and existing.status in {'registered', 'waitlisted', 'disqualified'}:
-                return JsonResponse({'detail': 'Already registered'}, status=400)
-            if existing:
-                registration = existing
-            else:
-                registration = _ensure_registration(
-                    t,
-                    participant,
-                    status=models.TournamentRegistration.STATUS_REGISTERED,
-                    payment_status=(
-                        models.TournamentRegistration.PAYMENT_PAID
-                        if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
-                    ),
-                )
-            registration.checked_in_at = None
-            registration.withdrawn_at = None
-            _add_to_active_roster(t, registration, request.user)
-            if t.registration_closed_at is not None or t.draw_generated_at is not None:
-                t.registration_closed_at = None
-                t.registration_closed_reason = ''
-                t.clear_draw()
-                t.save(update_fields=[
-                    'registration_closed_at', 'registration_closed_reason', 'draw_order',
-                    'draw_generated_at', 'draw_confirmed_at',
-                ])
-            t.close_registration_if_full()
-            return JsonResponse({'detail': 'Added', 'status': registration.status})
-        except (User.DoesNotExist, ValueError):
+        except (User.DoesNotExist, TypeError, ValueError, OverflowError):
             return JsonResponse({'detail': 'User not found'}, status=404)
-        except ValidationError as error:
-            if 'Insufficient funds.' in error.messages:
-                balance = models.WalletTransaction.balance_for_user(user)
-                return JsonResponse({
-                    'code': 'insufficient_funds',
-                    'detail': 'Insufficient balance for the entry fee.',
-                    'balance': str(balance),
-                    'entry_fee': str(t.entry_fee),
-                    'shortfall': str(max(Decimal('0.00'), t.entry_fee - balance)),
-                }, status=400)
-            return JsonResponse({'detail': error.messages}, status=400)
+    else:
+        try:
+            participant_ids = _admin_attendee_ids(request, data)
+        except _AttendeeActionError as error:
+            return JsonResponse(error.payload, status=error.status)
 
+    try:
+        with transaction.atomic():
+            t = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+            if request.method == 'POST':
+                payload = _admin_attendees_add(t, user, data, request.user)
+            else:
+                payload = _admin_attendees_update(t, participant_ids, data, request.user)
+    except _AttendeeActionError as error:
+        return JsonResponse(error.payload, status=error.status)
+    except ValidationError as error:
+        if request.method != 'POST':
+            return JsonResponse({'detail': '; '.join(error.messages)}, status=412)
+        if user is not None and 'Insufficient funds.' in error.messages:
+            balance = models.WalletTransaction.balance_for_user(user)
+            return JsonResponse({
+                'code': 'insufficient_funds',
+                'detail': 'Insufficient balance for the entry fee.',
+                'balance': str(balance),
+                'entry_fee': str(t.entry_fee),
+                'shortfall': str(max(Decimal('0.00'), t.entry_fee - balance)),
+            }, status=400)
+        return JsonResponse({'detail': error.messages}, status=400)
+
+    if request.method != 'POST':
+        payload.update(participants=_attendee_rows(t), summary=_registration_summary(t))
+    return JsonResponse(payload)
+
+
+def _admin_attendees_read(request, t):
+    q = request.GET.get('q', '').strip().lower()
+    rows = _attendee_rows(t)
+    if q:
+        rows = [
+            row for row in rows
+            if q in row['name'].lower() or q in (row['username'] or '').lower()
+        ]
+    if request.GET.get('format') == 'csv':
+        return _attendee_csv(t, rows)
+    excluded_user_ids = [
+        row['user_id'] for row in rows
+        if row['user_id'] and row['status'] in {'registered', 'waitlisted', 'disqualified'}
+    ]
+    avail_qs = User.objects.exclude(
+        pk__in=excluded_user_ids).order_by('username')
+    if q:
+        avail_qs = avail_qs.filter(username__icontains=q)
+    available = [
+        {
+            'id': user.id,
+            'username': user.username,
+            'phone_number': user.contact.phone_number if hasattr(user, 'contact') else '',
+            'balance': str(user.wallet_balance or Decimal('0.00')),
+        }
+        for user in avail_qs.select_related('contact').annotate(
+            wallet_balance=Sum('wallet_transactions__amount')
+        )[:50]
+    ]
+    return JsonResponse({
+        'participants': rows,
+        'available': available,
+        'summary': _registration_summary(t),
+        'tournament': _serialize_tournament(t, request),
+    })
+
+
+def _admin_attendee_ids(request, data):
     participant_ids = data.get('participant_ids') or []
     if request.method == 'DELETE':
-        participant_id = request.GET.get('participant_id') or request.GET.get('id') or data.get('participant_id') or data.get('id')
+        participant_id = request.GET.get('participant_id') or request.GET.get(
+            'id') or data.get('participant_id') or data.get('id')
         participant_ids = [participant_id] if participant_id else []
         data['action'] = 'withdraw'
+    if not isinstance(participant_ids, list):
+        raise _AttendeeActionError('participant_ids must contain valid IDs')
     try:
         participant_ids = list(dict.fromkeys(int(item) for item in participant_ids))
-    except (TypeError, ValueError):
-        return JsonResponse({'detail': 'participant_ids must contain valid IDs'}, status=400)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise _AttendeeActionError('participant_ids must contain valid IDs') from error
     if not participant_ids:
-        return JsonResponse({'detail': 'participant_ids required'}, status=400)
-
+        raise _AttendeeActionError('participant_ids required')
     action = data.get('action')
+    if action not in (
+        'update_note', 'check_in', 'undo_check_in', 'mark_paid', 'mark_unpaid',
+        'waive_payment', 'withdraw', 'disqualify', 'promote', 'restore',
+    ):
+        raise _AttendeeActionError('Unsupported attendee action')
+    if action == 'update_note' and len(participant_ids) != 1:
+        raise _AttendeeActionError('A note can be updated for one participant at a time')
+    return participant_ids
+
+
+def _reset_attendee_draw(t):
+    if t.registration_closed_at is not None or t.draw_generated_at is not None:
+        t.registration_closed_at = None
+        t.registration_closed_reason = ''
+        t.clear_draw()
+        t.save(update_fields=[
+            'registration_closed_at', 'registration_closed_reason', 'draw_order',
+            'draw_generated_at', 'draw_confirmed_at',
+        ])
+
+
+def _admin_attendees_add(t, user, data, actor):
+    """Caller holds the tournament lock; all registration writes belong together."""
+    if not t.published or models.Fixture.objects.filter(mode__tournament=t).exists():
+        raise _AttendeeActionError('Registration is closed', status=412)
+    if t.max_players is not None and t.participations.count() >= t.max_players:
+        raise _AttendeeActionError('Tournament is full.', status=412, code='capacity_full')
+    participant = (
+        models.Participant.get_or_create_for_user(user) if user is not None
+        else models.Participant.objects.get_or_create(name=data['name'])[0]
+    )
+    registration = t.registrations.filter(participant=participant).first()
+    if registration and registration.status in {'registered', 'waitlisted', 'disqualified'}:
+        raise _AttendeeActionError('Already registered')
+    if registration is None:
+        registration = _ensure_registration(
+            t, participant, status=models.TournamentRegistration.STATUS_REGISTERED,
+            payment_status=(
+                models.TournamentRegistration.PAYMENT_PAID
+                if t.entry_fee <= 0 else models.TournamentRegistration.PAYMENT_UNPAID
+            ),
+        )
+    registration.checked_in_at = None
+    registration.withdrawn_at = None
+    _add_to_active_roster(t, registration, actor)
+    _reset_attendee_draw(t)
+    t.close_registration_if_full()
+    return {'detail': 'Added', 'status': registration.status}
+
+
+def _admin_attendees_update(t, participant_ids, data, actor):
+    """Caller holds the tournament lock; let failures escape to roll back the batch."""
+    action = data.get('action')
+    if action in ('check_in', 'undo_check_in', 'withdraw', 'disqualify', 'promote', 'restore'):
+        if not t.published or models.Fixture.objects.filter(mode__tournament=t).exists():
+            detail = (
+                'Check-in is only available before the tournament starts'
+                if action in ('check_in', 'undo_check_in') else 'The roster is locked'
+            )
+            raise _AttendeeActionError(detail, status=412)
     participants = {
         participant.id: participant
         for participant in models.Participant.objects.filter(pk__in=participant_ids)
     }
     if len(participants) != len(participant_ids):
-        return JsonResponse({'detail': 'Participant not found'}, status=404)
-    registrations = {}
+        raise _AttendeeActionError('Participant not found', status=404)
+    registrations = {
+        registration.participant_id: registration
+        for registration in t.registrations.select_for_update(of=('self',)).select_related(
+            'participant__user').filter(participant_id__in=participant_ids)
+    }
+    participations = {
+        participation.participant_id: participation
+        for participation in t.participations.filter(participant_id__in=participant_ids)
+    }
+    if any(item not in registrations and item not in participations for item in participant_ids):
+        raise _AttendeeActionError('Registration not found', status=404)
     for participant_id in participant_ids:
-        registration = t.registrations.select_for_update().filter(participant_id=participant_id).first()
-        if registration is None and t.participations.filter(participant_id=participant_id).exists():
-            registration = _ensure_registration(t, participants[participant_id])
-        if registration is None:
-            return JsonResponse({'detail': 'Registration not found'}, status=404)
-        registrations[participant_id] = registration
+        if participant_id not in registrations:
+            registrations[participant_id] = _ensure_registration(t, participants[participant_id])
+    ordered_registrations = [registrations[item] for item in participant_ids]
 
     if action == 'update_note':
-        if len(participant_ids) != 1:
-            return JsonResponse({'detail': 'A note can be updated for one participant at a time'}, status=400)
         registration = registrations[participant_ids[0]]
         registration.internal_note = str(data.get('note') or '')[:1000]
         registration.save(update_fields=['internal_note', 'updated_at'])
     elif action in {'check_in', 'undo_check_in'}:
-        if t.state != 'open':
-            return JsonResponse({'detail': 'Check-in is only available before the tournament starts'}, status=412)
-        for registration in registrations.values():
+        for registration in ordered_registrations:
             if registration.status != models.TournamentRegistration.STATUS_REGISTERED:
                 continue
             registration.checked_in_at = timezone.now() if action == 'check_in' else None
@@ -1638,19 +1769,17 @@ def _admin_tournament_attendees(request, pk):
             'mark_unpaid': models.TournamentRegistration.PAYMENT_UNPAID,
             'waive_payment': models.TournamentRegistration.PAYMENT_WAIVED,
         }
-        for registration in registrations.values():
+        for registration in ordered_registrations:
             registration.payment_status = status_by_action[action]
             registration.save(update_fields=['payment_status', 'updated_at'])
     elif action in {'withdraw', 'disqualify'}:
-        if t.state != 'open':
-            return JsonResponse({'detail': 'The roster is locked'}, status=412)
         refund_requested = bool(data.get('refund', action == 'withdraw'))
         refunded_count = 0
         if refund_requested:
             list(User.objects.select_for_update().filter(
                 pk__in=[r.participant.user_id for r in registrations.values()]).order_by('pk'))
-        for registration in registrations.values():
-            participation = t.participations.filter(participant=registration.participant).first()
+        for registration in ordered_registrations:
+            participation = participations.get(registration.participant_id)
             if action == 'withdraw':
                 registration.status = models.TournamentRegistration.STATUS_WITHDRAWN
                 registration.withdrawn_at = timezone.now()
@@ -1659,7 +1788,7 @@ def _admin_tournament_attendees(request, pk):
                 registration.withdrawn_at = None
             previous_payment_status = registration.payment_status
             if refund_requested:
-                _refund_registration(t, registration, request.user)
+                _refund_registration(t, registration, actor)
                 if previous_payment_status != registration.payment_status:
                     refunded_count += 1
             registration.checked_in_at = None
@@ -1668,40 +1797,18 @@ def _admin_tournament_attendees(request, pk):
             registration.save(update_fields=[
                 'status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at',
             ])
-        if t.registration_closed_at is not None or t.draw_generated_at is not None:
-            t.registration_closed_at = None
-            t.registration_closed_reason = ''
-            t.clear_draw()
-            t.save(update_fields=[
-                'registration_closed_at', 'registration_closed_reason', 'draw_order',
-                'draw_generated_at', 'draw_confirmed_at',
-            ])
+        _reset_attendee_draw(t)
     elif action in {'promote', 'restore'}:
-        if t.state != 'open':
-            return JsonResponse({'detail': 'The roster is locked'}, status=412)
-        try:
-            for registration in registrations.values():
-                _add_to_active_roster(t, registration, request.user)
-        except ValidationError as error:
-            return JsonResponse({'detail': '; '.join(error.messages)}, status=412)
-        if t.registration_closed_at is not None or t.draw_generated_at is not None:
-            t.registration_closed_at = None
-            t.registration_closed_reason = ''
-            t.clear_draw()
-            t.save(update_fields=[
-                'registration_closed_at', 'registration_closed_reason', 'draw_order',
-                'draw_generated_at', 'draw_confirmed_at',
-            ])
+        list(User.objects.select_for_update().filter(
+            pk__in=[r.participant.user_id for r in ordered_registrations]).order_by('pk'))
+        for registration in ordered_registrations:
+            _add_to_active_roster(t, registration, actor)
+        _reset_attendee_draw(t)
         t.close_registration_if_full()
-    else:
-        return JsonResponse({'detail': 'Unsupported attendee action'}, status=400)
-
-    return JsonResponse({
+    return {
         'detail': 'Updated',
-        'participants': _attendee_rows(t),
-        'summary': _registration_summary(t),
         **({'refunded_count': refunded_count} if action in {'withdraw', 'disqualify'} else {}),
-    })
+    }
 
 
 @require_http_methods(["GET"])
@@ -1709,7 +1816,8 @@ def _admin_tournament_attendees(request, pk):
 def api_tournament_current_match(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    t = get_object_or_404(models.Tournament.objects.select_related('creator'), pk=pk)
+    t = get_object_or_404(
+        models.Tournament.objects.select_related('creator'), pk=pk)
     snapshot = TournamentReadSnapshot(t, request.user, include_live=True)
     if snapshot.state == 'draft':
         return JsonResponse({"detail": "Not found"}, status=404)
@@ -1742,7 +1850,8 @@ def _admin_tournament_progress(request, pk):
     if request.method == 'POST':
         queryset = queryset.select_for_update(of=('self',))
     t = get_object_or_404(queryset, pk=pk)
-    snapshot = TournamentReadSnapshot(t, request.user, include_live=True) if request.method == 'GET' else None
+    snapshot = TournamentReadSnapshot(
+        t, request.user, include_live=True) if request.method == 'GET' else None
     state = snapshot.state if snapshot else t.state
     if state == 'draft':
         return JsonResponse({"detail": "Tournament is draft"}, status=412)
@@ -1754,7 +1863,8 @@ def _admin_tournament_progress(request, pk):
         operational_fixtures = []
         waiting_players = []
         now = timezone.now()
-        current_stage_idx = len(snapshot.stages) + 1 if snapshot.current_stage is None else None
+        current_stage_idx = len(snapshot.stages) + \
+            1 if snapshot.current_stage is None else None
         for idx, stage in enumerate(snapshot.stages):
             levels = []
             for level in range(snapshot.stage_levels[stage.pk]):
@@ -1764,7 +1874,8 @@ def _admin_tournament_progress(request, pk):
                         continue
                     payload = serialize_fixture(
                         fixture, snapshot, request.user, now,
-                        _playability_payload(request, fixture, read_snapshot=snapshot),
+                        _playability_payload(
+                            request, fixture, read_snapshot=snapshot),
                     )
                     fixtures.append(payload)
                     operational_fixtures.append(payload)
@@ -1774,11 +1885,12 @@ def _admin_tournament_progress(request, pk):
                             'id': player.pk, 'name': player.name, 'user_id': player.user_id,
                             'fixture_id': fixture.pk, 'round_name': payload['round_name'],
                         })
-                levels.append({'fixtures': fixtures, 'name': snapshot.round_names[(stage.pk, level)]})
+                levels.append(
+                    {'fixtures': fixtures, 'name': snapshot.round_names[(stage.pk, level)]})
             stages[stage.pk] = {
                 'levels': levels,
                 'bracket_kind': 'single_elimination' if isinstance(stage, models.Knockout)
-                    and not stage.double_elimination else None,
+                and not stage.double_elimination else None,
             }
             if snapshot.current_stage and stage.pk == snapshot.current_stage.pk:
                 current_stage_idx = idx + 1
@@ -1791,7 +1903,7 @@ def _admin_tournament_progress(request, pk):
                        for item in sorted(
                            (item for item in snapshot.participations if item.podium_position is not None),
                            key=lambda item: item.podium_position,
-                       )] if snapshot.state == 'finished' else [],
+            )] if snapshot.state == 'finished' else [],
             'control_room': {
                 'current_stage': current_stage.name or current_stage.identifier if current_stage else None,
                 'current_round': snapshot.round_names.get((current_stage.pk, snapshot.current_level)) if current_stage else None,
@@ -1833,7 +1945,8 @@ def _admin_tournament_progress(request, pk):
     assigned = list(models.Fixture.objects.filter(mode__tournament=t).filter(
         Q(player1_id__in=pair_ids) | Q(player2_id__in=pair_ids),
     ).annotate(personal_confirmation_count=Count('confirmations')))
-    required = 1 + t.participations.filter(participant__user__isnull=False).count() // 2
+    required = 1 + \
+        t.participations.filter(participant__user__isnull=False).count() // 2
 
     def confirmed(item):
         return item.confirmed_result(
@@ -1843,7 +1956,7 @@ def _admin_tournament_progress(request, pk):
 
     for participant_id in pair_ids:
         personal = earliest_unresolved_fixtures(assigned, participant_id=participant_id,
-                                              is_confirmed=confirmed)
+                                                is_confirmed=confirmed)
         if len(personal) != 1 or personal[0].pk != fixture.pk:
             return JsonResponse({"detail": "One player still has another unfinished match"}, status=412)
     try:
@@ -1870,7 +1983,7 @@ def _admin_tournament_progress(request, pk):
         t.update_state()
     if old_score != [fixture.score1, fixture.score2]:
         models.FixtureAudit.objects.create(fixture=fixture, actor=request.user, action='player_result',
-            before={'score': old_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': fixture.is_confirmed})
+                                           before={'score': old_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': fixture.is_confirmed})
     return JsonResponse({"detail": "Saved", "is_confirmed": fixture.is_confirmed})
 
 
@@ -1880,7 +1993,8 @@ def _serialize_draw(tournament):
         for participation in tournament.participations.select_related("participant__user")
     }
     order = list(tournament.draw_order or [])
-    has_draw = set(order) == set(participations) and len(order) == len(participations) and bool(order)
+    has_draw = set(order) == set(participations) and len(
+        order) == len(participations) and bool(order)
     if not has_draw:
         order = list(participations)
     return {
@@ -1913,7 +2027,8 @@ def api_admin_tournament_close_registration(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    tournament = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+    tournament = get_object_or_404(
+        models.Tournament.objects.select_for_update(), pk=pk)
     if tournament.state != "open":
         return JsonResponse({"detail": f"Cannot close registration, state={tournament.state}"}, status=412)
     if tournament.registration_closed_at is None:
@@ -1932,7 +2047,8 @@ def api_admin_tournament_reopen_registration(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    tournament = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+    tournament = get_object_or_404(
+        models.Tournament.objects.select_for_update(), pk=pk)
     if tournament.state != "open" or tournament.registration_closed_at is None:
         return JsonResponse({"detail": f"Cannot reopen registration, lifecycle={tournament.lifecycle_state}"}, status=412)
     tournament.registration_closed_at = None
@@ -1957,13 +2073,15 @@ def _admin_tournament_draw(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    queryset = models.Tournament.objects.select_for_update() if request.method == "POST" else models.Tournament.objects.all()
+    queryset = models.Tournament.objects.select_for_update(
+    ) if request.method == "POST" else models.Tournament.objects.all()
     tournament = get_object_or_404(queryset, pk=pk)
     if request.method == "GET":
         return JsonResponse(_serialize_draw(tournament))
     if tournament.lifecycle_state not in {"registration_closed", "draw_ready"}:
         return JsonResponse({"detail": f"Cannot edit draw, lifecycle={tournament.lifecycle_state}"}, status=412)
-    participant_ids = list(tournament.participations.values_list("participant_id", flat=True))
+    participant_ids = list(
+        tournament.participations.values_list("participant_id", flat=True))
     if len(participant_ids) < tournament.min_players:
         return JsonResponse({
             "detail": f"Need at least {tournament.min_players} attendees (you have {len(participant_ids)})",
@@ -1977,7 +2095,8 @@ def _admin_tournament_draw(request, pk):
         requested_order = participant_ids[:]
         random.SystemRandom().shuffle(requested_order)
     try:
-        requested_order = [int(participant_id) for participant_id in requested_order]
+        requested_order = [int(participant_id)
+                           for participant_id in requested_order]
     except (TypeError, ValueError):
         return JsonResponse({"detail": "participant_ids must be a list of participant IDs"}, status=400)
     if len(requested_order) != len(participant_ids) or set(requested_order) != set(participant_ids):
@@ -1985,7 +2104,8 @@ def _admin_tournament_draw(request, pk):
     tournament.draw_order = requested_order
     tournament.draw_generated_at = timezone.now()
     tournament.draw_confirmed_at = None
-    tournament.save(update_fields=["draw_order", "draw_generated_at", "draw_confirmed_at"])
+    tournament.save(update_fields=["draw_order",
+                    "draw_generated_at", "draw_confirmed_at"])
     return JsonResponse(_serialize_draw(tournament))
 
 
@@ -1995,10 +2115,12 @@ def api_admin_tournament_confirm_draw(request, pk):
     err = _require_staff(request)
     if err:
         return err
-    tournament = get_object_or_404(models.Tournament.objects.select_for_update(), pk=pk)
+    tournament = get_object_or_404(
+        models.Tournament.objects.select_for_update(), pk=pk)
     if tournament.lifecycle_state != "draw_ready":
         return JsonResponse({"detail": f"Cannot confirm draw, lifecycle={tournament.lifecycle_state}"}, status=412)
-    current_ids = set(tournament.participations.values_list("participant_id", flat=True))
+    current_ids = set(tournament.participations.values_list(
+        "participant_id", flat=True))
     if len(tournament.draw_order) != len(current_ids) or set(tournament.draw_order) != current_ids:
         return JsonResponse({"detail": "The draw no longer matches the registered players"}, status=412)
     try:
@@ -2021,9 +2143,11 @@ def _start_tournament_at_capacity(t):
             code="tournament_start_too_early",
         )
     required = t.min_players
-    participant_ids = list(t.participations.values_list("participant_id", flat=True))
+    participant_ids = list(
+        t.participations.values_list("participant_id", flat=True))
     if len(participant_ids) < required:
-        raise ValidationError(f"Need at least {required} attendees (you have {len(participant_ids)})")
+        raise ValidationError(
+            f"Need at least {required} attendees (you have {len(participant_ids)})")
     t.test()
     valid_confirmed_draw = (
         t.draw_confirmed_at is not None
@@ -2270,7 +2394,8 @@ def _admin_active_tournament_summaries(tournaments):
             1 for fixture in playable_fixtures
             if fixture.score1 is None
         )
-        completed = sum(1 for fixture in playable_fixtures if fixture.is_confirmed)
+        completed = sum(
+            1 for fixture in playable_fixtures if fixture.is_confirmed)
         total = len(playable_fixtures)
         next_fixture = next(
             (fixture for fixture in playable_fixtures if not fixture.is_confirmed),
@@ -2278,7 +2403,8 @@ def _admin_active_tournament_summaries(tournaments):
         )
         pending_match_count += pending
         stage_name = stage.name or stage.identifier if stage else "Tournament"
-        round_name = stage.get_level_name(stage.current_level) if stage else None
+        round_name = stage.get_level_name(
+            stage.current_level) if stage else None
         summary = _admin_tournament_summary(tournament)
         summary.update({
             "stage": stage_name,
@@ -2357,7 +2483,8 @@ def _admin_operational_notifications(*, by_state, active_tournaments, now, draft
         })
 
     severity_order = {"critical": 0, "warning": 1, "info": 2}
-    notifications.sort(key=lambda item: (severity_order[item["severity"]], item["id"]))
+    notifications.sort(key=lambda item: (
+        severity_order[item["severity"]], item["id"]))
     return notifications
 
 
@@ -2377,7 +2504,8 @@ def api_admin_notifications(request):
 
     now = timezone.now()
     by_state = _admin_tournaments_by_state()
-    active_tournaments, _ = _admin_active_tournament_summaries(by_state["active"])
+    active_tournaments, _ = _admin_active_tournament_summaries(
+        by_state["active"])
     notifications = _admin_operational_notifications(
         by_state=by_state,
         active_tournaments=active_tournaments,
@@ -2427,7 +2555,8 @@ def api_admin_dashboard(request):
         draft_limit=3,
     )
 
-    active_attention = sum(1 for item in attention if item["kind"] == "pending_matches")
+    active_attention = sum(
+        1 for item in attention if item["kind"] == "pending_matches")
     total_missing_players = sum(
         tournament.min_players - tournament.participations.count()
         for tournament in waiting
@@ -2555,7 +2684,8 @@ def api_admin_users(request):
     except json.JSONDecodeError:
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
     try:
-        initial_balance = _parse_money(data.get("initial_balance", "0"), "initial_balance")
+        initial_balance = _parse_money(
+            data.get("initial_balance", "0"), "initial_balance")
     except ValueError as error:
         return JsonResponse({"errors": {"initial_balance": [str(error)]}}, status=400)
     if initial_balance > Decimal("99999999.99"):
@@ -2584,7 +2714,8 @@ def api_admin_transfers(request):
     err = _require_staff(request)
     if err:
         return err
-    qs = models.WalletTransaction.objects.select_related("user", "actor", "tournament").order_by("-created_at", "-id")
+    qs = models.WalletTransaction.objects.select_related(
+        "user", "actor", "tournament").order_by("-created_at", "-id")
     user_id = request.GET.get("user_id")
     if user_id:
         qs = qs.filter(user_id=user_id)
@@ -2610,7 +2741,8 @@ def api_admin_wallet_transactions(request):
         )
 
     kind = (request.GET.get("kind") or "").strip()
-    valid_kinds = {choice[0] for choice in models.WalletTransaction.KIND_CHOICES}
+    valid_kinds = {choice[0]
+                   for choice in models.WalletTransaction.KIND_CHOICES}
     if kind:
         if kind not in valid_kinds:
             return JsonResponse({"detail": "Invalid transaction kind"}, status=400)
@@ -2748,7 +2880,8 @@ def api_admin_user_detail(request, pk):
             return JsonResponse({"errors": {"phone_verified": ["Must be a boolean."]}}, status=400)
         phone_verified = bool(data["phone_verified"])
         existing_contact = models.UserContact.objects.filter(user=u).first()
-        effective_phone = phone_number if phone_number is not None else (existing_contact.phone_number if existing_contact else "")
+        effective_phone = phone_number if phone_number is not None else (
+            existing_contact.phone_number if existing_contact else "")
         if not (effective_phone or "").strip():
             return JsonResponse({"errors": {"phone_verified": ["A phone number is required before verification."]}}, status=400)
     if "is_staff" in data:
@@ -2777,7 +2910,8 @@ def api_admin_user_detail(request, pk):
                 contact = models.UserContact.objects.filter(user=u).first()
                 contact.phone_verified = phone_verified
                 contact.phone_verified_at = timezone.now() if phone_verified else None
-                contact.save(update_fields=["phone_verified", "phone_verified_at"])
+                contact.save(update_fields=[
+                             "phone_verified", "phone_verified_at"])
     except ValidationError as validation_error:
         errors = getattr(validation_error, "message_dict", None)
         if errors is None:
