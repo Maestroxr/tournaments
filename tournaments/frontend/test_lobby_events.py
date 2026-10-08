@@ -7,14 +7,14 @@ from channels.layers import get_channel_layer
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth.models import AnonymousUser, User
 from django.db import transaction
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from gamelink.consumers import ClubUpdatesConsumer
 from tournaments.models import HeadToHeadTable, Tournament
 
 from .entry_lifecycle import touch_open_searches
-from .lobby_events import TABLE_GROUP, TOURNAMENT_GROUP, user_group
+from .lobby_events import TABLE_GROUP, TOURNAMENT_GROUP, invalidate_tournaments, user_group
 from .lobby_revisions import advance, current, versioned_read, REVISION_HEADER
 
 REVISIONS = {resource: {'generation': '0', 'sequence': 0} for resource in ('tournaments', 'tables')}
@@ -73,8 +73,11 @@ class LobbyEventTests(TestCase):
         self.assertEqual(self.table.status, 'open')
 
     def test_tournament_publication_invalidates_only_the_tournament_cache(self):
-        tournament = Tournament.objects.create(name='Upcoming', starts_at=timezone.now(), podium_spec=[])
         with patch('frontend.lobby_events._send') as send:
+            # Flush the creation notification before observing publication.
+            with self.captureOnCommitCallbacks(execute=True):
+                tournament = Tournament.objects.create(name='Upcoming', starts_at=timezone.now(), podium_spec=[])
+            send.reset_mock()
             with self.captureOnCommitCallbacks(execute=True):
                 tournament.published = True
                 tournament.save(update_fields=['published'])
@@ -110,6 +113,66 @@ class LobbyEventTests(TestCase):
         response = read(SimpleNamespace(method='GET', user=self.host))
         self.assertEqual(json.loads(response[REVISION_HEADER]), before)
         self.assertNotEqual(current('tournaments', self.host.pk), before)
+
+
+class TournamentInvalidationTransactionTests(TransactionTestCase):
+    def setUp(self):
+        publisher = patch('frontend.lobby_events._send')
+        self.send = publisher.start()
+        self.addCleanup(publisher.stop)
+
+    def test_one_revision_and_notification_cover_nested_committed_changes(self):
+        with transaction.atomic():
+            invalidate_tournaments()
+            first = current('tournaments')
+            with transaction.atomic():
+                invalidate_tournaments()
+            invalidate_tournaments()
+            self.assertEqual(current('tournaments'), first)
+            self.send.assert_not_called()
+        self.send.assert_called_once_with({TOURNAMENT_GROUP}, 'tournaments')
+
+    def test_rolled_back_first_savepoint_does_not_suppress_a_later_change(self):
+        before = current('tournaments')
+        with transaction.atomic():
+            with self.assertRaisesMessage(RuntimeError, 'rollback'):
+                with transaction.atomic():
+                    invalidate_tournaments()
+                    raise RuntimeError('rollback')
+            self.assertEqual(current('tournaments'), before)
+            invalidate_tournaments()
+        self.send.assert_called_once_with({TOURNAMENT_GROUP}, 'tournaments')
+        self.assertEqual(current('tournaments')['sequence'], 1)
+
+    def test_rolled_back_inner_change_preserves_the_outer_notification(self):
+        with transaction.atomic():
+            invalidate_tournaments()
+            outer = current('tournaments')
+            with self.assertRaisesMessage(RuntimeError, 'rollback'):
+                with transaction.atomic():
+                    invalidate_tournaments()
+                    raise RuntimeError('rollback')
+            self.assertEqual(current('tournaments'), outer)
+        self.send.assert_called_once_with({TOURNAMENT_GROUP}, 'tournaments')
+
+    def test_full_rollback_clears_revision_and_notification(self):
+        before = current('tournaments')
+        with self.assertRaisesMessage(RuntimeError, 'rollback'):
+            with transaction.atomic():
+                invalidate_tournaments()
+                raise RuntimeError('rollback')
+        self.assertEqual(current('tournaments'), before)
+        self.send.assert_not_called()
+        with transaction.atomic():
+            invalidate_tournaments()
+        self.send.assert_called_once_with({TOURNAMENT_GROUP}, 'tournaments')
+
+    def test_separate_commits_each_publish_their_own_revision(self):
+        for _ in range(2):
+            with transaction.atomic():
+                invalidate_tournaments()
+        self.assertEqual(self.send.call_count, 2)
+        self.assertEqual(current('tournaments')['sequence'], 2)
 
 
 @override_settings(CHANNEL_LAYERS={'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}})

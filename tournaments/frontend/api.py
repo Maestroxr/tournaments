@@ -25,6 +25,7 @@ from gamelink.views import _check_playability, _entry_deadline_fields
 from gamelink.playability import earliest_unresolved_fixtures
 from tournaments import models
 from .tournament_reads import TournamentReadSnapshot
+from .tournament_list_reads import tournament_list_snapshots
 from .lobby_revisions import versioned_read
 from .forms import (
     SignupForm,
@@ -168,19 +169,14 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
     entry_status = None
     registration_status = None
     if request.user.is_authenticated:
-        participation = next((item for item in snapshot.participations
-                              if item.participant.user_id == request.user.pk), None)
+        participation = snapshot.participation_for(request.user)
         is_joined = participation is not None
-        own_registration = next((item for item in snapshot.registrations
-                                 if item.participant.user_id == request.user.pk), None)
+        own_registration = snapshot.registration_for(request.user)
         if own_registration:
             registration_status = own_registration.status
         elif participation:
             registration_status = models.TournamentRegistration.STATUS_REGISTERED
         if participation:
-            participant = participation.participant
-            user_fixtures = [item for item in snapshot.fixtures
-                             if participant.pk in (item.player1_id, item.player2_id)]
             if snapshot.state == 'active':
                 current_fixtures = snapshot.current_user_fixtures(request.user)
                 # Card status and ticket issuance use the same personal pairing
@@ -194,16 +190,7 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
                         remaining_seconds = playability["remaining_seconds"]
                         entry_status = playability["entry_status"]
                         break
-            lost_confirmed = any(
-                snapshot.is_confirmed(item) and (
-                    item.admin_result == 'double_no_show'
-                    or (item.admin_winner_id is not None and item.admin_winner_id != participant.pk)
-                    or (item.score1 is not None and item.score2 is not None and (
-                        (item.player1_id == participant.pk and item.score1 < item.score2)
-                        or (item.player2_id == participant.pk and item.score2 < item.score1)
-                    ))
-                ) for item in user_fixtures
-            )
+            lost_confirmed = snapshot.has_confirmed_loss(participation)
             is_eliminated = snapshot.state in (
                 'active', 'finished') and lost_confirmed and not can_play
     starts = t.starts_at.isoformat() if getattr(t, "starts_at", None) else None
@@ -216,10 +203,7 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
             "name": participation.participant.name,
             "position": participation.podium_position,
         }
-        for participation in sorted(
-            (item for item in snapshot.participations if item.podium_position is not None),
-            key=lambda item: item.podium_position,
-        )
+        for participation in snapshot.podium_participations
     ]
     champion = podium[0] if podium else None
     is_winner = bool(
@@ -269,7 +253,7 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
         "entry_status": entry_status,
         "champion": champion,
         "podium": podium,
-        "participant_count": len(snapshot.participations),
+        "participant_count": snapshot.participant_count,
         "starts_at": starts,
         "min_players": getattr(t, "min_players", 6),
         "max_players": getattr(t, "max_players", None),
@@ -714,20 +698,16 @@ def api_logout(request):
 @versioned_read('tournaments')
 def api_tournaments(request):
     qs = models.Tournament.objects.filter(
-        published=True).select_related('creator')
+        published=True).select_related('creator').defer('definition', 'podium_spec', 'creator__password')
     # optional ?state=open|active|finished or ?q=search
     state = request.GET.get("state")
     q = request.GET.get("q")
     if q:
         qs = qs.filter(name__icontains=q)
     tournaments = []
-    for t in qs:
-        # reuse state filter like IndexView
-        snapshot = TournamentReadSnapshot(t, request.user)
-        if state and snapshot.state != state:
-            continue
+    for snapshot in tournament_list_snapshots(qs, request.user, state=state):
         tournaments.append(_serialize_tournament(
-            t, request, read_snapshot=snapshot))
+            snapshot.tournament, request, read_snapshot=snapshot))
     return JsonResponse(tournaments, safe=False)
 
 

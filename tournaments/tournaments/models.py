@@ -1963,6 +1963,18 @@ class Fixture(models.Model):
             required_confirmations = self.required_confirmations_count
         return confirmation_count >= required_confirmations
 
+    @staticmethod
+    def confirmed_result_filter(*, confirmation_count, required_confirmations):
+        """SQL counterpart of confirmed_result for read-only grouped summaries."""
+        return (
+            Q(admin_result='double_no_show')
+            | Q(admin_result__in=('advance', 'disqualify', 'no_show_bye'), admin_winner__isnull=False)
+            | (Q(score1__isnull=False, score2__isnull=False) & (
+                Q(auto_confirmed=True) | Q(admin_result__in=('score', 'finish'))
+                | Q(**{f'{confirmation_count}__gte': required_confirmations})
+            ))
+        )
+
     @property
     def winner(self):
         if self.admin_winner_id:

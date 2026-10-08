@@ -14,7 +14,7 @@ from tournaments.models import Fixture, FixtureAudit, Knockout, WalletTransactio
 class TournamentReadSnapshot:
     def __init__(self, tournament, user, *, include_live=False):
         self.tournament = tournament
-        self.stages = list(tournament.stages.all())
+        self.stages = list(tournament.stages.order_by('pk'))
         self.participations = list(
             tournament.participations.select_related('participant__user')
         )
@@ -86,6 +86,39 @@ class TournamentReadSnapshot:
         return fixture.confirmed_result(
             confirmation_count=fixture.read_confirmation_count,
             required_confirmations=self.required_confirmations,
+        )
+
+    @property
+    def participant_count(self):
+        return len(self.participations)
+
+    def participation_for(self, user):
+        return next((item for item in self.participations
+                     if item.participant.user_id == user.pk), None)
+
+    def registration_for(self, user):
+        return next((item for item in self.registrations
+                     if item.participant.user_id == user.pk), None)
+
+    @property
+    def podium_participations(self):
+        return sorted(
+            (item for item in self.participations if item.podium_position is not None),
+            key=lambda item: item.podium_position,
+        )
+
+    def has_confirmed_loss(self, participation):
+        participant_id = participation.participant_id
+        return any(
+            participant_id in (item.player1_id, item.player2_id)
+            and self.is_confirmed(item) and (
+                item.admin_result == 'double_no_show'
+                or (item.admin_winner_id is not None and item.admin_winner_id != participant_id)
+                or (item.score1 is not None and item.score2 is not None and (
+                    (item.player1_id == participant_id and item.score1 < item.score2)
+                    or (item.player2_id == participant_id and item.score2 < item.score1)
+                ))
+            ) for item in self.fixtures
         )
 
     @property

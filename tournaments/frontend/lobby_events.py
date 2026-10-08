@@ -25,11 +25,33 @@ def user_group(user_id):
     return f'club_user_{user_id}'
 
 
+class _TournamentInvalidation:
+    """One tournament revision and notification per committed transaction."""
+
+    def __init__(self):
+        self.sent = False
+
+    def __call__(self):
+        self.sent = True
+        _send({TOURNAMENT_GROUP}, 'tournaments')
+
+
 def invalidate_tournaments(using='default'):
-    """Bulk writes bypass signals and explicitly invalidate once after commit."""
+    """Coalesce signals and explicit bulk-write invalidations until commit.
+
+    Django owns the pending callbacks: savepoint rollback removes its callbacks,
+    and full rollback clears the queue. A separate thread-local accumulator would
+    retain rolled-back changes or suppress the next transaction's notification.
+    """
+    connection = transaction.get_connection(using)
+    if connection.in_atomic_block and any(
+        isinstance(callback, _TournamentInvalidation) and not callback.sent
+        for _, callback, _ in connection.run_on_commit
+    ):
+        return
     from .lobby_revisions import advance
     advance({TOURNAMENT_GROUP}, 'tournaments', using)
-    transaction.on_commit(lambda: _send({TOURNAMENT_GROUP}, 'tournaments'), using=using)
+    transaction.on_commit(_TournamentInvalidation(), using=using)
 
 
 # Presence and live board snapshots are not changes to a lobby card. Explicit
@@ -119,9 +141,12 @@ def _invalidate(sender, instance, using, **kwargs):
         groups, resource = {TABLE_GROUP}, 'tables'
     else:
         groups, resource = {TOURNAMENT_GROUP}, 'tournaments'
-    from .lobby_revisions import advance
-    advance(groups, resource, using)
-    transaction.on_commit(lambda: _send(groups, resource), using=using)
+    if resource == 'tournaments':
+        invalidate_tournaments(using)
+    else:
+        from .lobby_revisions import advance
+        advance(groups, resource, using)
+        transaction.on_commit(lambda: _send(groups, resource), using=using)
     if sender in (Fixture, GameLink):
         from gamelink.entry_presence import notify_fixture
         fixture_id = instance.pk if sender is Fixture else instance.fixture_id
