@@ -295,6 +295,7 @@ class IncidentReadTests(TransactionTestCase):
                                         {'fixture_id': fixture.pk, 'score1': 5, 'score2': 0},
                                         content_type='application/json')
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(any('BEGIN IMMEDIATE' in row['sql'].upper() for row in captured))
+        begin = 'BEGIN IMMEDIATE' if connection.vendor == 'sqlite' else 'BEGIN'
+        self.assertTrue(any(row['sql'].strip().upper() == begin for row in captured))
         fixture.refresh_from_db()
         self.assertEqual(fixture.score, (5, 0))

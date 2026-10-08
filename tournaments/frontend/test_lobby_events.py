@@ -178,10 +178,12 @@ class TournamentInvalidationTransactionTests(TransactionTestCase):
 @override_settings(CHANNEL_LAYERS={'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}})
 class ClubUpdatesConsumerTests(SimpleTestCase):
     def setUp(self):
-        versions = patch('frontend.lobby_revisions.current_revisions', return_value=REVISIONS)
+        self.revisions = {resource: dict(revision) for resource, revision in REVISIONS.items()}
+        versions = patch('frontend.lobby_revisions.current_revisions', return_value=self.revisions)
         versions.start()
         self.addCleanup(versions.stop)
-        revision = patch('frontend.lobby_revisions.current', return_value=REVISIONS['tables'])
+        revision = patch('frontend.lobby_revisions.current',
+                         side_effect=lambda resource, user_id=None: self.revisions[resource])
         revision.start()
         self.addCleanup(revision.stop)
 
@@ -201,9 +203,17 @@ class ClubUpdatesConsumerTests(SimpleTestCase):
         self.assertEqual(await connection.receive_json_from(), {'type': 'connected', 'revisions': REVISIONS})
         for group, resource in ((TOURNAMENT_GROUP, 'tournaments'), (TABLE_GROUP, 'tables'),
                                 (user_group(7), 'tables')):
+            self.revisions[resource] = {
+                'generation': '0', 'sequence': self.revisions[resource]['sequence'] + 1,
+            }
             await get_channel_layer().group_send(group, {'type': 'club.invalidate', 'resource': resource})
             self.assertEqual(await connection.receive_json_from(), {
-                'type': 'invalidate', 'resource': resource, 'revision': REVISIONS['tables']})
+                'type': 'invalidate', 'resource': resource, 'revision': self.revisions[resource]})
+            await get_channel_layer().group_send(group, {'type': 'club.invalidate', 'resource': resource})
+            self.assertTrue(await connection.receive_nothing())
+        self.revisions['tables'] = {
+            'generation': '0', 'sequence': self.revisions['tables']['sequence'] + 1,
+        }
         await get_channel_layer().group_send(user_group(8), {'type': 'club.invalidate', 'resource': 'tables'})
         self.assertTrue(await connection.receive_nothing())
         await connection.disconnect()

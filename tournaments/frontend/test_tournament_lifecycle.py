@@ -182,6 +182,8 @@ class TournamentLifecycleTests(TestCase):
         })
 
     def test_dashboard_flags_open_tournament_as_ready_at_player_threshold(self):
+        self.tournament.starts_at = timezone.now() + timedelta(hours=1)
+        self.tournament.save(update_fields=["starts_at"])
         for user in self.players[:2]:
             self.add_player(user)
 
@@ -201,6 +203,8 @@ class TournamentLifecycleTests(TestCase):
         )
 
     def test_dashboard_does_not_keep_waiting_alert_once_tournament_is_ready(self):
+        self.tournament.starts_at = timezone.now() + timedelta(hours=1)
+        self.tournament.save(update_fields=["starts_at"])
         for user in self.players[:2]:
             self.add_player(user)
 
@@ -214,6 +218,20 @@ class TournamentLifecycleTests(TestCase):
             [item["kind"] for item in tournament_alerts],
             ["ready_to_start"],
         )
+
+    def test_dashboard_keeps_overdue_alert_when_player_threshold_is_reached(self):
+        for user in self.players[:2]:
+            self.add_player(user)
+
+        response = self.client.get(reverse("api-admin-dashboard"))
+
+        self.assertEqual(response.status_code, 200, response.content)
+        tournament_alerts = [
+            item for item in response.json()["attention"]
+            if item["id"] == self.tournament.id
+        ]
+        self.assertEqual([item["kind"] for item in tournament_alerts], ["overdue"])
+        self.assertEqual(tournament_alerts[0]["severity"], "critical")
 
     def test_dashboard_removes_ready_alert_after_tournament_starts(self):
         for user in self.players[:2]:
