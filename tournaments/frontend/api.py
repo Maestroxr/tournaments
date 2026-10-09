@@ -26,6 +26,9 @@ from gamelink.playability import earliest_unresolved_fixtures
 from tournaments import models
 from .tournament_reads import TournamentReadSnapshot
 from .tournament_list_reads import tournament_list_snapshots
+from .tournament_pages import tournament_page
+from .head_to_head_pages import table_page, table_queries
+from .list_pages import page_bounds, queryset_page
 from .lobby_revisions import versioned_read
 from .forms import (
     SignupForm,
@@ -699,6 +702,11 @@ def api_logout(request):
 def api_tournaments(request):
     qs = models.Tournament.objects.filter(
         published=True).select_related('creator').defer('definition', 'podium_spec', 'creator__password')
+    if 'limit' in request.GET:
+        try:
+            return JsonResponse(tournament_page(qs, request, _serialize_tournament))
+        except ValueError as error:
+            return JsonResponse({'detail': str(error)}, status=400)
     # optional ?state=open|active|finished or ?q=search
     state = request.GET.get("state")
     q = request.GET.get("q")
@@ -909,23 +917,29 @@ def api_head_to_head_tables(request):
         # Display never reconciles searches, expires games, or writes presence.
         # A new deployment can display default settings before any POST creates
         # the singleton; get_or_create would acquire a write lock here.
+        queries = table_queries(request.user)
+        try:
+            if 'scope' in request.GET:
+                return JsonResponse(table_page(request, queries, _serialize_head_to_head))
+            offset, limit = page_bounds(request.GET)
+            if offset != 0:
+                raise ValueError('Use a scope for continuation pages')
+            tracked = request.GET.get('watch', '')
+            tracked_ids = [int(value) for value in tracked.split(',') if value]
+            if len(tracked_ids) > 100 or any(value <= 0 for value in tracked_ids):
+                raise ValueError('Invalid tracked games')
+        except ValueError as error:
+            return JsonResponse({'detail': str(error)}, status=400)
         settings_row = models.DirectPlaySettings.for_read()
-        tables = models.HeadToHeadTable.objects.filter(
-            mode=models.HeadToHeadTable.MODE_MATCH,
-            game_format__in=['match', 'money'],
-            status=models.HeadToHeadTable.STATUS_OPEN,
-            guest__isnull=True,
-        ).select_related('host').order_by('-created_at', '-pk')
-        my_game_tables = models.HeadToHeadTable.objects.filter(
-            Q(host=request.user) | Q(guest=request.user),
-        ).select_related('host', 'guest', 'winner').order_by('-created_at', '-pk')
-        closed_statuses = (
-            models.HeadToHeadTable.STATUS_COMPLETED,
-            models.HeadToHeadTable.STATUS_CANCELLED,
-        )
-        my_tables = my_game_tables.exclude(status__in=closed_statuses)[:20]
-        my_history = my_game_tables.filter(
-            status__in=closed_statuses).order_by('-updated_at', '-pk')[:50]
+        public_page = queryset_page(queries['public'], _serialize_head_to_head, limit=limit)
+        own_page = queryset_page(queries['ongoing'], _serialize_head_to_head, limit=limit)
+        # Only statuses of games previously shown to this user are included.
+        # This preserves cancellation/entry feedback without preloading history.
+        updates = models.HeadToHeadTable.objects.filter(
+            Q(host=request.user) | Q(guest=request.user), pk__in=tracked_ids,
+        ).exclude(pk__in=[table['id'] for table in own_page['results']]).select_related(
+            'host', 'guest', 'winner',
+        ).order_by('-updated_at', '-pk')
         return JsonResponse({
             "enabled": settings_row.enabled,
             "friend_game_fee": str(settings_row.friend_game_fee),
@@ -933,9 +947,17 @@ def api_head_to_head_tables(request):
             "stake_amounts": settings_row.stake_amounts,
             "game_rules": settings_row.game_rules,
             "format_profiles": settings_row.format_profiles,
-            "tables": [_serialize_head_to_head(table) for table in tables],
-            "my_tables": [_serialize_head_to_head(table) for table in my_tables],
-            "my_history": [_serialize_head_to_head(table) for table in my_history],
+            "tables": public_page['results'],
+            "my_tables": own_page['results'],
+            "my_history": [],
+            "updates": [_serialize_head_to_head(table) for table in updates],
+            "pages": {
+                'public': {key: value for key, value in public_page.items() if key != 'results'},
+                'ongoing': {key: value for key, value in own_page.items() if key != 'results'},
+            },
+            "has_own_search": queries['ongoing'].filter(
+                host=request.user, status=models.HeadToHeadTable.STATUS_OPEN, guest__isnull=True,
+            ).filter(Q(mode=models.HeadToHeadTable.MODE_MATCH) | Q(is_quick_match=True)).exists(),
         })
     from .game_formats import create_or_match
     return create_or_match(request)

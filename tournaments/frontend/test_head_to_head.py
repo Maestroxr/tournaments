@@ -92,8 +92,10 @@ class HeadToHeadApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['my_tables'], [])
-        self.assertEqual(response.json()['my_history'][0]['code'], table.code)
-        self.assertEqual(response.json()['my_history'][0]['winner'], self.host.username)
+        self.assertEqual(response.json()['my_history'], [])
+        history = self.client.get('/api/head-to-head/tables', {'scope': 'history', 'limit': 5}).json()
+        self.assertEqual(history['results'][0]['code'], table.code)
+        self.assertEqual(history['results'][0]['winner'], self.host.username)
 
     def test_rule_changes_preserve_existing_legacy_table_terms(self):
         table = self.legacy_table({'mode': 'match', 'amount': 100, 'target_points': 5})
@@ -193,9 +195,10 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         listed = response.json()['tables']
         # Both Match and Money/Doubling open tables are visible in Open Games
-        self.assertEqual(len(listed), 106)
+        self.assertEqual(len(listed), 5)
+        self.assertEqual(response.json()['pages']['public'], {'count': 106, 'next_offset': 5})
         self.assertEqual([table['code'] for table in listed],
-                         [table.code for table in reversed(public_tables + [HeadToHeadTable.objects.get(code='QUICK1')])])
+                         [table.code for table in reversed(public_tables + [HeadToHeadTable.objects.get(code='QUICK1')])][:5])
         self.assertTrue(all(table['mode'] == 'match' and table['game_format'] in ('match', 'money')
                              and table['status'] == 'open' and table['guest'] is None for table in listed))
 

@@ -272,3 +272,124 @@ class TournamentListReadTests(TestCase):
         self.assertTrue(payloads[0]['can_play'])
         self.assertEqual(payloads[1]['current_fixture_id'], second_fixture.pk)
         self.assertFalse(payloads[1]['can_play'])
+
+    def test_pages_slice_before_card_summaries_and_keep_stable_order(self):
+        tournaments = [self.make_tournament(active=False)[0] for _ in range(12)]
+        expected = sorted((item.pk for item in tournaments), reverse=True)
+        with patch('frontend.tournament_pages.tournament_list_snapshots',
+                   wraps=tournament_list_snapshots) as snapshots:
+            first = self.client.get('/api/tournaments', {'limit': 5, 'state': 'open'}).json()
+            self.assertEqual(len(snapshots.call_args.args[0]), 5)
+        self.assertEqual([row['id'] for row in first['results']], expected[:5])
+        self.assertEqual(first['count'], 12)
+        self.assertEqual(first['next_offset'], 5)
+        second = self.client.get('/api/tournaments', {'limit': 5, 'offset': 5, 'state': 'open'}).json()
+        last = self.client.get('/api/tournaments', {'limit': 5, 'offset': 10, 'state': 'open'}).json()
+        self.assertEqual([row['id'] for row in second['results']], expected[5:10])
+        self.assertEqual([row['id'] for row in last['results']], expected[10:])
+        self.assertIsNone(last['next_offset'])
+
+    def test_page_state_matches_snapshots_including_empty_next_stage(self):
+        active, _, _ = self.make_tournament()
+        finished, _, fixture = self.make_tournament()
+        fixture.admin_result = 'double_no_show'
+        fixture.save(update_fields=['admin_result'])
+        next_stage, _, next_fixture = self.make_tournament()
+        next_fixture.admin_result = 'double_no_show'
+        next_fixture.save(update_fields=['admin_result'])
+        Mode.objects.create(tournament=next_stage, identifier='next')
+        opened, _, _ = self.make_tournament(active=False)
+        self.make_tournament(published=False)
+        for state, ids in (('open', [opened.pk]), ('active', [next_stage.pk, active.pk]),
+                           ('finished', [finished.pk])):
+            payload = self.client.get('/api/tournaments', {'limit': 5, 'state': state}).json()
+            self.assertEqual([row['id'] for row in payload['results']], ids)
+            self.assertTrue(all(row['state'] == state for row in payload['results']))
+
+    def test_page_filters_and_length_options_include_matches_outside_first_five(self):
+        oldest, _, _ = self.make_tournament(active=False)
+        oldest.name, oldest.target_points, oldest.entry_fee = 'Unique page match', 9, Decimal('0')
+        oldest.save(update_fields=['name', 'target_points', 'entry_fee'])
+        for _ in range(7):
+            self.make_tournament(active=False)
+        payload = self.client.get('/api/tournaments', {
+            'limit': 5, 'state': 'open', 'q': 'Unique', 'buy_in': 'free', 'points': 9,
+        }).json()
+        self.assertEqual([row['id'] for row in payload['results']], [oldest.pk])
+        self.assertEqual(payload['count'], 1)
+        self.assertEqual(payload['match_lengths'], [5, 9])
+        self.assertEqual(self.client.get('/api/tournaments', {
+            'limit': 5, 'q': 'no page match',
+        }).json()['count'], 0)
+
+    def test_page_prize_sort_uses_net_fees_and_text_prizes_have_zero_value(self):
+        automatic, _, _ = self.make_tournament(active=False)
+        fixed, _, _ = self.make_tournament(active=False)
+        gift, _, _ = self.make_tournament(active=False)
+        fixed.prize_money = Decimal('80')
+        fixed.save(update_fields=['prize_money'])
+        gift.prize_type, gift.prize_text, gift.prize_money = 'text', 'Wooden board', Decimal('9999')
+        gift.save(update_fields=['prize_type', 'prize_text', 'prize_money'])
+        for kind, amount in ((WalletTransaction.KIND_TOURNAMENT_ENTRY, '-200'),
+                             (WalletTransaction.KIND_TOURNAMENT_REFUND, '100')):
+            WalletTransaction.objects.create(user=self.player, tournament=automatic, kind=kind,
+                                             amount=amount, balance_after=0)
+        payload = self.client.get('/api/tournaments', {'limit': 5, 'sort': 'prize'}).json()
+        self.assertEqual([row['id'] for row in payload['results']], [automatic.pk, fixed.pk, gift.pk])
+        self.assertEqual([row['prizeMoney'] for row in payload['results']], [90, 80, 0])
+        searched = self.client.get('/api/tournaments', {'limit': 5, 'q': 'Wooden'}).json()
+        self.assertEqual([row['id'] for row in searched['results']], [gift.pk])
+
+    def test_personal_pages_do_not_depend_on_public_page_or_include_other_users(self):
+        oldest, _, _ = self.make_tournament()
+        finished, _, fixture = self.make_tournament()
+        fixture.admin_result = 'double_no_show'
+        fixture.save(update_fields=['admin_result'])
+        for _ in range(7):
+            item, _, _ = self.make_tournament(active=False)
+            item.participations.filter(participant=self.people[0]).delete()
+        self.client.force_login(self.player)
+        ongoing = self.client.get('/api/tournaments', {'limit': 5, 'scope': 'ongoing'}).json()
+        self.assertEqual([row['id'] for row in ongoing['results']], [oldest.pk])
+        self.assertTrue(ongoing['results'][0]['can_play'])
+        history = self.client.get('/api/tournaments', {'limit': 5, 'scope': 'history'}).json()
+        self.assertEqual([row['id'] for row in history['results']], [finished.pk])
+        self.client.logout()
+        self.assertEqual(self.client.get('/api/tournaments', {
+            'limit': 5, 'scope': 'ongoing',
+        }).json()['count'], 0)
+
+    def test_page_validation_rejects_invalid_filters_and_size(self):
+        for params in ({'limit': 6}, {'limit': 5, 'offset': -1}, {'limit': 5, 'points': 'bad'},
+                       {'limit': 5, 'scope': 'everyone'}, {'limit': 5, 'sort': 'bad'}):
+            self.assertEqual(self.client.get('/api/tournaments', params).status_code, 400)
+
+    def test_initial_live_page_excludes_finished_and_closed_registration(self):
+        opened, _, _ = self.make_tournament(active=False)
+        active, _, _ = self.make_tournament()
+        closed, _, _ = self.make_tournament(active=False)
+        closed.registration_closed_at = self.now
+        closed.save(update_fields=['registration_closed_at'])
+        for _ in range(8):
+            _, _, fixture = self.make_tournament()
+            fixture.admin_result = 'double_no_show'
+            fixture.save(update_fields=['admin_result'])
+        payload = self.client.get('/api/tournaments', {'limit': 5, 'state': 'live'}).json()
+        self.assertEqual([row['id'] for row in payload['results']], [active.pk, opened.pk])
+        self.assertEqual(payload['count'], 2)
+        self.assertIsNone(payload['next_offset'])
+        opened_page = self.client.get('/api/tournaments', {'limit': 5, 'state': 'open'}).json()
+        self.assertEqual([row['id'] for row in opened_page['results']], [opened.pk])
+
+    def test_page_prize_sort_uses_the_same_half_even_cents_as_cards(self):
+        fixed, _, _ = self.make_tournament(active=False)
+        fixed.prize_money = Decimal('0.04')
+        fixed.save(update_fields=['prize_money'])
+        automatic, _, _ = self.make_tournament(active=False)
+        WalletTransaction.objects.create(
+            user=self.player, tournament=automatic, kind=WalletTransaction.KIND_TOURNAMENT_ENTRY,
+            amount='-0.05', balance_after=0,
+        )
+        payload = self.client.get('/api/tournaments', {'limit': 5, 'sort': 'prize'}).json()
+        self.assertEqual([row['prizeMoney'] for row in payload['results']], [0.04, 0.04])
+        self.assertEqual([row['id'] for row in payload['results']], [automatic.pk, fixed.pk])

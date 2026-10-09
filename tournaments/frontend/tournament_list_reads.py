@@ -54,7 +54,7 @@ class TournamentListReadSnapshot(TournamentReadSnapshot):
         )
 
 
-def _fixture_reads(tournament_ids):
+def _fixture_reads(tournament_ids=None):
     confirmations = Fixture.confirmations.through.objects.filter(
         fixture_id=OuterRef('pk'),
     ).order_by().values('fixture_id').annotate(total=Count('pk')).values('total')
@@ -65,7 +65,10 @@ def _fixture_reads(tournament_ids):
         Floor(Coalesce(Subquery(online), Value(0)) / Value(2.0)) + Value(1),
         output_field=IntegerField(),
     )
-    return Fixture.objects.filter(mode__tournament_id__in=tournament_ids).annotate(
+    fixtures = Fixture.objects.all()
+    if tournament_ids is not None:
+        fixtures = fixtures.filter(mode__tournament_id__in=tournament_ids)
+    return fixtures.annotate(
         read_confirmation_count=Coalesce(Subquery(confirmations), Value(0)),
         read_required_confirmations=required,
     )
