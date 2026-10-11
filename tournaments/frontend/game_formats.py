@@ -318,6 +318,8 @@ def quote(settings, data, quick, match_search=False):
     if name not in ('match', 'money'):
         raise ValidationError('Unknown game format.')
     profile = settings.format_profiles[name]
+    if data.get('mode') == 'friend' and not quick:
+        profile = settings.friend_profile()
     access = 'quick' if quick else 'private' if data.get(
         'mode') == 'friend' else 'public'
     if data.get('mode', 'match') not in ('match', 'friend'):
@@ -332,7 +334,7 @@ def quote(settings, data, quick, match_search=False):
         # Money-game players choose stakes only. Preserve the UI's preferred
         # defaults, with the configured first option as fallback, for every client.
         points = 1
-        clock = 'normal' if 'normal' in profile['time_controls'] else profile['time_controls'][0]
+        clock = settings.effective_money_clock()
         doubling = True if True in profile['doubling_options'] else profile['doubling_options'][0]
     else:
         points = data.get('target_points', 5)
@@ -341,7 +343,7 @@ def quote(settings, data, quick, match_search=False):
     if access == 'private' and points == 1:
         doubling = False
     if (type(points) is not int or points not in profile['target_points']
-            or clock not in profile['time_controls'] or type(doubling) is not bool
+            or (not (quick and name == 'money') and clock not in profile['time_controls']) or type(doubling) is not bool
             or doubling not in profile['doubling_options']):
         raise ValidationError('Select the available rules for this format.')
     if access == 'private':
@@ -594,6 +596,8 @@ def join_table(table, user, settings):
     if table.is_quick_match and _cancellation_reason(table, settings):
         raise ValidationError('This game format or access method is disabled.')
     profile = settings.format_profiles[table.game_format]
+    if table.mode == 'friend':
+        profile = settings.friend_profile()
     access = 'private' if table.mode == 'friend' else 'public'
     if not settings.enabled or not profile['enabled'] or not profile[access]:
         raise ValidationError('This game format or access method is disabled.')

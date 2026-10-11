@@ -90,6 +90,32 @@ class PracticeEntryTests(TestCase):
         self.client.force_login(other)
         self.assertEqual(self.start().status_code, 403)
 
+    def test_admin_clocks_are_published_and_removed_clock_cannot_start_or_charge(self):
+        row = DirectPlaySettings.load()
+        row.practice_rules = {'target_points': [5], 'time_controls': ['fast']}
+        row.save()
+        config = self.client.get('/api/practice/').json()
+        self.assertEqual((config['target_points'], config['time_controls']), ([5], ['fast']))
+        with patch('gamelink.practice.prepare_room') as prepare:
+            response = self.start()
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'rules_changed')
+        prepare.assert_not_called()
+        self.assertFalse(PracticePurchase.objects.exists())
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), Decimal('200'))
+
+    def test_existing_paid_practice_keeps_clock_after_policy_changes(self):
+        with patch('gamelink.practice.prepare_room', side_effect=self.prepare):
+            self.assertEqual(self.start().status_code, 200)
+        row = DirectPlaySettings.load()
+        row.practice_rules = {'target_points': [7], 'time_controls': ['fast']}
+        row.save()
+        with patch('gamelink.practice.prepare_room', side_effect=self.prepare):
+            self.assertEqual(self.start().status_code, 200)
+        purchase = PracticePurchase.objects.get(pk=self.data['request_id'])
+        self.assertEqual((purchase.options['tp'], purchase.options['tc']), (5, 'normal'))
+        self.assertEqual(WalletTransaction.objects.filter(kind='ai_game_fee').count(), 1)
+
     def test_login_required(self):
         self.client.logout()
         self.assertEqual(self.start().status_code, 302)

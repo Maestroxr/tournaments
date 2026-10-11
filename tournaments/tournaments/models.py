@@ -710,6 +710,41 @@ def validate_format_profiles(value):
                 'The configured stake and loss limit exceed the wallet transaction limit.')
 
 
+def default_friend_rules():
+    profile = default_format_profiles()['match']
+    return {'enabled': profile['enabled'] and profile['private'],
+            **{key: profile[key] for key in ('target_points', 'time_controls', 'doubling_options', 'max_cube')}}
+
+
+def default_practice_rules():
+    return {'target_points': [1, 3, 5, 7, 9, 11, 15, 21, 25],
+            'time_controls': ['none', 'fast', 'normal', 'slow']}
+
+
+def validate_friend_rules(value):
+    if value is not None:
+        if not isinstance(value, dict) or set(value) - {
+            'enabled', 'target_points', 'time_controls', 'doubling_options', 'max_cube'
+        }:
+            raise ValidationError('Invalid friend rules.')
+        if 'max_cube' in value and (type(value['max_cube']) is not int
+                                   or value['max_cube'] not in (2, 4, 8, 16, 32, 64)):
+            raise ValidationError('Choose a supported friend cube limit.')
+        # Preserve all targets previously offered by the shared Match profile.
+        rules = default_game_rules()
+        rules['match'] = {key: item for key, item in value.items() if key != 'max_cube'}
+        validate_game_rules(rules)
+
+
+def validate_practice_rules(value):
+    if not isinstance(value, dict) or set(value) != {'target_points', 'time_controls'}:
+        raise ValidationError('Provide practice targets and clocks.')
+    rule = {'enabled': True, 'doubling_options': [True, False], **value}
+    validate_friend_rules(rule)
+    if any(point not in default_practice_rules()['target_points'] for point in value['target_points']):
+        raise ValidationError('Choose supported practice targets.')
+
+
 class DirectPlaySettings(models.Model):
     """Admin-controlled commercial rules for one-on-one games."""
 
@@ -720,6 +755,12 @@ class DirectPlaySettings(models.Model):
         default=default_game_rules, validators=[validate_game_rules])
     format_profiles = models.JSONField(
         default=default_format_profiles, validators=[validate_format_profiles])
+    friend_rules = models.JSONField(
+        null=True, blank=True, default=default_friend_rules, validators=[validate_friend_rules])
+    practice_rules = models.JSONField(
+        default=default_practice_rules, validators=[validate_practice_rules])
+    money_time_control = models.CharField(
+        max_length=20, blank=True, default='normal', choices=Tournament.TIME_CHOICES)
     friend_game_fee = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("50.00"))
     ai_game_fee = models.DecimalField(
@@ -780,6 +821,23 @@ class DirectPlaySettings(models.Model):
         return (
             self.friend_game_fee * Decimal(str(target_points))
         ).quantize(Decimal("0.01"))
+
+    def effective_friend_rules(self):
+        if self.friend_rules is not None:
+            return {**self.friend_rules,
+                    'max_cube': self.friend_rules.get('max_cube', self.format_profiles['match']['max_cube'])}
+        profile = self.format_profiles['match']
+        return {'enabled': profile['enabled'] and profile['private'],
+                **{key: profile[key] for key in ('target_points', 'time_controls', 'doubling_options', 'max_cube')}}
+
+    def friend_profile(self):
+        return {**self.format_profiles['match'], **self.effective_friend_rules(), 'private': True}
+
+    def effective_money_clock(self):
+        if self.money_time_control:
+            return self.money_time_control
+        clocks = self.format_profiles['money']['time_controls']
+        return 'normal' if 'normal' in clocks else clocks[0]
 
     def mode_enabled(self, mode):
         return self.enabled and self.game_rules[mode]['enabled']

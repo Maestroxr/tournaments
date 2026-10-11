@@ -53,8 +53,10 @@ class StartPracticeView(LoginRequiredMixin, View):
 
     def get(self, request):
         row = DirectPlaySettings.for_read()
-        response = JsonResponse({'fee': str(row.ai_game_fee), 'target_points': POINTS,
-            'time_controls': TIMES, 'balance': str(WalletTransaction.balance_for_user(request.user))})
+        response = JsonResponse({'fee': str(row.ai_game_fee),
+            'target_points': row.practice_rules['target_points'],
+            'time_controls': row.practice_rules['time_controls'],
+            'balance': str(WalletTransaction.balance_for_user(request.user))})
         response['Cache-Control'] = 'private, no-store'
         return response
 
@@ -84,7 +86,12 @@ class StartPracticeView(LoginRequiredMixin, View):
             if purchase and purchase.user_id != request.user.pk:
                 return JsonResponse(status=403, data={'error': 'Invalid purchase'})
             if purchase is None:
-                fee = DirectPlaySettings.load().ai_game_fee
+                current_settings = DirectPlaySettings.load()
+                rules = current_settings.practice_rules
+                if options['tp'] not in rules['target_points'] or options['tc'] not in rules['time_controls']:
+                    return JsonResponse({'error': 'Practice rules changed. Refresh the practice page.',
+                                         'code': 'rules_changed'}, status=409)
+                fee = current_settings.ai_game_fee
                 if quoted_fee != fee:
                     return JsonResponse({'error': 'Price changed. Refresh the practice page.', 'code': 'price_changed'}, status=409)
                 purchase = PracticePurchase.objects.create(id=request_id, user=request.user, options=options, fee=fee)

@@ -946,6 +946,9 @@ def api_head_to_head_tables(request):
             "match_fee_percent": str(settings_row.head_to_head_fee_percent),
             "stake_amounts": settings_row.stake_amounts,
             "game_rules": settings_row.game_rules,
+            "friend_rules": settings_row.effective_friend_rules(),
+            "practice_rules": settings_row.practice_rules,
+            "money_time_control": settings_row.effective_money_clock(),
             "format_profiles": settings_row.format_profiles,
             "tables": public_page['results'],
             "my_tables": own_page['results'],
@@ -1170,9 +1173,29 @@ def api_admin_direct_play_settings(request):
                 data = json.loads(request.body or "{}")
                 if not isinstance(data, dict):
                     raise ValidationError('Expected a settings object.')
+                from .direct_play_settings import section_payload, validated_field
+                data = section_payload(row, data)
+                for field, validator in (
+                    ('friend_rules', models.validate_friend_rules),
+                    ('practice_rules', models.validate_practice_rules),
+                ):
+                    if field in data:
+                        if data[field] is None:
+                            raise ValidationError({field: 'Select the available rules.'})
+                        if field == 'friend_rules' and isinstance(data[field], dict):
+                            data[field] = {'max_cube': row.effective_friend_rules()['max_cube'], **data[field]}
+                        try:
+                            validator(data[field])
+                        except ValidationError as error:
+                            raise ValidationError({field: error.messages}) from error
+                        setattr(row, field, data[field])
+                if 'money_time_control' in data:
+                    if data['money_time_control'] not in dict(models.Tournament.TIME_CHOICES):
+                        raise ValidationError({'money_time_control': 'Choose a supported clock.'})
+                    row.money_time_control = data['money_time_control']
                 row.enabled = _parse_bool(data.get("enabled"), row.enabled)
                 if 'format_profiles' in data:
-                    models.validate_format_profiles(data['format_profiles'])
+                    validated_field('format_profiles', models.validate_format_profiles, data['format_profiles'])
                     row.format_profiles = data['format_profiles']
                 if "game_rules" in data:
                     models.validate_game_rules(data["game_rules"])
@@ -1182,37 +1205,37 @@ def api_admin_direct_play_settings(request):
                 if "stake_amounts" in data:
                     models.validate_stake_amounts(data["stake_amounts"])
                     row.stake_amounts = sorted(data["stake_amounts"])
-                row.friend_game_fee = _parse_money(
-                    data.get("friend_game_fee", row.friend_game_fee), "friend_game_fee")
-                row.ai_game_fee = _parse_money(
-                    data.get("ai_game_fee", row.ai_game_fee), "ai_game_fee")
-                row.head_to_head_fee_percent = _parse_money(data.get(
-                    "head_to_head_fee_percent", row.head_to_head_fee_percent), "head_to_head_fee_percent")
-                row.tournament_fee_percent = _parse_money(data.get(
-                    "tournament_fee_percent", row.tournament_fee_percent), "tournament_fee_percent")
+                for field in ('friend_game_fee', 'ai_game_fee', 'head_to_head_fee_percent',
+                              'tournament_fee_percent', 'coin_grant_amount'):
+                    if field in data:
+                        value = validated_field(field, _parse_money, data[field])
+                        setattr(row, field, value)
                 row.coin_grant_enabled = _parse_bool(
                     data.get("coin_grant_enabled"), row.coin_grant_enabled)
-                row.coin_grant_amount = _parse_money(
-                    data.get("coin_grant_amount", row.coin_grant_amount), "coin_grant_amount")
-                row.coin_grant_interval_hours = int(
-                    data.get("coin_grant_interval_hours", row.coin_grant_interval_hours))
+                if 'coin_grant_interval_hours' in data:
+                    row.coin_grant_interval_hours = validated_field(
+                        'coin_grant_interval_hours', int, data['coin_grant_interval_hours'])
                 if row.head_to_head_fee_percent > 100:
-                    raise ValidationError(
-                        "The Match Play fee cannot exceed 100%.")
+                    raise ValidationError({'head_to_head_fee_percent':
+                                           "The Match Play fee cannot exceed 100%."})
                 if not Decimal("8") <= row.tournament_fee_percent <= Decimal("10"):
-                    raise ValidationError(
-                        "The tournament fee must be between 8% and 10%.")
+                    raise ValidationError({'tournament_fee_percent':
+                                           "The tournament fee must be between 8% and 10%."})
                 row.full_clean()
                 row.save()
         except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
             messages = getattr(error, 'messages', [str(error)])
-            return JsonResponse({"detail": "; ".join(messages)}, status=400)
+            return JsonResponse({"detail": "; ".join(messages),
+                                 "errors": getattr(error, 'message_dict', {})}, status=400)
     return JsonResponse({
         "enabled": row.enabled,
         "friend_game_fee": str(row.friend_game_fee),
         "ai_game_fee": str(row.ai_game_fee),
         "stake_amounts": row.stake_amounts,
         "game_rules": row.game_rules,
+        "friend_rules": row.effective_friend_rules(),
+        "practice_rules": row.practice_rules,
+        "money_time_control": row.effective_money_clock(),
         "format_profiles": row.format_profiles,
         "head_to_head_fee_percent": str(row.head_to_head_fee_percent),
         "tournament_fee_percent": str(row.tournament_fee_percent),

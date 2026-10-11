@@ -1,4 +1,5 @@
 export interface GameModeRules {
+  max_cube?: number
   enabled: boolean
   target_points: number[]
   time_controls: string[]
@@ -21,6 +22,9 @@ export type FormatProfiles = Record<'match' | 'money', FormatProfile>
 
 export interface DirectPlaySettings {
   format_profiles?: FormatProfiles
+  friend_rules?: GameModeRules
+  practice_rules?: { target_points: number[]; time_controls: string[] }
+  money_time_control?: string
   game_rules: GameRules
   stake_amounts?: number[]
   enabled: boolean

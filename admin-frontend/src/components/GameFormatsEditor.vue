@@ -1,85 +1,137 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import SelectButton from 'primevue/selectbutton'
-import ToggleSwitch from 'primevue/toggleswitch'
-import InputNumber from 'primevue/inputnumber'
-import Button from 'primevue/button'
-import Chip from 'primevue/chip'
-import coinIcon from '@/assets/6b-coin.png'
 import { useI18n } from '@/i18n'
-import type { FormatProfiles } from '@/types/directPlay'
-const profiles = defineModel<FormatProfiles>({ required: true })
-const { locale } = useI18n()
-const he = computed(() => locale.value === 'he')
-const selected = ref<'match' | 'money'>('match')
-const profile = computed(() => profiles.value[selected.value])
-const stake = ref<number | null>(null)
-const points = Array.from({ length: 25 }, (_, i) => i + 1)
-const clocks = computed(() => [
-  { value: 'none', label: he.value ? 'ללא שעון' : 'No clock' },
-  { value: 'normal', label: he.value ? 'רגיל' : 'Normal' },
-  { value: 'fast', label: he.value ? 'מהיר' : 'Fast' },
-  { value: 'slow', label: he.value ? 'איטי' : 'Slow' },
-])
-const doubling = computed(() => [
-  { value: true, label: he.value ? 'עם הכפלה' : 'With cube' },
-  { value: false, label: he.value ? 'ללא הכפלה' : 'Without cube' },
-])
+import type { FormatProfile } from '@/types/directPlay'
+import GameRuleFields from './game-settings/GameRuleFields.vue'
+import AdminNumberField from './game-settings/AdminNumberField.vue'
+const profile = defineModel<FormatProfile>({ required: true })
+const props = defineProps<{ mode: 'match' | 'money'; errors?: Record<string, string> }>()
+const { t } = useI18n()
+const stake = ref(100)
+const canAdd = computed(
+  () =>
+    Number.isInteger(stake.value) &&
+    stake.value >= 100 &&
+    stake.value <= 99999999 &&
+    profile.value.stake_amounts.length < 100 &&
+    !profile.value.stake_amounts.includes(stake.value),
+)
+const moneyDoubling = computed({
+  get: () => profile.value.doubling_options.includes(true),
+  set: (value: boolean) => {
+    profile.value.doubling_options = [value]
+  },
+})
 function addStake() {
-  if (!stake.value || !Number.isInteger(stake.value) || stake.value < 100 || stake.value > 99999999 || profile.value.stake_amounts.includes(stake.value)) return
-  profile.value.stake_amounts = [...profile.value.stake_amounts, stake.value].sort((a,b) => a-b)
-  stake.value = null
+  if (canAdd.value)
+    profile.value.stake_amounts = [...profile.value.stake_amounts, stake.value].sort(
+      (a, b) => a - b,
+    )
 }
+const profileError = computed(() => props.errors?.format_profiles ?? props.errors?.profile)
 </script>
-
 <template>
-  <section class="formats-editor">
-    <SelectButton v-model="selected" :allow-empty="false" option-label="label" option-value="value"
-      :options="[{ value: 'match', label: he ? 'סדרה לנקודות' : 'Match play' }, { value: 'money', label: he ? 'מטבעות לנקודה' : 'Money game' }]" />
-    <p>{{ selected === 'money'
-      ? (he ? 'הקובייה ומכפילי הניצחון קובעים את התשלום, עד תקרת ההפסד. מלוא התקרה משוריינת מכל שחקן בכניסה.' : 'The cube and win type determine payment, capped by the loss limit. Each player reserves the full limit on entry.')
-      : (he ? 'סכום קבוע לכל הסדרה. הקובייה מכפילה נקודות בלבד; Crawford חל כששחקן מגיע לראשונה למרחק נקודה מהיעד.' : 'Fixed stake for the whole match. The cube affects points only; Crawford applies the first time a player is one point from the target.') }}</p>
-    <div class="format-access">
-      <label v-for="flag in (['enabled', 'public', 'private', 'quick'] as const)" :key="flag">
-        <ToggleSwitch v-model="profile[flag]" :aria-label="flag" />
-        {{ ({ enabled: he ? 'פעיל' : 'Enabled', public: he ? 'שולחן ציבורי' : 'Public tables', private: he ? 'פרטי עם חבר' : 'Private with friend', quick: he ? 'התאמה מהירה' : 'Quick matchmaking' })[flag] }}
+  <div class="space-y-6">
+    <div class="flex flex-wrap gap-4">
+      <label class="flex min-h-11 items-center gap-3"
+        ><input
+          v-model="profile.enabled"
+          type="checkbox"
+          class="size-5 accent-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dfbc7c]"
+        />{{ t('gameSettings.modeEnabled') }}</label
+      >
+      <label v-if="mode === 'match'" class="flex min-h-11 items-center gap-3"
+        ><input
+          v-model="profile.public"
+          type="checkbox"
+          class="size-5 accent-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dfbc7c]"
+        />{{ t('gameSettings.publicTables') }}</label
+      >
+      <label class="flex min-h-11 items-center gap-3"
+        ><input
+          v-model="profile.quick"
+          type="checkbox"
+          class="size-5 accent-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dfbc7c]"
+        />{{ t('gameSettings.matchmaking') }}</label
+      >
+    </div>
+    <template v-if="mode === 'match'">
+      <GameRuleFields v-model="profile" :error="profileError" />
+      <label class="block space-y-2 text-sm"
+        ><span>{{ t('gameSettings.maximumCube') }}</span>
+        <select
+          v-model.number="profile.max_cube"
+          class="min-h-11 w-full rounded-lg border border-white/20 bg-neutral-900 px-3 text-neutral-100 focus-visible:outline-2 focus-visible:outline-[#dfbc7c]"
+        >
+          <option v-for="value in [2, 4, 8, 16, 32, 64]" :key="value" :value="value">
+            ×{{ value }}
+          </option>
+        </select>
       </label>
-    </div>
-    <fieldset v-if="selected === 'match'"><legend>{{ he ? 'יעדי נקודות זמינים' : 'Available point targets' }}</legend>
-      <SelectButton v-model="profile.target_points" :options="points.map(value => ({ value, label: String(value) }))" option-label="label" option-value="value" multiple :allow-empty="false" /></fieldset>
-    <fieldset><legend>{{ he ? 'שעונים זמינים' : 'Available clocks' }}</legend>
-      <SelectButton v-model="profile.time_controls" :options="clocks" option-label="label" option-value="value" multiple :allow-empty="false" /></fieldset>
-    <fieldset><legend>{{ he ? 'אפשרויות הכפלה' : 'Cube options' }}</legend>
-      <SelectButton v-model="profile.doubling_options" :options="doubling" option-label="label" option-value="value" multiple :allow-empty="false" /></fieldset>
-    <fieldset><legend>{{ he ? 'תקרת קובייה' : 'Maximum cube' }}</legend>
-      <SelectButton v-model="profile.max_cube" :options="[2,4,8,16,32,64].map(value => ({ value, label: `×${value}` }))" option-label="label" option-value="value" :allow-empty="false" /></fieldset>
-    <div class="format-access" v-if="selected === 'money'">
-      <label><ToggleSwitch v-model="profile.jacoby" /> Jacoby</label>
-      <label>{{ he ? 'תקרת הפסד × סכום לנקודה' : 'Loss limit × stake per point' }}
-        <InputNumber v-model="profile.loss_limit_multiplier" :min="1" :max="192" :max-fraction-digits="0" /></label>
-      <small>{{ he ? 'Jacoby: לפני קבלת הכפלה, מארס ובקגמון מחושבים כניצחון רגיל.' : 'Jacoby: before an accepted double, gammons and backgammons count as a single win.' }}</small>
-    </div>
-    <label>{{ he ? 'עמלה מהרווח של המנצח (%)' : 'Fee on winner’s profit (%)' }}
-      <InputNumber v-model="profile.fee_percent" :min="0" :max="100" :max-fraction-digits="2" /></label>
-    <fieldset><legend>{{ selected === 'money' ? (he ? 'סכומים לנקודה' : 'Stakes per point') : (he ? 'סכומים לסדרה' : 'Stakes per match') }}</legend>
-      <div class="format-stakes"><Chip v-for="value in profile.stake_amounts" :key="value" removable
-        @remove="profile.stake_amounts = profile.stake_amounts.filter(x => x !== value)">
-        <img :src="coinIcon" alt="6B" /><span>{{ value.toLocaleString() }}</span>
-      </Chip></div>
-      <div class="format-access"><InputNumber v-model="stake" :min="100" :max="99999999" :max-fraction-digits="0" :aria-label="he ? 'סכום חדש' : 'New stake'" />
-        <Button type="button" :label="he ? 'הוסף סכום' : 'Add stake'" @click="addStake" /></div>
-      <small>{{ he ? 'רשימה ריקה חוסמת יצירת משחקים בפורמט הזה. שינויים נשמרים באמצעות כפתור השמירה.' : 'An empty list blocks new games in this format. Use Save to apply changes.' }}</small>
+    </template>
+    <template v-else>
+      <label class="flex min-h-11 items-center gap-3"
+        ><input
+          v-model="moneyDoubling"
+          type="checkbox"
+          class="size-5 accent-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dfbc7c]"
+        />{{ t('gameSettings.moneyDoubling') }}</label
+      >
+      <label class="flex min-h-11 items-center gap-3"
+        ><input
+          v-model="profile.jacoby"
+          type="checkbox"
+          class="size-5 accent-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#dfbc7c]"
+        />{{ t('gameSettings.jacoby') }}</label
+      >
+      <p class="text-sm leading-relaxed text-neutral-400">
+        {{ t('gameSettings.dynamicExposure') }}
+      </p>
+      <p v-if="profileError" role="alert" class="text-sm text-red-300">{{ profileError }}</p>
+    </template>
+    <AdminNumberField
+      v-model="profile.fee_percent"
+      :label="t('gameSettings.winnerFee')"
+      :min="0"
+      :max="100"
+      :step="0.01"
+      :error="errors?.format_profiles"
+    />
+    <fieldset class="space-y-3">
+      <legend class="mb-2 text-sm font-semibold">
+        {{ t(mode === 'money' ? 'gameSettings.stakesPerPoint' : 'gameSettings.stakesPerMatch') }}
+      </legend>
+      <div class="flex flex-wrap gap-2">
+        <button
+          v-for="value in profile.stake_amounts"
+          :key="value"
+          type="button"
+          :aria-label="t('directPlay.removeStake') + ' ' + value"
+          class="flex min-h-11 items-center gap-3 rounded-lg border border-white/20 px-3 text-sm hover:border-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-[#dfbc7c]"
+          @click="profile.stake_amounts = profile.stake_amounts.filter((item) => item !== value)"
+        >
+          <span dir="ltr">{{ value.toLocaleString() }}</span
+          ><span aria-hidden="true">×</span>
+        </button>
+      </div>
+      <div class="grid items-end gap-3 sm:grid-cols-[1fr_auto]">
+        <AdminNumberField
+          v-model="stake"
+          :label="t('directPlay.newStake')"
+          :min="100"
+          :max="99999999"
+          :required="false"
+        />
+        <button
+          type="button"
+          :disabled="!canAdd"
+          class="min-h-11 rounded-lg border border-[#dfbc7c] px-4 text-[#dfbc7c] focus-visible:outline-2 focus-visible:outline-[#dfbc7c] disabled:opacity-40"
+          @click="addStake"
+        >
+          {{ t('directPlay.addStake') }}
+        </button>
+      </div>
+      <p class="text-xs text-neutral-400">{{ t('gameSettings.emptyStakes') }}</p>
     </fieldset>
-  </section>
+  </div>
 </template>
-
-<style scoped>
-.formats-editor { display:grid; gap:24px; }
-.formats-editor p, small { color:#afc2df; line-height:1.7; }
-.formats-editor fieldset { border:1px solid #2b3e5c; border-radius:12px; padding:18px; min-width:0; }
-.formats-editor legend { padding:0 8px; font-weight:700; }
-.format-access,.format-stakes { display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin:12px 0; }
-.formats-editor label { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-.format-stakes img { width:24px; height:24px; object-fit:contain; }
-.formats-editor :deep(.p-selectbutton) { flex-wrap:wrap; gap:6px; }
-</style>

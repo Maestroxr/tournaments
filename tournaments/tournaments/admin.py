@@ -104,10 +104,12 @@ class DirectPlaySettingsAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Availability', {'fields': ('enabled',)}),
         ('Format profiles', {'fields': ('format_profiles',)}),
-        ('Legacy play with a friend', {
-            'fields': ('friend_game_fee', 'ai_game_fee'),
-            'description': 'Fixed fee charged to each player for the entire game, regardless of target points. No percentage or winner prize applies.',
+        ('Play with a friend', {
+            'fields': ('friend_rules', 'friend_game_fee'),
+            'description': 'Each player pays the configured price per target point. No winner prize applies.',
         }),
+        ('Money game clock', {'fields': ('money_time_control',)}),
+        ('Open Sage', {'fields': ('practice_rules', 'ai_game_fee')}),
         ('Platform fees', {'fields': ('head_to_head_fee_percent', 'tournament_fee_percent', 'stake_amounts')}),
         ('Game rules', {'fields': ('game_rules',)}),
         ('Recurring coin bonus', {'fields': ('coin_grant_enabled', 'coin_grant_amount', 'coin_grant_interval_hours')}),
