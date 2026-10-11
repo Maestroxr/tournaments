@@ -16,6 +16,17 @@ The service owns session accounts, email/Google login, profile data, tournament 
 
 Run manage.py from tournaments/, with a separate Python environment using this repository's requirements. The default settings module is tournaments.settings.development. To match the player proxy, use python manage.py runserver 8001 for local HTTP work, or Daphne with tournaments.asgi:application for ASGI/WebSocket. The admin proxy defaults to 8002, so set its VITE_API_URL explicitly when using 8001.
 
+Development reads `DEBUG` from the environment after loading the ignored `.env`
+and `.env.postgresql.local` files in the repository root. Use `DEBUG=1` to enable
+debugging or `DEBUG=0` to disable it. `DEBUG` takes priority over the legacy
+`TOURNAMENTS_LOCAL_DEBUG` variable; if neither is set, debugging is disabled.
+
+Keep machine-specific values in the ignored environment files rather than editing
+tracked settings on the server. The admin application's `pnpm-workspace.yaml` is
+shared build configuration and belongs in Git. Manual `*.py.before-*` source
+snapshots are ignored; remove obsolete copies or store needed snapshots outside
+the source checkout. Release automation requires clean source repositories.
+
 Each backend owns its background work. Tournament `run_tasks` executes due database Tasks (admin delivery and recurring expiry), with leases and retries; cron starts the runner once per minute; see [installation and migration from the two legacy timers](deploy/TOURNAMENT_TASKS.he.md). `run_push_notifications` remains persistent; `purge_expired`, `reconcile_direct_searches` and `reconcile_tranzila` retain their separate scheduling needs. The game server's `run_tasks` and the analysis service's `process_analyses` must also run in their own environments.
 
 The exact routes, models and pending migrations in the checked-out code determine behavior. Financial values come from the database/catalog, not old planning documents. [Direct formats](GAME_FORMATS.md), [rating](docs/RATING_POLICY.he.md), [admin UI](admin-frontend/README.md), [deployment](DEPLOY_GAME_AND_CLUB.he.md), [documentation index](../docs/README.md).
@@ -66,8 +77,8 @@ For a local production-like HTTP profile, use
 `--settings=tournaments.settings.local_production`. This requires real local
 HTTPS endpoints in `TOURNAMENTS_LOCAL_FRONTEND_URL` and
 `TOURNAMENTS_LOCAL_GAME_URL`; it enables `DEBUG=False`, secure cookies and HTTPS
-redirects. The existing HTTP launcher keeps development settings/DEBUG enabled
-until HTTPS is configured. No system checks are silenced or skipped.
+redirects. The existing HTTP launcher keeps development settings; its debug mode
+comes from the private environment configuration. No system checks are silenced or skipped.
 
 Use `--port`, `--admin-user`, `--database` and `--role` for a different local
 installation. Re-running with the same configuration only applies migrations;

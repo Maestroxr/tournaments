@@ -24,6 +24,8 @@ htmlcov/
 .ruff_cache/
 .mypy_cache/
 *.log
+# Manual source snapshots are machine-local artifacts.
+*.py.before-*
 *.egg-info/
 # frontend generated
 coverage/

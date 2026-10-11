@@ -6,9 +6,6 @@ from tournaments.settings.common import *
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-ouqc8j0sk$gn+*9zja*ii=rs=$q()cs$e*9$fg1(y28d#m8m$d'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
 ALLOWED_HOSTS = ['*']
 
 CSRF_TRUSTED_ORIGINS = [
@@ -29,6 +26,8 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 # Only development loads this private, machine-specific database configuration.
 # Production continues to use its explicitly configured database.
 load_local_env(BASE_DIR.parent / '.env.postgresql.local')
+# Explicit DEBUG takes priority over the legacy local PostgreSQL setting.
+DEBUG = os.environ.get('DEBUG', os.environ.get('TOURNAMENTS_LOCAL_DEBUG', '0')) == '1'
 _local_database = os.environ.get('TOURNAMENTS_LOCAL_DATABASE', 'sqlite')
 if _local_database == 'postgresql':
     from django.core.exceptions import ImproperlyConfigured
@@ -53,7 +52,6 @@ if _local_database == 'postgresql':
             'OPTIONS': {'connect_timeout': 5},
         },
     }
-    DEBUG = os.environ.get('TOURNAMENTS_LOCAL_DEBUG', '1') == '1'
     SECRET_KEY = os.environ.get('TOURNAMENTS_LOCAL_SECRET_KEY', SECRET_KEY)
     ALLOWED_HOSTS = ['localhost', '127.0.0.1', '[::1]'] + env_list('TOURNAMENTS_LOCAL_ALLOWED_HOSTS')
 elif _local_database != 'sqlite':
