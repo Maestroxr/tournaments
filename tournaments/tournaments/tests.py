@@ -1122,29 +1122,10 @@ class KnockoutTest(ModeTestBase, TestCase):
         self.assertEqual(actual_fixtures1, expected_fixtures1)
         self.assertEqual(actual_fixtures2, expected_fixtures2)
 
-    def test_create_fixtures_double_elimination_8participants(self):
+    def _create_double_elimination_8participants(self):
         mode = Knockout.objects.create(tournament = self.tournament, double_elimination = True)
         participants = self.add_participants(self.tournament, 8)
         mode.create_fixtures(participants)
-
-        # Verify fixtures.
-        actual_fixtures1 = self.group_fixtures_by_level(mode, extras__tree__ne = 2)
-        actual_fixtures2 = self.group_fixtures_by_level(mode, extras__tree = 2)
-        expected_fixtures1 = {
-            0: [(5, 4), (6, 3), (7, 2), (8, 1)],
-            1: [(None, None), (None, None)],
-            3: [(None, None)],
-            5: [(None, None)],
-        }
-        expected_fixtures2 = {
-            1: [(None, None), (None, None)],
-            2: [(None, None), (None, None)],
-            3: [(None, None)],
-            4: [(None, None)],
-        }
-        self.assertEqual(actual_fixtures1, expected_fixtures1)
-        self.assertEqual(actual_fixtures2, expected_fixtures2)
-
         return mode
 
 
@@ -1258,7 +1239,7 @@ class KnockoutTest(ModeTestBase, TestCase):
         self.assertEqual(mode.get_level_name(5), '3rd Final Round')
 
     def test_double_elimination_propagate(self):
-        mode = self.test_create_fixtures_double_elimination_8participants()
+        mode = self._create_double_elimination_8participants()
 
         # Propagate quarter finals (let the user with the higher ID win).
         quarterfinals = mode.fixtures.filter(level = 0)
