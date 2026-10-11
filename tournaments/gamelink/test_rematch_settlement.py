@@ -29,6 +29,7 @@ class RematchSettlementTests(TestCase):
         t = HeadToHeadTable.objects.create(
             host=self.host, guest=guest, status=status,
             external_room_id=room_id, amount=Decimal("10"), game_format="money",
+            fee_percent=Decimal("5"), fee_per_player=Decimal("0.50"),
             rules_snapshot={}, code="T123"
         )
         return t

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, TournamentRegistration
@@ -19,7 +19,8 @@ from .tournament_reminders import deliver_tournament_reminders, discover_tournam
     WEB_PUSH_PUBLIC_KEY='test-public', WEB_PUSH_PRIVATE_KEY='test-private',
     WEB_PUSH_SUBJECT='mailto:test@example.com',
 )
-class TournamentReminderTests(TestCase):
+class TournamentReminderTests(TransactionTestCase):
+    # Exercise worker connection cleanup outside TestCase's wrapping transaction.
     def setUp(self):
         self.now = timezone.now()
         clock = patch('frontend.tournament_reminders.timezone.now', return_value=self.now)

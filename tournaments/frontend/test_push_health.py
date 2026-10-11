@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from tournaments.models import Fixture, HeadToHeadTable, Knockout, Tournament
@@ -13,7 +13,8 @@ from .push_health import heartbeat
 
 @override_settings(WEB_PUSH_PUBLIC_KEY='public-test', WEB_PUSH_PRIVATE_KEY='private-test',
                    WEB_PUSH_SUBJECT='mailto:test@example.com')
-class PushHealthTests(TestCase):
+class PushHealthTests(TransactionTestCase):
+    # The worker closes old connections; its tests need committed setup data.
     def setUp(self):
         self.user = User.objects.create_user(username='operator', is_staff=True)
         self.client.force_login(self.user)

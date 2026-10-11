@@ -204,7 +204,7 @@ class HeadToHeadApiTests(TestCase):
 
     def test_match_search_visible_in_public_tables(self):
         table = HeadToHeadTable.objects.create(
-            code='SEARCH1', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            code='SRCH01', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
             amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
             is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
         )
@@ -219,7 +219,7 @@ class HeadToHeadApiTests(TestCase):
 
     def test_match_search_joinable_by_other_player(self):
         table = HeadToHeadTable.objects.create(
-            code='SEARCH2', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            code='SRCH02', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
             amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
             rules_snapshot=self._profile('match'),
             is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
@@ -239,7 +239,7 @@ class HeadToHeadApiTests(TestCase):
 
     def test_match_search_self_join_rejected(self):
         table = HeadToHeadTable.objects.create(
-            code='SEARCH3', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
+            code='SRCH03', host=self.host, mode=HeadToHeadTable.MODE_MATCH, game_format='match',
             amount=Decimal('100.00'), fee_percent=Decimal('5.00'), fee_per_player=Decimal('5.00'),
             rules_snapshot=self._profile('match'),
             is_quick_match=True, status=HeadToHeadTable.STATUS_OPEN,
