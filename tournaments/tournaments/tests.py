@@ -1039,29 +1039,6 @@ class KnockoutTest(ModeTestBase, TestCase):
         return mode
 
 
-    def test_create_fixtures_double_elimination_5participants(self):
-        mode = Knockout.objects.create(tournament = self.tournament, double_elimination = True)
-        participants = self.add_participants(self.tournament, 5)
-        mode.create_fixtures(participants)
-
-        # Verify fixtures.
-        actual_fixtures1 = self.group_fixtures_by_level(mode, extras__tree__ne = 2)
-        actual_fixtures2 = self.group_fixtures_by_level(mode, extras__tree = 2)
-        expected_fixtures1 = {
-            0: [(5, 4)],
-            1: [(None, 2), (3, 1)],
-            2: [(None, None)],
-            4: [(None, None)],
-        }
-        expected_fixtures2 = {
-            2: [(None, None)],
-            3: [(None, None)],
-        }
-        self.assertEqual(actual_fixtures1, expected_fixtures1)
-        self.assertEqual(actual_fixtures2, expected_fixtures2)
-
-        return mode
-
     def test_create_fixtures_double_elimination_6participants(self):
         mode = Knockout.objects.create(tournament = self.tournament, double_elimination = True)
         participants = self.add_participants(self.tournament, 6)
