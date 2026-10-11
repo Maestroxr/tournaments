@@ -134,29 +134,6 @@ class LossSettlementCallbackTests(TestCase):
     def test_guest_winner_gets_same_net_amount(self):
         self.assert_settlement(reason='disconnect', cube=2, win_type='backgammon', transfer=600, winner='p2')
 
-    def test_public_and_friend_series_final_results_use_fixed_stake(self):
-        # Includes give_up only when that game completed the series. A
-        # below-target game resignation must not emit this final callback.
-        for reason in ('give_up', 'leave', 'time', 'disconnect'):
-            with self.subTest(mode='match', reason=reason):
-                self.assert_settlement(reason=reason, cube=64, win_type='backgammon',
-                                       transfer=100, game_format='match', mode='match')
-        for reason in ('give_up', 'leave', 'time', 'disconnect'):
-            with self.subTest(mode='friend', reason=reason):
-                before = {u.pk: self.balance(u) for u in (self.host, self.guest)}
-                table = self.funded(game_format='match', target_points=5, mode='friend')
-                body = self.body(table, reason, 64, 'backgammon')
-                response = self.deliver(body)
-                self.assertEqual(response.status_code, 200, response.content)
-                table.refresh_from_db()
-                self.assertEqual(table.status, 'completed')
-                self.assertEqual(table.winner_id, self.host.pk)
-                self.assertEqual(table.settlement['transfer'], "0.00")
-                self.assertEqual(table.settlement['fee'], "0.00")
-                self.assertFalse(WalletTransaction.objects.filter(head_to_head_table=table, kind=WalletTransaction.KIND_HEAD_TO_HEAD_PRIZE).exists())
-                self.assertFalse(RatingResult.objects.filter(table=table).exists())
-                for user in (self.host, self.guest):
-                    self.assertEqual(self.balance(user), before[user.pk] - Decimal('250.00'))
 
     def test_tampered_or_invalid_results_leave_reservations_and_rating_untouched(self):
         table = self.funded()

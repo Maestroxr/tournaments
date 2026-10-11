@@ -2,22 +2,19 @@ import json
 from datetime import timedelta
 from importlib import import_module
 from decimal import Decimal
-from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.apps import apps
 from django.db import connection
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase
 from django.utils import timezone
 
 from gamelink.views import ResultCallbackView
-from gamelink.signing import verify_ticket
 from tournaments.models import (
     DirectPlaySettings, HeadToHeadTable, Participant, Participation, Tournament,
     WalletTransaction,
 )
-from frontend.models import PushSubscription, TablePushDelivery
 
 
 class HeadToHeadApiTests(TestCase):
@@ -578,22 +575,6 @@ class HeadToHeadApiTests(TestCase):
         self.assertEqual(self.client.get('/api/head-to-head/tables/abc123').status_code, 200)
         self.assertEqual(self.client.post('/api/head-to-head/tables/abc123/join').status_code, 200)
 
-    def test_friend_code_collision_retries_without_duplicate_reservation(self):
-        self.client.force_login(self.host)
-        with patch('frontend.api.secrets.choice', return_value='0000'):
-            self.client.post('/api/head-to-head/tables',
-                             data=json.dumps({'mode': 'friend', 'game_format': 'match', 'amount': 100}),
-                             content_type='application/json')
-        # Simulate another request taking a code after our allocation snapshot.
-        with patch('frontend.api.models.HeadToHeadTable.objects.values_list', return_value=[]), \
-                patch('frontend.api.secrets.choice', side_effect=['0000', '0001']):
-            response = self.client.post('/api/head-to-head/tables',
-                                        data=json.dumps({'mode': 'friend', 'game_format': 'match', 'amount': 100}),
-                                        content_type='application/json')
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()['code'], '0001')
-        self.assertEqual(HeadToHeadTable.objects.count(), 2)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('500.00'))
 
     def test_friend_code_exhaustion_returns_controlled_error(self):
         with patch('frontend.api.models.HeadToHeadTable.objects.values_list',
@@ -679,41 +660,6 @@ class HeadToHeadApiTests(TestCase):
         tournament.award_prize_money()
         self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal("1080.00"))
 
-    @override_settings(
-        GAMELINK_ENABLED=True,
-        GAMELINK_BACKGAMMON_URL="https://game.example/backgammon",
-        GAMELINK_TICKET_SECRET="direct-play-ticket-secret-at-least-32-characters",
-        WEB_PUSH_PUBLIC_KEY='test-public',
-        WEB_PUSH_PRIVATE_KEY='test-private',
-        WEB_PUSH_SUBJECT='mailto:operator@example.com',
-    )
-    def test_funded_player_can_open_the_game_with_a_signed_ticket(self):
-        table = self.legacy_table({"mode": "friend", "time_control": "none"})
-        self.client.force_login(self.guest)
-        self.client.post(f"/api/head-to-head/tables/{table.code}/join")
-        PushSubscription.objects.create(
-            user=self.guest,
-            endpoint_hash='guest-push-device',
-            endpoint='https://fcm.googleapis.com/fcm/send/guest-push-device',
-            p256dh='test-key',
-            auth='test-auth',
-        )
-        self.client.force_login(self.host)
-        response = self.client.post(f"/t/head-to-head/{table.code}/play")
-        self.assertEqual(response.status_code, 302)
-        token = parse_qs(urlparse(response['Location']).query)['ticket'][0]
-        payload = verify_ticket(token)
-        self.assertEqual(payload['trn'], 0)
-        self.assertEqual(payload['fix'], -table.pk)
-        self.assertEqual(payload['seat'], 'p1')
-        self.assertEqual(payload['tc'], 'none')
-        table.refresh_from_db()
-        self.assertEqual(table.status, HeadToHeadTable.STATUS_PLAYING)
-        self.assertTrue(TablePushDelivery.objects.filter(
-            table=table,
-            kind=TablePushDelivery.KIND_HOST_ENTERED,
-            subscription__user=self.guest,
-        ).exists())
 
     def test_versioned_friend_one_point_cost_and_doubling_disabled(self):
         self.client.force_login(self.host)

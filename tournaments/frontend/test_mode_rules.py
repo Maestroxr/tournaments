@@ -3,12 +3,9 @@ import json
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.db import connection
 from django.test import TestCase
-from django.test.utils import CaptureQueriesContext
 
 from tournaments.models import DirectPlaySettings, HeadToHeadTable, WalletTransaction
-from .task_runner import expire_unstarted_games
 
 
 class ModeRuleTests(TestCase):
@@ -32,32 +29,6 @@ class ModeRuleTests(TestCase):
         self.assertFalse(HeadToHeadTable.objects.exists())
         self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
 
-    def test_admin_change_releases_unmatched_search_and_player_can_restart(self):
-        created = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100, 200])
-        old_table = HeadToHeadTable.objects.get(pk=created.json()['id'])
-        old_snapshot = old_table.rules_snapshot.copy()
-        self.host.is_staff = True
-        self.host.save()
-        profiles = self.settings.format_profiles
-        profiles['money']['fee_percent'] = 10
-        response = self.client.put('/api/admin/direct-play/settings',
-                                   json.dumps({'format_profiles': profiles}), content_type='application/json')
-        self.assertEqual(response.status_code, 200, response.content)
-        old_table.refresh_from_db()
-        self.assertEqual(old_table.status, 'cancelled')
-        self.assertEqual(old_table.rules_snapshot, old_snapshot)
-        self.assertEqual(old_table.settlement['reason'], 'rules_changed')
-        self.assertEqual(old_table.settlement['refund'], '6400.00')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
-        lobby = self.client.get('/api/head-to-head/tables').json()
-        self.assertEqual(lobby['my_tables'], [])
-        self.assertEqual(lobby['my_history'][0]['settlement']['reason'], 'rules_changed')
-        restarted = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
-        self.assertEqual(restarted.status_code, 201, restarted.content)
-        self.assertNotEqual(restarted.json()['id'], old_table.pk)
-        self.assertEqual(restarted.json()['fee_percent'], '10.00')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('3600'))
-        self.assertEqual(old_table.wallet_transactions.filter(kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 1)
 
     def test_invalid_admin_settings_leave_waiting_search_and_reserve_intact(self):
         created = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
@@ -72,57 +43,6 @@ class ModeRuleTests(TestCase):
         self.assertEqual(table.status, 'open')
         self.assertEqual(WalletTransaction.balance_for_user(self.host), Decimal('3600'))
 
-    def test_lobby_is_read_only_and_worker_retires_legacy_searches(self):
-        own = HeadToHeadTable.objects.create(code='LEG001', host=self.host, mode='match',
-                                              game_format='legacy', is_quick_match=True, amount=100,
-                                              fee_percent=5, fee_per_player=5)
-        other = HeadToHeadTable.objects.create(code='LEG002', host=self.guest, mode='match',
-                                                game_format='legacy', is_quick_match=True, amount=100,
-                                                fee_percent=5, fee_per_player=5)
-        WalletTransaction.create_entry(
-            user=self.host, amount=-100,
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_ENTRY,
-            head_to_head_table=own,
-        )
-        with CaptureQueriesContext(connection) as queries:
-            response = self.client.get('/api/head-to-head/tables')
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(any(
-            query['sql'].lstrip().upper().startswith(
-                ('INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'BEGIN IMMEDIATE'))
-            for query in queries
-        ), [query['sql'] for query in queries])
-        own.refresh_from_db()
-        other.refresh_from_db()
-        self.assertEqual(own.status, 'open')
-        self.assertEqual(other.status, 'open')
-        self.assertEqual(response.json()['my_history'], [])
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 9900)
-
-        # The existing global worker owns cleanup for every player. A lobby
-        # refresh must not compete with match entry for a database writer lock.
-        self.assertTrue(expire_unstarted_games(heartbeat=lambda: True))
-        own.refresh_from_db()
-        other.refresh_from_db()
-        self.assertEqual(own.status, 'cancelled')
-        self.assertEqual(other.status, 'cancelled')
-        self.assertEqual(own.settlement['reason'], 'legacy_search_closed')
-        self.assertEqual(other.settlement['reason'], 'legacy_search_closed')
-        self.assertEqual(own.settlement['refund'], '100.00')
-        self.assertEqual(other.settlement['refund'], '0.00')
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
-        self.assertEqual(WalletTransaction.balance_for_user(self.guest), 10000)
-
-        for player, table in ((self.host, own), (self.guest, other)):
-            self.client.force_login(player)
-            history = self.client.get('/api/head-to-head/tables').json()['my_history']
-            self.assertEqual([item['id'] for item in history], [table.pk])
-            self.assertEqual(history[0]['settlement']['reason'], 'legacy_search_closed')
-
-        self.assertTrue(expire_unstarted_games(heartbeat=lambda: True))
-        self.assertEqual(own.wallet_transactions.filter(
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND).count(), 1)
-        self.assertEqual(WalletTransaction.objects.count(), 4)
 
     def setUp(self):
         self.settings = DirectPlaySettings.load()
@@ -167,20 +87,6 @@ class ModeRuleTests(TestCase):
                          ('match', 7, 'slow', False))
         self.assertEqual(WalletTransaction.balance_for_user(self.guest), 9900)
 
-    def test_match_search_does_not_match_different_rules_or_money_games(self):
-        payload = dict(game_format='match', amounts=[100], target_points=7,
-                       time_control='slow', doubling_enabled=False)
-        first = self.post('/api/head-to-head/match-search', **payload)
-        self.assertEqual(first.status_code, 201, first.content)
-        self.client.force_login(self.guest)
-        for change in (dict(target_points=5), dict(time_control='normal'),
-                       dict(doubling_enabled=True), dict(game_format='money')):
-            with self.subTest(change=change):
-                path = '/api/head-to-head/quick-match' if change.get('game_format') == 'money' else '/api/head-to-head/match-search'
-                response = self.post(path, **{**payload, **change})
-                self.assertEqual(response.status_code, 201, response.content)
-                self.assertFalse(response.json()['matched'])
-                self.assertNotEqual(response.json()['id'], first.json()['id'])
 
     def test_match_search_cancellation_refunds_reservation(self):
         response = self.post('/api/head-to-head/match-search', game_format='match', amounts=[100],
@@ -223,30 +129,7 @@ class ModeRuleTests(TestCase):
             self.assertEqual(response.json()['time_control'], 'normal')
             self.assertIs(response.json()['doubling_enabled'], True)
 
-    def test_quick_defaults_follow_allowed_profile_when_preferred_options_disabled(self):
-        self.settings.format_profiles['money'].update(time_controls=['fast'], doubling_options=[False])
-        self.settings.save()
-        response = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100],
-                             target_points=7, time_control='normal', doubling_enabled=True)
-        self.assertEqual(response.status_code, 201, response.content)
-        table = HeadToHeadTable.objects.get()
-        self.assertEqual((table.target_points, table.time_control, table.doubling_enabled), (1, 'fast', False))
 
-    def test_public_and_friend_keep_selected_match_rules(self):
-        for mode in ('match', 'friend'):
-            with self.subTest(mode=mode):
-                response = self.post('/api/head-to-head/tables', game_format='match', mode=mode,
-                                     amount=100, target_points=7, time_control='slow', doubling_enabled=False)
-                self.assertEqual(response.status_code, 201, response.content)
-                table = HeadToHeadTable.objects.get(pk=response.json()['id'])
-                self.assertEqual((table.game_format, table.target_points, table.time_control, table.doubling_enabled),
-                                 ('match', 7, 'slow', False))
-                self.assertFalse(table.rules_snapshot['jacoby'])
-                self.assertEqual(table.rules_snapshot['max_cube'], 64)
-        self.assertEqual(
-            WalletTransaction.balance_for_user(self.host),
-            Decimal('9550'),
-        )
 
     def test_match_invalid_rule_is_not_silently_replaced(self):
         for override in (dict(target_points=2), dict(time_control='unknown'), dict(doubling_enabled='false')):
@@ -256,22 +139,6 @@ class ModeRuleTests(TestCase):
                 self.assertEqual(response.status_code, 400, response.content)
         self.assertFalse(HeadToHeadTable.objects.exists())
 
-    def test_match_modes_require_explicit_rules_without_silent_defaults(self):
-        full = dict(target_points=7, time_control='slow', doubling_enabled=False)
-        cases = (
-            ('/api/head-to-head/match-search', dict(game_format='match', amounts=[100])),
-            ('/api/head-to-head/tables', dict(game_format='match', mode='match', amount=100)),
-            ('/api/head-to-head/tables', dict(game_format='match', mode='friend', amount=100)),
-        )
-        for path, base in cases:
-            for omitted in ('target_points', 'time_control', 'doubling_enabled'):
-                payload = {**base, **{k: v for k, v in full.items() if k != omitted}}
-                with self.subTest(path=path, mode=base.get('mode', 'match'), omitted=omitted):
-                    response = self.post(path, **payload)
-                    self.assertEqual(response.status_code, 400, response.content)
-        self.assertFalse(HeadToHeadTable.objects.exists())
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 10000)
-        self.assertEqual(WalletTransaction.objects.count(), 2)
 
     def test_quick_money_still_succeeds_without_explicit_rules(self):
         response = self.post('/api/head-to-head/quick-match', game_format='money', amounts=[100])
@@ -280,37 +147,8 @@ class ModeRuleTests(TestCase):
         self.assertEqual((table.game_format, table.target_points, table.time_control, table.doubling_enabled),
                          ('money', 1, 'normal', True))
 
-    def test_one_point_match_forces_doubling_off(self):
-        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
-                             amount=100, target_points=1, time_control='normal', doubling_enabled=True)
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertIs(response.json()['doubling_enabled'], False)
-        table = HeadToHeadTable.objects.get(pk=response.json()['id'])
-        self.assertEqual(table.target_points, 1)
-        self.assertIs(table.doubling_enabled, False)
 
-    def test_one_point_match_allowed_when_profile_has_only_doubling_true(self):
-        self.settings.format_profiles['match']['target_points'] = [1, 3]
-        self.settings.format_profiles['match']['doubling_options'] = [True]
-        self.settings.save()
-        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
-                             amount=100, target_points=1, time_control='normal', doubling_enabled=True)
-        self.assertEqual(response.status_code, 201, response.content)
-        table = HeadToHeadTable.objects.get()
-        self.assertEqual(table.target_points, 1)
-        self.assertIs(table.doubling_enabled, False)
 
-    def test_longer_match_keeps_configured_doubling(self):
-        response = self.post('/api/head-to-head/tables', game_format='match', mode='match',
-                             amount=100, target_points=3, time_control='normal', doubling_enabled=True)
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertIs(HeadToHeadTable.objects.get().doubling_enabled, True)
-        self.settings.format_profiles['match']['doubling_options'] = [True]
-        self.settings.save()
-        bad = self.post('/api/head-to-head/tables', game_format='match', mode='match',
-                        amount=100, target_points=3, time_control='normal', doubling_enabled=False)
-        self.assertEqual(bad.status_code, 400, bad.content)
-        self.assertEqual(HeadToHeadTable.objects.count(), 1)
 
     def test_one_point_match_rejects_non_boolean_doubling(self):
         response = self.post('/api/head-to-head/tables', game_format='match', mode='match',

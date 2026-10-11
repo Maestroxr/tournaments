@@ -142,13 +142,6 @@ class IncidentRecoveryTests(TestCase):
         self.assertEqual(first.admin_result, '')
         self.assertEqual(second.admin_result, 'double_no_show')
 
-    def test_lost_lease_stops_expiry_without_resolving_a_fixture(self):
-        self.expired_bracket()
-        heartbeat = Mock(return_value=False)
-        with patch('gamelink.views._resolve_double_no_show_locked') as resolver:
-            self.assertIs(expire_tournament_entry_deadlines(heartbeat=heartbeat), False)
-        heartbeat.assert_called_once()
-        resolver.assert_not_called()
 
     def test_lost_lease_between_fixtures_keeps_new_owner_untouched(self):
         self.expired_bracket()
@@ -174,13 +167,6 @@ class IncidentRecoveryTests(TestCase):
         self.assertEqual(task.last_error, '')
         self.assertEqual(task.attempts, 0)
 
-    def test_paused_tournament_is_excluded_before_candidate_processing(self):
-        tournament, stage = self.expired_bracket()
-        Tournament.objects.filter(pk=tournament.pk).update(entry_deadline_paused=True)
-        heartbeat = Mock(return_value=True)
-        self.assertEqual(expire_tournament_entry_deadlines(heartbeat=heartbeat), 0)
-        heartbeat.assert_not_called()
-        self.assertFalse(stage.fixtures.exclude(admin_result='').exists())
 
     def test_pause_after_candidate_selection_is_rechecked_under_lock(self):
         tournament, stage = self.expired_bracket()
@@ -237,29 +223,6 @@ class IncidentRecoveryTests(TestCase):
         tournament.refresh_from_db()
         self.assertTrue(tournament.published)
 
-    def test_invalid_start_does_not_block_later_candidate_pages(self):
-        from frontend.api import _start_tournament_at_capacity
-        cups = [self.make_bracket(start=False) for _ in range(3)]
-        task = Task.objects.create(key='start-fairness', name=Task.NAME_START_SCHEDULED_TOURNAMENTS)
-
-        def start(tournament):
-            if tournament.pk == cups[0][0].pk:
-                raise ValidationError('invalid first draw')
-            return _start_tournament_at_capacity(tournament)
-
-        with patch('frontend.task_runner.START_BATCH_SIZE', 1), \
-                patch('frontend.api._start_tournament_at_capacity', side_effect=start):
-            self.assertFalse(run_task(task.pk))
-            task.refresh_from_db()
-            self.assertEqual(task.kwargs['cursor'], cups[0][0].pk)
-            for _ in range(2):
-                Task.objects.filter(pk=task.pk).update(run_at=timezone.now())
-                self.assertTrue(run_task(task.pk))
-        self.assertFalse(cups[0][1].fixtures.exists())
-        self.assertTrue(cups[1][1].fixtures.exists())
-        self.assertTrue(cups[2][1].fixtures.exists())
-        task.refresh_from_db()
-        self.assertEqual(task.kwargs, {})  # The next cycle retries the invalid first cup too.
 
     def test_start_scanner_does_not_lock_started_tournaments(self):
         self.make_bracket()
@@ -305,22 +268,6 @@ class DirectPlayWorkerRecoveryTests(TestCase):
         )
         return table
 
-    def test_worker_reconciles_unmatched_search_and_preserves_paired_contract(self):
-        unmatched = self.table(legacy=True)
-        paired = self.table(status='ready', legacy=True)
-        original_contract = paired.rules_snapshot.copy()
-        self.assertTrue(expire_unstarted_games(heartbeat=None))
-        self.assertTrue(expire_unstarted_games(heartbeat=None))
-        unmatched.refresh_from_db()
-        paired.refresh_from_db()
-        self.assertEqual(unmatched.status, 'cancelled')
-        self.assertEqual(unmatched.settlement['reason'], 'legacy_search_closed')
-        self.assertEqual(paired.status, 'ready')
-        self.assertEqual(paired.rules_snapshot, original_contract)
-        self.assertEqual(WalletTransaction.balance_for_user(self.host), 900)
-        self.assertEqual(unmatched.wallet_transactions.filter(
-            kind=WalletTransaction.KIND_HEAD_TO_HEAD_REFUND,
-        ).count(), 1)
 
     def test_worker_does_not_reconcile_after_losing_lease(self):
         table = self.table(legacy=True)

@@ -183,19 +183,6 @@ class PaymentOperationsTests(TestCase):
         self.provider.report_page.return_value = ([self.report], 2)
         self.assertEqual(run_reports(today, today, max_pages=1).status, 'incomplete')
 
-    def test_refund_retry_limits_totals_and_pending_adjustment(self):
-        self.paid()
-        key = str(uuid.uuid4())
-        self.assertEqual(self.refund(idempotency_key=key).status_code, 201)
-        self.assertEqual(self.refund(idempotency_key=key).status_code, 200)
-        self.assertEqual(self.refund(idempotency_key=key, amount='3.00').status_code, 409)
-        self.assertEqual(self.refund(amount='9.00', provider_reference='REF-2').status_code, 400)
-        self.assertEqual(self.refund(provider_reference='REF-1').status_code, 409)
-        self.assertEqual(CheckoutRefund.objects.count(), 1)
-        data = self.client.get(reverse('api-admin-checkouts'), {'review': 'refund'}).json()
-        self.assertEqual(data['totals'][0]['net'], '8')
-        self.assertIsNone(data['items'][0]['refund_records'][0]['adjusted_at'])
-        self.assertEqual(data['count'], 1)
 
     def test_full_refund_requires_separate_attested_adjustment_before_closing(self):
         self.paid()

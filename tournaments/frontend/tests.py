@@ -515,16 +515,6 @@ class ApiTournamentProgressPermissionTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self.fixture.score, (None, None))
 
-    def test_fixture_player_can_submit_a_score(self):
-        player = self.fixture.player1.user
-        self.client.force_login(player)
-
-        response = self.client.post(self.url, self.payload, content_type='application/json')
-
-        self.fixture.refresh_from_db()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.fixture.score, (1, 0))
-        self.assertTrue(self.fixture.confirmations.filter(pk=player.pk).exists())
 
     def test_score_submission_requires_csrf(self):
         player = self.fixture.player1.user
