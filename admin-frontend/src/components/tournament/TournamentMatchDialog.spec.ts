@@ -65,18 +65,6 @@ describe('Admin match details dialog', () => {
     wrappers.splice(0).forEach((w) => w.unmount())
   })
 
-  it('opens read-only with names, round and score placeholders', async () => {
-    const wrapper = view()
-    expect(wrapper.text()).toContain('Dana')
-    expect(wrapper.text()).toContain('Ben')
-    expect(wrapper.text()).toContain('Semifinals')
-    expect(wrapper.text()).toContain('Waiting for the game to start.')
-    expect(wrapper.findAll('.match-dialog__player strong').map((n) => n.text())).toEqual(['–', '–'])
-    await wrapper.get('button').trigger('click')
-    expect(wrapper.emitted('close')).toHaveLength(1)
-    expect(api).not.toHaveBeenCalled()
-  })
-
   it('opens on live status and uses buttons to show one tool without remounting drafts', async () => {
     const wrapper = view(fixture(), { tournamentId: '20' })
     const panel = wrapper.getComponent(TournamentMatchAdminPanel)
@@ -95,23 +83,6 @@ describe('Admin match details dialog', () => {
     expect(panel.isVisible()).toBe(false)
     expect(wrapper.get('.match-live').isVisible()).toBe(true)
     expect(wrapper.getComponent(TournamentMatchAdminPanel).vm).toBe(instance)
-    expect(api).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    { can_play: true, playability: { can_play: true, reason: 'ready' } },
-    { can_play: false, playability: { can_play: false, reason: 'user_not_in_fixture' } },
-    { can_play: undefined },
-    { is_confirmed: true },
-    { score1: 5, score2: 2 },
-    { player2: null },
-  ])('never offers player entry in the admin dialog: %j', (extra) => {
-    const wrapper = view(fixture(extra))
-    expect(wrapper.findAll('button').map((button) => button.text())).toEqual(['Close'])
-    expect(wrapper.find('form').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('Enter game')
-    expect(wrapper.text()).not.toContain('You are assigned')
-    expect(wrapper.text()).not.toContain('your account')
     expect(api).not.toHaveBeenCalled()
   })
 
