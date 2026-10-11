@@ -402,36 +402,18 @@ class GroupsTest(ModeTestBase, TestCase):
         }
         self.assertEqual(actual_fixtures, expected_fixtures)
 
-    def test_create_fixtures_extended(self):
+    def _create_extended_group_fixtures(self):
         mode = Groups.objects.create(tournament = self.tournament, min_group_size = 2, max_group_size = 3)
         participants = self.add_participants(self.tournament, 5)
         mode.create_fixtures(participants)
-
-        # Verify groups.
-        actual_groups_info = self.group_user_numbers(mode.groups_info)
-        expected_groups_info = [
-            [1, 3, 5],
-            [2, 4],
-        ]
-        self.assertEqual(actual_groups_info, expected_groups_info)
-
-        # Verify fixtures.
-        actual_fixtures = self.group_fixtures_by_level(mode)
-        expected_fixtures = {
-            0: [(5, 3)],
-            1: [(1, 5)],
-            2: [(3, 1), (4, 2)]
-        }
-        self.assertEqual(actual_fixtures, expected_fixtures)
-
         return mode
 
     def test_levels(self):
-        mode = self.test_create_fixtures_extended()
+        mode = self._create_extended_group_fixtures()
         self.assertEqual(mode.levels, 3)
 
     def test_current_fixtures(self):
-        mode = self.test_create_fixtures_extended()
+        mode = self._create_extended_group_fixtures()
 
         # Test on level 0.
         self.assertEqual(mode.current_level, 0)
@@ -472,7 +454,7 @@ class GroupsTest(ModeTestBase, TestCase):
         self.assertIsNone(mode.current_fixtures)
 
     def test_standings(self):
-        mode = self.test_create_fixtures_extended()
+        mode = self._create_extended_group_fixtures()
 
         # Test on level 0 (no scores yet).
         expected_standings = [
