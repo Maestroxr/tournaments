@@ -302,7 +302,8 @@ class ModeTestBase:
                 exclude_dict[filter_key[:-4] + '__isnull'] = False
                 del filters[filter_key]
 
-        for fixture in mode.fixtures.filter(**filters).exclude(**exclude_dict).all():
+        # Expected brackets follow creation order; database row order is unspecified.
+        for fixture in mode.fixtures.filter(**filters).exclude(**exclude_dict).order_by('pk'):
             actual_fixtures.setdefault(fixture.level, list())
             actual_fixtures[fixture.level].append(
                 (
