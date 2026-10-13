@@ -313,7 +313,7 @@ def deliver_pending(limit=100, heartbeat=None):
         payload = {
             'title': 'Your match is ready' if english else 'המשחק שלך מוכן',
             'body': f'{name} — open the club to join.' if english else f'{name} — פתח את המועדון כדי להיכנס למשחק.',
-            'url': f'/tournaments/tournaments/{delivery.fixture.mode.tournament_id}',
+            'url': f'/6b/tournaments/tournaments/{delivery.fixture.mode.tournament_id}',
             'tag': f'match-ready:{delivery.fixture_id}',
         }
         try:
@@ -394,7 +394,7 @@ def deliver_pending_table_events(limit=100, heartbeat=None):
         payload = {
             'title': title,
             'body': body,
-            'url': f'/tournaments/my-games?table={table.code}',
+            'url': f'/6b/tournaments/my-games?table={table.code}',
             'tag': tag,
         }
         try:

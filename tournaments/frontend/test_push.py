@@ -212,7 +212,7 @@ class PushTests(TestCase):
         payload = send.call_args.args[1]
         self.assertEqual(payload['tag'], f'table-guest-joined:{table.pk}')
         self.assertEqual(
-            payload['url'], f'/tournaments/my-games?table={table.code}')
+            payload['url'], f'/6b/tournaments/my-games?table={table.code}')
 
     @patch('frontend.push.send_notification')
     def test_host_entered_push_is_queued_once_for_the_guest(self, send):
@@ -229,7 +229,7 @@ class PushTests(TestCase):
         payload = send.call_args.args[1]
         self.assertEqual(payload['tag'], f'table-host-entered:{table.pk}')
         self.assertEqual(
-            payload['url'], f'/tournaments/my-games?table={table.code}')
+            payload['url'], f'/6b/tournaments/my-games?table={table.code}')
 
     def test_table_push_is_discarded_when_the_table_is_cancelled_before_delivery(self):
         table = self.ready_table()

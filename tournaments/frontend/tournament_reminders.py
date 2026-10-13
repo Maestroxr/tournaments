@@ -86,7 +86,7 @@ def deliver_tournament_reminders(limit=100, heartbeat=None):
         payload = {
             'title': text['title'],
             'body': text['body'].format(name=tournament.name, minutes=math.ceil(remaining.total_seconds() / 60)),
-            'url': f'/tournaments/tournaments/{tournament.pk}',
+            'url': f'/6b/tournaments/tournaments/{tournament.pk}',
             'tag': f'tournament-reminder:{tournament.pk}:{delivery.scheduled_start.isoformat()}',
         }
         try:

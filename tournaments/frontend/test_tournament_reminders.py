@@ -72,7 +72,7 @@ class TournamentReminderTests(TransactionTestCase):
         self.assertIn('in 5 minutes', calls['en'].args[1]['body'])
         for call in calls.values():
             self.assertIn(self.tournament.name, call.args[1]['body'])
-            self.assertEqual(call.args[1]['url'], f'/tournaments/tournaments/{self.tournament.pk}')
+            self.assertEqual(call.args[1]['url'], f'/6b/tournaments/tournaments/{self.tournament.pk}')
             self.assertEqual(call.kwargs['ttl'], 300)
 
     def test_waitlisted_and_disqualified_players_are_excluded(self):

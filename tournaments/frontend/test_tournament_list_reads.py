@@ -381,6 +381,37 @@ class TournamentListReadTests(TestCase):
         opened_page = self.client.get('/api/tournaments', {'limit': 5, 'state': 'open'}).json()
         self.assertEqual([row['id'] for row in opened_page['results']], [opened.pk])
 
+    def test_capacity_closed_tournaments_remain_visible_across_pages(self):
+        full = []
+        for _ in range(7):
+            tournament, _, _ = self.make_tournament(active=False)
+            tournament.max_players = len(self.people)
+            tournament.registration_closed_at = self.now
+            tournament.registration_closed_reason = 'capacity'
+            tournament.save(update_fields=[
+                'max_players', 'registration_closed_at', 'registration_closed_reason',
+            ])
+            full.append(tournament)
+        manual, _, _ = self.make_tournament(active=False)
+        manual.registration_closed_at = self.now
+        manual.registration_closed_reason = 'manual'
+        manual.save(update_fields=['registration_closed_at', 'registration_closed_reason'])
+        expected = [item.pk for item in reversed(full)]
+        for state in ('open', 'live'):
+            with self.subTest(state=state):
+                first = self.client.get('/api/tournaments', {'limit': 5, 'state': state}).json()
+                second = self.client.get('/api/tournaments', {
+                    'limit': 5, 'offset': 5, 'state': state,
+                }).json()
+                rows = first['results'] + second['results']
+                self.assertEqual(first['count'], 7)
+                self.assertEqual(first['next_offset'], 5)
+                self.assertIsNone(second['next_offset'])
+                self.assertEqual([row['id'] for row in rows], expected)
+                self.assertNotIn(manual.pk, [row['id'] for row in rows])
+                self.assertTrue(all(not row['registration_open'] for row in rows))
+                self.assertTrue(all(row['participant_count'] == row['capacity'] for row in rows))
+
     def test_page_prize_sort_uses_the_same_half_even_cents_as_cards(self):
         fixed, _, _ = self.make_tournament(active=False)
         fixed.prize_money = Decimal('0.04')

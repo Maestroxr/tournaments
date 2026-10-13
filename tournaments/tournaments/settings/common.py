@@ -220,7 +220,7 @@ GAMELINK_TARGET_POINTS  = 1          # match length, in points; decided (plan §
 
 # Set the canonical public website URL, never construct email links from the Host header.
 ACCOUNT_EMAIL_ACTIONS_ENABLED = False
-ACCOUNT_FRONTEND_URL = os.environ.get('ACCOUNT_FRONTEND_URL', 'http://localhost:5174/tournaments')
+ACCOUNT_FRONTEND_URL = os.environ.get('ACCOUNT_FRONTEND_URL', 'http://localhost:5174/6b/tournaments')
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 PASSWORD_RESET_TIMEOUT = 3600
 EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')

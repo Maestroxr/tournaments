@@ -82,7 +82,7 @@ def deliver_fixture_pushes(limit=100, heartbeat=None):
         payload = {
             'title': 'Your opponent is waiting' if english else 'היריב שלך מחכה לך',
             'body': f'{name} — open your games to join your opponent.' if english else f'{name} — פתח את המשחקים שלך כדי להצטרף ליריב.',
-            'url': '/tournaments/my-games',
+            'url': '/6b/tournaments/my-games',
             'tag': f'tournament-opponent-waiting:{fixture.pk}',
         }
         try:

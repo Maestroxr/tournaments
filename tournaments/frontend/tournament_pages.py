@@ -109,9 +109,16 @@ def tournament_page(qs, request, serialize):
             Q(page_state='finished') | Q(page_has_loss=True),
         )
     if state == 'live':
-        qs = qs.filter(Q(page_state='active') | Q(page_state='open', registration_closed_at__isnull=True))
+        # Reaching capacity closes admission, not public tournament visibility.
+        qs = qs.filter(Q(page_state='active') | (
+            Q(page_state='open') & (
+                Q(registration_closed_at__isnull=True) | Q(registration_closed_reason='capacity')
+            )
+        ))
     elif state == 'open':
-        qs = qs.filter(page_state='open', registration_closed_at__isnull=True)
+        qs = qs.filter(page_state='open').filter(
+            Q(registration_closed_at__isnull=True) | Q(registration_closed_reason='capacity')
+        )
     elif state:
         qs = qs.filter(page_state=state)
     # Options describe the entire selected status/ownership, not just this page.
