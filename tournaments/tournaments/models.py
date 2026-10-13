@@ -186,7 +186,7 @@ class Tournament(models.Model):
 
     @property
     def current_stage(self):
-        for stage in self.stages.all():
+        for stage in self.stages.order_by('pk'):
             if not stage.is_finished:
                 return stage
         return None  # indicates that the tournament is finished
