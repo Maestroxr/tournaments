@@ -14,6 +14,7 @@ from django.views.decorators.http import require_http_methods
 
 from gamelink.models import GameLink, PracticePurchase
 from tournaments.models import HeadToHeadTable
+from .list_pages import page_bounds
 
 logger = logging.getLogger(__name__)
 _unavailable_until = {}
@@ -77,6 +78,11 @@ def read_results(path, params=None, *, payload=None):
 def analysis_results(request, analysis_id=None):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required."}, status=401)
+    if analysis_id is None and request.method == "GET":
+        try:
+            offset, limit = page_bounds(request.GET)
+        except ValueError as exc:
+            return JsonResponse({"detail": str(exc)}, status=400)
     payload = None
     if request.method == "POST":
         try:
@@ -100,8 +106,11 @@ def analysis_results(request, analysis_id=None):
                     return JsonResponse({"detail": "Analysis not found."}, status=404)
                 rooms = {room}
             if not rooms and not request.user.is_staff:
-                return JsonResponse({"matches": []})
+                response = JsonResponse({"matches": [], "count": 0, "next_offset": None})
+                response["Cache-Control"] = "private, no-store"
+                return response
             params = [("staff", "1")] if request.user.is_staff and not room else [("room", room) for room in rooms]
+            params.extend([("limit", limit), ("offset", offset)])
             data = read_results("", params)
             # Defense in depth: never forward an unrelated match to a player.
             if not request.user.is_staff or room:

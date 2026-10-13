@@ -92,7 +92,7 @@ class AnalysisResultsTests(SimpleTestCase):
         response = analysis_results(self.request)
         self.assertEqual(json.loads(response.content)['matches'], [{'id': 'a', 'room_id': 'mine'}])
         self.assertEqual(response['Cache-Control'], 'private, no-store')
-        read.assert_called_once_with('', [('room', 'mine')])
+        read.assert_called_once_with('', [('room', 'mine'), ('limit', 5), ('offset', 0)])
 
     @patch('frontend.analysis_results.allowed_rooms', return_value={'mine'})
     @patch('frontend.analysis_results.read_results', side_effect=TimeoutError)
@@ -102,7 +102,7 @@ class AnalysisResultsTests(SimpleTestCase):
     @patch('frontend.analysis_results.allowed_rooms', return_value=set())
     @patch('frontend.analysis_results.read_results')
     def test_no_rooms_does_not_request_all_matches(self, read, rooms):
-        self.assertEqual(json.loads(analysis_results(self.request).content), {'matches': []})
+        self.assertEqual(json.loads(analysis_results(self.request).content), {'matches': [], 'count': 0, 'next_offset': None})
         read.assert_not_called()
 
     @patch('frontend.analysis_results.allowed_rooms', return_value={'mine', 'another'})
@@ -111,7 +111,7 @@ class AnalysisResultsTests(SimpleTestCase):
         self.request.GET = {'room': 'mine'}
         read.return_value = {'matches': [{'id': 'a', 'room_id': 'mine'}, {'id': 'b', 'room_id': 'another'}]}
         response = analysis_results(self.request)
-        read.assert_called_once_with('', [('room', 'mine')])
+        read.assert_called_once_with('', [('room', 'mine'), ('limit', 5), ('offset', 0)])
         self.assertEqual(json.loads(response.content)['matches'], [{'id': 'a', 'room_id': 'mine'}])
 
     @patch('frontend.analysis_results.allowed_rooms', return_value={'mine'})
@@ -120,3 +120,22 @@ class AnalysisResultsTests(SimpleTestCase):
         self.request.GET = {'room': 'other'}
         self.assertEqual(analysis_results(self.request).status_code, 404)
         read.assert_not_called()
+
+    @patch('frontend.analysis_results.allowed_rooms', return_value={'mine'})
+    @patch('frontend.analysis_results.read_results')
+    def test_page_metadata_and_offset_are_forwarded(self, read, rooms):
+        self.request.GET = {'limit': '5', 'offset': '5'}
+        read.return_value = {'matches': [{'id': 'six', 'room_id': 'mine'}], 'count': 11, 'next_offset': 10}
+        response = analysis_results(self.request)
+        read.assert_called_once_with('', [('room', 'mine'), ('limit', 5), ('offset', 5)])
+        self.assertEqual(json.loads(response.content), read.return_value)
+        self.assertEqual(response['Cache-Control'], 'private, no-store')
+
+    @patch('frontend.analysis_results.allowed_rooms')
+    @patch('frontend.analysis_results.read_results')
+    def test_invalid_pagination_never_calls_provider(self, read, rooms):
+        for params in ({'limit': '200'}, {'offset': '-1'}, {'offset': 'invalid'}):
+            self.request.GET = params
+            self.assertEqual(analysis_results(self.request).status_code, 400)
+        read.assert_not_called()
+        rooms.assert_not_called()
