@@ -13,8 +13,10 @@ from .push_health import admin_push_health
 from .operations import health
 from .admin_matches import admin_match
 from .leaderboard import leaderboard
+from .performance import player_performance
 
 urlpatterns = [
+    path('performance', player_performance, name='api-performance'),
     path('leaderboard', leaderboard, name='api-leaderboard'),
     path('analyses', analysis_results, name='api-analyses'),
     path('analyses/<uuid:analysis_id>', analysis_results, name='api-analysis'),

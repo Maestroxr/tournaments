@@ -9,8 +9,10 @@ from django.urls import path
 
 from . import views
 from .practice import ActivePracticeView, ResumePracticeView, StartPracticeView
+from .player_details import player_details
 
 urlpatterns = [
+    path('api/gamelink/player-details/', player_details, name='gamelink-player-details'),
     path('api/practice/', StartPracticeView.as_view(), name='practice-api'),
     path('api/practice/active/', ActivePracticeView.as_view(),
          name='practice-active'),
