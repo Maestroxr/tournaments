@@ -371,7 +371,7 @@ class ModeTest(ModeTestBase, TestCase):
         p1, p2 = mode1.participants[:2]
 
         # Set p1 and p2 for the finals and let p1 win.
-        final = mode1.fixtures.all()[0]
+        final = mode1.fixtures.get(level=mode1.levels - 1)
         final.player1 = p1
         final.player2 = p2
         self.confirm_fixture(final, 1, 0)
