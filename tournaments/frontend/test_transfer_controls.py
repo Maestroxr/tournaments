@@ -1,4 +1,5 @@
 from decimal import Decimal
+from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -21,7 +22,7 @@ class TransferControlsTests(TestCase):
                 response = self.client.post(url, {'action': 'deposit', 'amount': '10', 'note': note}, content_type='application/json')
                 self.assertEqual(response.status_code, 400)
         self.assertFalse(WalletTransaction.objects.exists())
-        response = self.client.post(url, {'action': 'deposit', 'amount': '10', 'note': '  Verified correction  '}, content_type='application/json')
+        response = self.client.post(url, {'action': 'deposit', 'amount': '10', 'note': '  Verified correction  ', 'operation_id': str(uuid4())}, content_type='application/json')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(WalletTransaction.objects.get().note, 'Verified correction')
         self.assertEqual(WalletTransaction.balance_for_user(self.alice), Decimal('10'))

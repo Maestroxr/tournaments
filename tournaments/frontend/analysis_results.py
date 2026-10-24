@@ -3,6 +3,7 @@ import json
 import os
 import logging
 import time
+import uuid
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -11,6 +12,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
+from django.utils.crypto import salted_hmac
 
 from gamelink.models import GameLink, PracticePurchase
 from tournaments.models import HeadToHeadTable
@@ -18,6 +20,8 @@ from .list_pages import page_bounds
 
 logger = logging.getLogger(__name__)
 _unavailable_until = {}
+DIRECT_ROOM_LIMIT = 32
+SCOPE_CHUNK_SIZE = 128
 
 
 class AnalysisUnavailable(ValueError):
@@ -45,7 +49,7 @@ def allowed_rooms(user):
     return rooms
 
 
-def read_results(path, params=None, *, payload=None):
+def read_results(path, params=None, *, payload=None, headers=None, method=None):
     token = getattr(settings, "ANALYSIS_API_TOKEN", "") or os.environ.get("ANALYSIS_API_TOKEN", "")
     base = getattr(settings, "ANALYSIS_SERVICE_URL", "") or os.environ.get("ANALYSIS_SERVICE_URL", "http://127.0.0.1:8002")
     if not token:
@@ -58,9 +62,11 @@ def read_results(path, params=None, *, payload=None):
     body = json.dumps(payload).encode() if payload is not None else None
     started = time.monotonic()
     try:
-        with urlopen(Request(url, data=body, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}),
+        request_headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        request_headers.update(headers or {})
+        with urlopen(Request(url, data=body, headers=request_headers, method=method),
                      timeout=getattr(settings, 'ANALYSIS_READ_TIMEOUT_SECONDS', 3)) as response:
-            result = json.load(response)
+            result = {} if getattr(response, "status", None) == 204 else json.load(response)
         _unavailable_until.pop(base, None)
         return result
     except HTTPError as exc:
@@ -74,6 +80,37 @@ def read_results(path, params=None, *, payload=None):
         raise
 
 
+def scoped_results(request, rooms, *, limit, offset):
+    """Upload a fresh ACL snapshot in bounded messages, then query one page.
+
+    The binding includes this session, user and request. Scope IDs never cross
+    the browser boundary or survive an authorization refresh. Initial upload
+    still visits the room history; no single request grows with that history.
+    """
+    session_key = getattr(getattr(request, "session", None), "session_key", "") or ""
+    principal = getattr(request.user, "pk", "")
+    binding = salted_hmac(
+        "analysis-result-scope", f"{principal}:{session_key}:{uuid.uuid4()}",
+        algorithm="sha256",
+    ).hexdigest()
+    headers = {"X-Analysis-Scope-Binding": binding}
+    scope_id = None
+    try:
+        created = read_results("scopes/", payload={"room_count": len(rooms)}, headers=headers)
+        scope_id = str(uuid.UUID(created["id"]))
+        path = f"scopes/{scope_id}/"
+        room_list = sorted(rooms)
+        for start in range(0, len(room_list), SCOPE_CHUNK_SIZE):
+            read_results(path, payload={"offset": start, "rooms": room_list[start:start + SCOPE_CHUNK_SIZE]}, headers=headers)
+        read_results(path, payload={"finalize": True}, headers=headers)
+        return read_results("", [("scope", scope_id), ("limit", limit), ("offset", offset)], headers=headers)
+    finally:
+        if scope_id:
+            try:
+                read_results(f"scopes/{scope_id}/", headers=headers, method="DELETE")
+            except (AnalysisUnavailable, HTTPError, URLError, TimeoutError, OSError, ValueError):
+                # An interrupted request is cleaned up by server-side expiry.
+                logger.warning("event=analysis_scope_cleanup_deferred")
 @require_http_methods(["GET", "POST"])
 def analysis_results(request, analysis_id=None):
     if not request.user.is_authenticated:
@@ -109,9 +146,12 @@ def analysis_results(request, analysis_id=None):
                 response = JsonResponse({"matches": [], "count": 0, "next_offset": None})
                 response["Cache-Control"] = "private, no-store"
                 return response
-            params = [("staff", "1")] if request.user.is_staff and not room else [("room", room) for room in rooms]
-            params.extend([("limit", limit), ("offset", offset)])
-            data = read_results("", params)
+            if len(rooms) > DIRECT_ROOM_LIMIT and not (request.user.is_staff and not room):
+                data = scoped_results(request, rooms, limit=limit, offset=offset)
+            else:
+                params = [("staff", "1")] if request.user.is_staff and not room else [("room", room) for room in rooms]
+                params.extend([("limit", limit), ("offset", offset)])
+                data = read_results("", params)
             # Defense in depth: never forward an unrelated match to a player.
             if not request.user.is_staff or room:
                 data["matches"] = [m for m in data["matches"] if m.get("room_id") in rooms]
@@ -121,7 +161,7 @@ def analysis_results(request, analysis_id=None):
         if exc.code == 409:
             return JsonResponse({"detail": "Analysis is already queued or processing."}, status=409)
         return JsonResponse({'detail': 'Analysis not found.'}, status=404) if exc.code == 404 else unavailable_response()
-    except (URLError, TimeoutError, ValueError, OSError):
+    except (URLError, TimeoutError, ValueError, OSError, KeyError, TypeError):
         return unavailable_response()
     response = JsonResponse(data, status=202 if payload is not None else 200)
     response["Cache-Control"] = "private, no-store"

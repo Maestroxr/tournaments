@@ -1210,6 +1210,9 @@ OPEN_LINK_STATUSES = ('pending', 'playing')
 # can hold. A score outside it is a malformed message rather than a disagreement about a fixture,
 # which is why it is caught here as a 400 and not later as a 409.
 MAX_SCORE = 32767
+# Direct money games do not write Fixture's small-integer scores. Their existing dynamic cube
+# contract can award up to a backgammon at cube 2^20; table settlement still checks its funded cap.
+MAX_MONEY_SCORE = 3 * (1 << 20)
 
 _TIMESTAMP_PATTERN = re.compile(r'\A[0-9]{1,20}\Z')
 _NONCE_PATTERN = re.compile(r'\A[A-Za-z0-9._:-]{1,64}\Z')
@@ -1711,8 +1714,12 @@ def _validate_result(body):
         score = body.get('score')
         if not isinstance(score, dict):
             return 'score is missing'
+        financial = body.get('financial_result')
+        direct_money = (body['tournament_id'] == 0 and body['fixture_id'] < 0
+                        and isinstance(financial, dict) and financial.get('format') == 'money')
+        max_score = MAX_MONEY_SCORE if direct_money else MAX_SCORE
         for seat in SEATS:
-            if not _is_integer(score.get(seat)) or not 0 <= score[seat] <= MAX_SCORE:
+            if not _is_integer(score.get(seat)) or not 0 <= score[seat] <= max_score:
                 return f'score.{seat} is missing or not a usable score'
 
     return None

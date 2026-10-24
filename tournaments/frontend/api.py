@@ -6,6 +6,7 @@ import secrets
 import string
 from datetime import datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+from uuid import UUID
 from zoneinfo import ZoneInfo
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
@@ -30,6 +31,12 @@ from .tournament_pages import tournament_page
 from .head_to_head_pages import table_page, table_queries
 from .list_pages import page_bounds, queryset_page
 from .lobby_revisions import versioned_read
+from .registrations import (
+    RegistrationClosed,
+    ensure_registration as _ensure_registration,
+    refund_registration as _refund_registration,
+    withdraw_registration,
+)
 from .forms import (
     SignupForm,
     AdminUserCreateForm,
@@ -477,34 +484,6 @@ def _registration_summary(tournament, *, read_snapshot=None):
     }
 
 
-def _ensure_registration(tournament, participant, *, status=None, payment_status=None):
-    defaults = {
-        'status': status or models.TournamentRegistration.STATUS_REGISTERED,
-        'payment_status': payment_status or (
-            models.TournamentRegistration.PAYMENT_PAID
-            if tournament.entry_fee <= 0 or participant.user_id
-            else models.TournamentRegistration.PAYMENT_UNPAID
-        ),
-    }
-    registration, created = models.TournamentRegistration.objects.get_or_create(
-        tournament=tournament,
-        participant=participant,
-        defaults=defaults,
-    )
-    if not created:
-        changed = []
-        if status is not None and registration.status != status:
-            registration.status = status
-            changed.append('status')
-        if payment_status is not None and registration.payment_status != payment_status:
-            registration.payment_status = payment_status
-            changed.append('payment_status')
-        if changed:
-            changed.append('updated_at')
-            registration.save(update_fields=changed)
-    return registration
-
-
 def _charge_registration(tournament, registration, actor):
     participant = registration.participant
     if tournament.entry_fee <= 0:
@@ -527,22 +506,6 @@ def _charge_registration(tournament, registration, actor):
         note=f"Entry fee for {tournament.name}",
     )
     registration.payment_status = models.TournamentRegistration.PAYMENT_PAID
-
-
-def _refund_registration(tournament, registration, actor):
-    participant = registration.participant
-    if (
-        tournament.entry_fee > 0
-        and participant.user_id is not None
-        and registration.payment_status == models.TournamentRegistration.PAYMENT_PAID
-    ):
-        models.WalletTransaction.refund_entry_fees(
-            user=participant.user,
-            tournament=tournament,
-            actor=actor,
-            note=f"Refund for {tournament.name}",
-        )
-        registration.payment_status = models.TournamentRegistration.PAYMENT_REFUNDED
 
 
 def _refund_tournament_roster(tournament, actor):
@@ -807,41 +770,10 @@ def api_join(request, pk):
 def api_withdraw(request, pk):
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required"}, status=401)
-    participant = models.Participant.objects.filter(user=request.user).first()
-    with transaction.atomic():
-        t = get_object_or_404(
-            models.Tournament.objects.select_for_update(), pk=pk)
-        if not t.published or models.Fixture.objects.filter(mode__tournament=t).exists():
-            return JsonResponse({"detail": "Registration is closed"}, status=412)
-        participation = t.participations.filter(
-            participant=participant).first() if participant else None
-        registration = t.registrations.select_for_update().filter(
-            participant=participant).first() if participant else None
-        if participation or registration:
-            if registration is None:
-                registration = _ensure_registration(t, participant)
-            if participation and (
-                t.registration_closed_at is not None
-                and t.registration_closed_reason != 'capacity'
-            ):
-                return JsonResponse({"detail": "Registration is closed"}, status=412)
-            if participation:
-                _refund_registration(t, registration, request.user)
-                participation.delete()
-            registration.status = models.TournamentRegistration.STATUS_WITHDRAWN
-            registration.checked_in_at = None
-            registration.withdrawn_at = timezone.now()
-            registration.save(update_fields=[
-                'status', 'payment_status', 'checked_in_at', 'withdrawn_at', 'updated_at',
-            ])
-            if t.registration_closed_reason == 'capacity':
-                t.registration_closed_at = None
-                t.registration_closed_reason = ''
-                t.clear_draw()
-                t.save(update_fields=[
-                    'registration_closed_at', 'registration_closed_reason', 'draw_order',
-                    'draw_generated_at', 'draw_confirmed_at',
-                ])
+    try:
+        t = withdraw_registration(tournament_id=pk, user=request.user)
+    except RegistrationClosed:
+        return JsonResponse({"detail": "Registration is closed"}, status=412)
     return JsonResponse(_serialize_tournament(t, request))
 
 
@@ -2961,6 +2893,10 @@ def api_admin_user_wallet(request, pk):
         return JsonResponse({"detail": "Invalid JSON"}, status=400)
     if not isinstance(data, dict):
         return JsonResponse({"detail": "Expected an object"}, status=400)
+    try:
+        operation_id = UUID(str(data.get('operation_id', '')))
+    except ValueError:
+        return JsonResponse({"errors": {"operation_id": ["A UUID operation_id is required."]}}, status=400)
     note = data.get("note")
     if not isinstance(note, str) or not note.strip() or len(note.strip()) > 255:
         return JsonResponse({"errors": {"note": ["A note of 1–255 characters is required."]}}, status=400)
@@ -2969,6 +2905,8 @@ def api_admin_user_wallet(request, pk):
     except ValueError as error:
         return JsonResponse({"detail": str(error)}, status=400)
     action = data.get("action")
+    if not Decimal('0.00') < amount <= Decimal('99999999.99'):
+        return JsonResponse({"detail": "amount must be between 0.01 and 99999999.99."}, status=400)
     if action == "withdraw":
         amount = -amount
         kind = models.WalletTransaction.KIND_WITHDRAWAL
@@ -2977,18 +2915,37 @@ def api_admin_user_wallet(request, pk):
     else:
         return JsonResponse({"detail": "action must be deposit or withdraw"}, status=400)
     try:
-        models.WalletTransaction.create_entry(
-            user=u,
-            amount=amount,
-            kind=kind,
-            actor=request.user,
-            note=note.strip(),
-        )
-    except Exception as error:
-        return JsonResponse({"detail": str(error)}, status=400)
-    detail = _serialize_user(u)
-    detail["transactions"] = [
-        _serialize_wallet_transaction(item)
-        for item in u.wallet_transactions.select_related("user", "actor", "tournament")[:50]
-    ]
+        with transaction.atomic():
+            # Serialize operations on this wallet before checking the receipt.
+            # The UUID primary key also rejects cross-wallet operation reuse.
+            u = User.objects.select_for_update().get(pk=u.pk)
+            receipt = models.AdminWalletAdjustment.objects.filter(pk=operation_id).first()
+            if receipt:
+                if (
+                    receipt.actor_id != request.user.pk or receipt.user_id != u.pk
+                    or receipt.action != action or receipt.amount != abs(amount)
+                    or receipt.note != note.strip()
+                ):
+                    return JsonResponse({"detail": "operation_id was already used for a different adjustment."}, status=409)
+                return JsonResponse(receipt.response)
+            entry = models.WalletTransaction.create_entry(
+                user=u, amount=amount, kind=kind, actor=request.user, note=note.strip(),
+            )
+            detail = _serialize_user(u)
+            detail["transactions"] = [
+                _serialize_wallet_transaction(item)
+                for item in u.wallet_transactions.select_related("user", "actor", "tournament")[:50]
+            ]
+            detail['operation_id'] = str(operation_id)
+            models.AdminWalletAdjustment.objects.create(
+                operation_id=operation_id, user=u, actor=request.user,
+                action=action, amount=abs(amount), note=note.strip(),
+                transaction=entry, response=detail,
+            )
+    except IntegrityError:
+        if not models.AdminWalletAdjustment.objects.filter(pk=operation_id).exists():
+            raise
+        return JsonResponse({"detail": "operation_id was already used for a different adjustment."}, status=409)
+    except ValidationError as error:
+        return JsonResponse({"detail": "; ".join(error.messages)}, status=400)
     return JsonResponse(detail)

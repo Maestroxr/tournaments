@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AutoComplete, { type AutoCompleteCompleteEvent } from 'primevue/autocomplete'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
@@ -7,6 +7,7 @@ import InputText from 'primevue/inputtext'
 import AppAlert from '@/components/AppAlert.vue'
 import { useI18n } from '@/i18n'
 import { apiFetch, formatApiError } from '@/services/api'
+import { useWalletAdjustmentOperation } from '@/composables/useWalletAdjustmentOperation'
 
 interface WalletUser {
   id: number
@@ -39,6 +40,13 @@ const submitting = ref(false)
 const error = ref('')
 const success = ref('')
 let searchSequence = 0
+const operation = useWalletAdjustmentOperation()
+
+watch(() => props.user, (user) => {
+  selectedUser.value = user
+  error.value = ''
+  success.value = ''
+})
 
 const hasValidAmount = computed(() => {
   const value = Number(amount.value)
@@ -66,6 +74,7 @@ async function searchUsers(event: AutoCompleteCompleteEvent) {
 }
 
 async function adjust(action: 'deposit' | 'withdraw') {
+  if (submitting.value) return
   error.value = ''
   success.value = ''
   const walletUser = chosenUser.value
@@ -84,10 +93,15 @@ async function adjust(action: 'deposit' | 'withdraw') {
 
   submitting.value = true
   try {
+    const operationId = operation.operationId({
+      userId: walletUser.id, action, amount: Number(amount.value), note: note.value.trim(),
+    })
     const user = await apiFetch<WalletResponse>(`/api/admin/users/${walletUser.id}/wallet`, {
       method: 'POST',
-      body: JSON.stringify({ action, amount: amount.value, note: note.value.trim() }),
+      body: JSON.stringify({ action, amount: amount.value, note: note.value.trim(), operation_id: operationId }),
     })
+    operation.complete(operationId)
+    if (chosenUser.value?.id !== walletUser.id) return
     selectedUser.value = { ...walletUser, balance: user.balance }
     amount.value = null
     note.value = ''
@@ -143,6 +157,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
             option-label="username"
             :placeholder="t('transfers.searchUser')"
             :loading="searching"
+            :disabled="submitting"
             force-selection
             dropdown
             fluid
@@ -171,6 +186,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
           <InputNumber
             v-model="amount"
             :min="0.01"
+            :disabled="submitting"
             :min-fraction-digits="2"
             :max-fraction-digits="2"
             :placeholder="t('common.amount')"
@@ -184,6 +200,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
           }} *</span>
           <InputText
             v-model="note"
+            :disabled="submitting"
             :placeholder="t('transfers.notePlaceholder')"
             class="w-full"
             maxlength="255"
@@ -208,7 +225,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
             :label="t('users.deposit')"
             icon="bi bi-plus-lg"
             severity="success"
-            :disabled="!chosenUser || !hasValidAmount"
+            :disabled="submitting || !chosenUser || !hasValidAmount"
             :loading="submitting"
             @click="adjust('deposit')"
           />
@@ -219,7 +236,7 @@ async function adjust(action: 'deposit' | 'withdraw') {
             icon="bi bi-dash-lg"
             severity="danger"
             outlined
-            :disabled="!chosenUser || !hasValidAmount"
+            :disabled="submitting || !chosenUser || !hasValidAmount"
             :loading="submitting"
             @click="adjust('withdraw')"
           />

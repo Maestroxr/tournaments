@@ -129,7 +129,9 @@ async function selectUser(wrapper: ReturnType<typeof mountPanel>) {
 
 describe('WalletAdjustmentPanel', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     vi.clearAllMocks()
+    vi.spyOn(crypto, 'randomUUID').mockReturnValue('b09f9d21-1948-44f0-84a1-4556b11f596e')
   })
 
   it('searches for a user and requires a returned selection', async () => {
@@ -174,7 +176,7 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => {
       expect(apiFetchMock).toHaveBeenLastCalledWith('/api/admin/users/7/wallet', {
         method: 'POST',
-        body: JSON.stringify({ action: 'deposit', amount: 25, note: 'Manual correction' }),
+        body: JSON.stringify({ action: 'deposit', amount: 25, note: 'Manual correction', operation_id: 'b09f9d21-1948-44f0-84a1-4556b11f596e' }),
       })
     })
     expect(wrapper.emitted('adjusted')).toEqual([[{ userId: 7, action: 'deposit' }]])
@@ -201,7 +203,7 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => {
       expect(apiFetchMock).toHaveBeenLastCalledWith('/api/admin/users/9/wallet', {
         method: 'POST',
-        body: JSON.stringify({ action: 'withdraw', amount: 10, note: 'Withdrawal request' }),
+        body: JSON.stringify({ action: 'withdraw', amount: 10, note: 'Withdrawal request', operation_id: 'b09f9d21-1948-44f0-84a1-4556b11f596e' }),
       })
     })
   })
@@ -232,7 +234,7 @@ describe('WalletAdjustmentPanel', () => {
     await vi.waitFor(() => {
       expect(apiFetchMock).toHaveBeenCalledWith('/api/admin/users/12/wallet', {
         method: 'POST',
-        body: JSON.stringify({ action: 'deposit', amount: 25, note: 'Opening deposit' }),
+        body: JSON.stringify({ action: 'deposit', amount: 25, note: 'Opening deposit', operation_id: 'b09f9d21-1948-44f0-84a1-4556b11f596e' }),
       })
     })
   })
@@ -243,5 +245,29 @@ describe('WalletAdjustmentPanel', () => {
     await wrapper.findAll('button').find(button => button.text() === 'Deposit')!.trigger('click')
     expect(apiFetchMock).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('Enter a reason for this adjustment.')
+  })
+
+  it('reuses the operation after a lost response and creates a new one after success', async () => {
+    const user = { id: 12, username: 'dana', phone_number: '', balance: '25.00' }
+    vi.mocked(crypto.randomUUID)
+      .mockReturnValueOnce('b09f9d21-1948-44f0-84a1-4556b11f596e')
+      .mockReturnValueOnce('fd841b1b-6d2c-4c68-943a-702ed128f08a')
+    apiFetchMock.mockRejectedValueOnce(new TypeError('Response lost'))
+      .mockResolvedValueOnce(user).mockResolvedValueOnce(user)
+    const wrapper = mountPanel({ user })
+    const deposit = () => wrapper.findAll('button').find(button => button.text() === 'Deposit')!
+    await wrapper.get('[data-test="amount"]').setValue('25')
+    await wrapper.get('[data-test="note"]').setValue('Verified correction')
+    await deposit().trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Response lost'))
+    await deposit().trigger('click')
+    await vi.waitFor(() => expect(wrapper.emitted('adjusted')).toHaveLength(1))
+    expect(apiFetchMock.mock.calls[0]?.[1]?.body).toBe(apiFetchMock.mock.calls[1]?.[1]?.body)
+    await wrapper.get('[data-test="amount"]').setValue('25')
+    await wrapper.get('[data-test="note"]').setValue('Verified correction')
+    await deposit().trigger('click')
+    await vi.waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(3))
+    expect(JSON.parse(String(apiFetchMock.mock.calls[2]?.[1]?.body)).operation_id)
+      .toBe('fd841b1b-6d2c-4c68-943a-702ed128f08a')
   })
 })

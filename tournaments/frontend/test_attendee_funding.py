@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from uuid import uuid4
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -43,7 +44,7 @@ class AttendeeFundingTests(TestCase):
 
     def test_top_up_then_register_charges_once_and_keeps_registration_open(self):
         response = self.client.post(reverse('api-admin-user-wallet', kwargs={'pk': self.player.pk}),
-                                    {'action': 'deposit', 'amount': '30.00', 'note': 'Tournament top-up'}, content_type='application/json')
+                                    {'action': 'deposit', 'amount': '30.00', 'note': 'Tournament top-up', 'operation_id': str(uuid4())}, content_type='application/json')
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(Decimal(response.json()['balance']), Decimal('50.00'))
         self.assertEqual(self.tournament.participations.count(), 0)

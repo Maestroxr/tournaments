@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import reverse
-from django.utils.safestring import mark_safe
+from django.utils.html import format_html
 
 from . import models
 
@@ -83,7 +83,7 @@ class FixtureAdmin(admin.ModelAdmin):
 
     def tournament(self, fixture):
         url = reverse('admin:tournaments_tournament_change', args=(fixture.mode.tournament.pk,))
-        return mark_safe(f'<a href="{ url }">{ fixture.mode.tournament.name }</a>')
+        return format_html('<a href="{}">{}</a>', url, fixture.mode.tournament.name)
 
     def score(self, fixture):
         return f'{fixture.score[0]}:{fixture.score[1]}' if fixture.score else '-'

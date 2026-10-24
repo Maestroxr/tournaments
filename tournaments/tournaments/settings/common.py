@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 
 import os
 from pathlib import Path
+from tournaments.settings.database import local_postgresql_database, postgresql_database
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -142,13 +143,9 @@ else:
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'tournaments.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {'timeout': 20},
-    }
-}
+# Profiles validate credentials after loading their own configuration. Importing
+# common must not require the development-only private file before it is loaded.
+DATABASES = {'default': postgresql_database(os.environ)}
 
 
 # Password validation

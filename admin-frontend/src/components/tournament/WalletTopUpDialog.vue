@@ -7,6 +7,7 @@ import InputText from 'primevue/inputtext'
 import AppAlert from '@/components/AppAlert.vue'
 import { apiFetch, ApiError, formatApiError } from '@/services/api'
 import { useI18n } from '@/i18n'
+import { useWalletAdjustmentOperation } from '@/composables/useWalletAdjustmentOperation'
 
 const props = defineProps<{ user: { id: number; username: string; balance?: string | null }; entryFee: number }>()
 const emit = defineEmits<{ close: []; saved: [balance: string] }>()
@@ -20,16 +21,22 @@ const note = ref('')
 const saving = ref(false)
 const uncertain = ref(false)
 const error = ref('')
+const operation = useWalletAdjustmentOperation()
 const valid = computed(() => amount.value !== null && Number.isFinite(amount.value) && Math.round(amount.value * 100) >= requiredCents && amount.value <= 99999999.99)
 function money(value: number) { return value.toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-US', { maximumFractionDigits: 2 }) }
 async function save() {
-  if (!valid.value || saving.value || uncertain.value) return
+  if (!valid.value || saving.value) return
   saving.value = true
   error.value = ''
   try {
-    const data = await apiFetch<{ balance: string }>(`/api/admin/users/${props.user.id}/wallet`, {
-      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: amount.value, note: note.value.trim() }),
+    const operationId = operation.operationId({
+      userId: props.user.id, action: 'deposit', amount: Number(amount.value), note: note.value.trim(),
     })
+    const data = await apiFetch<{ balance: string }>(`/api/admin/users/${props.user.id}/wallet`, {
+      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: amount.value, note: note.value.trim(), operation_id: operationId }),
+    })
+    operation.complete(operationId)
+    uncertain.value = false
     emit('saved', data.balance)
   } catch (caught: unknown) {
     uncertain.value = !(caught instanceof ApiError) || caught.status >= 500
@@ -50,7 +57,7 @@ function close() { if (!saving.value) emit('close') }
       <p v-if="valid" class="text-sm text-emerald-700">{{ t('attendees.balanceAfter', { amount: money((Math.round(Number(user.balance ?? 0) * 100) + Math.round(Number(amount) * 100)) / 100) }) }}</p>
       <div class="flex justify-end gap-2">
         <Button type="button" :label="t('common.cancel')" severity="secondary" outlined :disabled="saving" @click="close" />
-        <Button type="submit" :label="t('attendees.confirmTopUp')" severity="success" :loading="saving" :disabled="!valid || uncertain" />
+        <Button type="submit" :label="uncertain ? t('common.retry') : t('attendees.confirmTopUp')" severity="success" :loading="saving" :disabled="!valid" />
       </div>
     </form>
   </Dialog>

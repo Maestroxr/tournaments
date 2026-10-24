@@ -2,6 +2,8 @@ import os
 
 from tournaments.settings.common import *
 
+DATABASES = {'default': postgresql_database(os.environ, required=True, require_host=True)}
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.environ['SECRET_KEY']
 

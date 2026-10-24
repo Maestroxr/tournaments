@@ -1050,6 +1050,28 @@ class WalletTransaction(models.Model):
         )
 
 
+class AdminWalletAdjustment(models.Model):
+    """Durable receipt committed together with one manual wallet adjustment."""
+
+    operation_id = models.UUIDField(primary_key=True, editable=False)
+    actor = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='admin_wallet_adjustments_created')
+    user = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name='admin_wallet_adjustments')
+    action = models.CharField(max_length=8, choices=[('deposit', 'Deposit'), ('withdraw', 'Withdraw')])
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    note = models.CharField(max_length=255)
+    transaction = models.OneToOneField(
+        WalletTransaction, on_delete=models.PROTECT, related_name='admin_adjustment')
+    response = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name='admin_wallet_adjustment_amount_positive'),
+        ]
+
+
 def parse_participants_str_list(participants_str_list):
     participants = [parse_placements_str(
         participants_str) for participants_str in participants_str_list]

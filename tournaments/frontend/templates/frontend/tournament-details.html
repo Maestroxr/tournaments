@@ -161,7 +161,10 @@
     
                 {% if tournament|is_joined_by:user %}
     
-                    <a class="btn btn-success {{ button_classes }}" href="{% url 'withdraw-tournament' pk=tournament.id %}" role="button"><i class="bi bi-check-lg"></i> Joined</a>
+                    <form method="post" action="{% url 'withdraw-tournament' pk=tournament.id %}">
+                        {% csrf_token %}
+                        <button class="btn btn-success {{ button_classes }}" type="submit"><i class="bi bi-check-lg"></i> Joined</button>
+                    </form>
     
                 {% elif user.id %}
     

@@ -652,7 +652,8 @@ def settle(table, body):
             dynamic_max_cube = (table.settlement or {}).get('dynamic_max_cube')
             if dynamic_max_cube is None:
                 dynamic_max_cube = table.rules_snapshot.get('max_cube', 64)
-            if type(cube) is not int or cube not in (1, 2, 4, 8, 16, 32, 64) or cube > dynamic_max_cube:
+            if (type(cube) is not int or not 1 <= cube <= (1 << 20)
+                    or cube & (cube - 1) or cube > dynamic_max_cube):
                 raise ValidationError('Invalid final cube.')
             if not table.doubling_enabled and cube != 1:
                 raise ValidationError('Doubling is disabled for this table.')

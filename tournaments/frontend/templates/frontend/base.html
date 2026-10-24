@@ -48,9 +48,9 @@
             <ol class="breadcrumb">
             {% for item in breadcrumb %}
                 {% if forloop.last %}
-                    <li class="breadcrumb-item active" aria-current="page">{{ item | safe }}</li>
+                    <li class="breadcrumb-item active" aria-current="page">{{ item.label }}</li>
                 {% else %}
-                    <li class="breadcrumb-item">{{ item | safe }}</li>
+                    <li class="breadcrumb-item"><a href="{{ item.url }}">{{ item.label }}</a></li>
                 {% endif %}
             {% endfor %}
             </ol>

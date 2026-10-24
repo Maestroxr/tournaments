@@ -1208,7 +1208,7 @@ export const messages = {
       confirmTopUp: 'Add balance and continue',
       topUpSaved: 'Balance added for {name}. Review and confirm the tournament registration.',
       topUpUncertain:
-        'The balance update could not be confirmed. Close this window and refresh the balance before trying again, to avoid a duplicate credit.',
+        'The balance update could not be confirmed. Try again to confirm the same adjustment; it will not add a second credit.',
       manage: 'Manage attendees',
       subtitle: 'Registration list and eligible users.',
       backToTournament: 'Back to tournament',
@@ -2484,7 +2484,7 @@ export const messages = {
       confirmTopUp: 'הוספת יתרה והמשך',
       topUpSaved: 'נוספה יתרה לשחקן {name}. כעת יש לבדוק ולאשר את ההוספה לטורניר.',
       topUpUncertain:
-        'לא התקבל אישור לעדכון היתרה. יש לסגור את החלון ולרענן את היתרה לפני ניסיון נוסף, כדי למנוע זיכוי כפול.',
+        'לא התקבל אישור לעדכון היתרה. אפשר לנסות שוב כדי לאשר את אותה פעולה; לא ייווצר זיכוי נוסף.',
       manage: 'ניהול משתתפים',
       subtitle: 'רשימת הרשמה ומשתמשים מתאימים.',
       backToTournament: 'חזרה לטורניר',

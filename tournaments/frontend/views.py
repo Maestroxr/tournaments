@@ -16,6 +16,7 @@ from tournaments import models
 
 from .forms import CreateTournamentForm, SignupForm, UpdateTournamentForm, AdminUserCreateForm, AdminUserUpdateForm
 from .git import get_head_info
+from .registrations import RegistrationClosed, withdraw_registration
 
 from django.contrib.auth.models import User
 
@@ -34,7 +35,7 @@ class IsCreatorMixin(LoginRequiredMixin, UserPassesTestMixin):
 
 
 def create_breadcrumb(items):
-    return [(f'<a href="{item["url"]}">{item["label"]}</a>' if item_idx + 1 < len(items) else item['label']) for item_idx, item in enumerate(items)]
+    return items
 
 
 class VersionInfoMixin:
@@ -315,27 +316,11 @@ class WithdrawTournamentView(LoginRequiredMixin, SingleObjectMixin, View):
     def _redirect_back(self):
         return redirect(self.request.META.get('HTTP_REFERER') or reverse('update-tournament', kwargs={'pk': self.object.id}))
 
-    def get(self, request, *args, **kwargs):
-        self.object = self.get_object()
-
-        # Check whether the tournament is in "open" state.
-        if self.object.state != 'open':
+    def post(self, request, *args, **kwargs):
+        try:
+            self.object = withdraw_registration(tournament_id=kwargs['pk'], user=request.user)
+        except RegistrationClosed:
             return HttpResponse(status=412)
-
-        # Delete the participation only if it exists.
-        participation = self.object.participations.filter(participant__user=request.user).first()
-        if participation:
-            with transaction.atomic():
-                participation.delete()
-                if self.object.entry_fee > 0:
-                    models.WalletTransaction.create_entry(
-                        user=request.user,
-                        amount=self.object.entry_fee,
-                        kind=models.WalletTransaction.KIND_TOURNAMENT_REFUND,
-                        tournament=self.object,
-                        actor=request.user,
-                        note=f"Refund for {self.object.name}",
-                    )
 
         request.session['alert'] = dict(
             status='success', text='You have withdrawn from the tournament.')

@@ -4,12 +4,16 @@ from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest import TestCase
+from unittest import TestCase, skipUnless
 
 from django.conf import settings
 from tournaments.db.backends.sqlite3.base import DatabaseWrapper
 
 
+@skipUnless(
+    settings.DATABASES['default']['ENGINE'].endswith('.sqlite3'),
+    'Legacy SQLite backend is inactive; the supported runtime is PostgreSQL.',
+)
 class SQLiteConcurrencyTests(TestCase):
     def test_waiting_writer_reads_the_committed_value(self):
         with TemporaryDirectory() as folder:

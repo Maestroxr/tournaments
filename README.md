@@ -33,9 +33,19 @@ The exact routes, models and pending migrations in the checked-out code determin
 
 ## Local PostgreSQL (empty database)
 
-PostgreSQL is opt-in for `tournaments.settings.development` only. The setup creates
-a separate database and login and applies Django migrations. It does not import
-or delete SQLite data. `--isolated` uses installed PostgreSQL binaries to create
+PostgreSQL is required for development and server profiles. The existing
+`.env.postgresql.local` and `TOURNAMENTS_PG_*` variables remain supported without
+changing the selected database, login, port or data. Fresh native setups can use
+`DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST` and `DB_PORT` in `.env` instead;
+development requires a loopback host. If any legacy `TOURNAMENTS_PG_*` connection
+variables are present, that complete profile takes precedence over `DB_*`.
+Docker and production require the `DB_*` credentials and host explicitly.
+`DATABASE_URL` does not configure this service; a non-PostgreSQL URL is rejected
+to prevent silently retaining an obsolete SQLite configuration.
+
+The optional setup tool creates a separate PostgreSQL database and login and
+applies Django migrations. It does not import or delete legacy database data.
+`--isolated` uses installed PostgreSQL binaries to create
 a project-owned server on `127.0.0.1:55432`, independent of the Windows service.
 
 From this repository in PowerShell:
@@ -82,10 +92,11 @@ comes from the private environment configuration. No system checks are silenced 
 
 Use `--port`, `--admin-user`, `--database` and `--role` for a different local
 installation. Re-running with the same configuration only applies migrations;
-existing unrecognized databases/roles are never overwritten. To return to SQLite,
-set `TOURNAMENTS_LOCAL_DATABASE=sqlite` in the private configuration and restart.
-SQLite contains the previous data, not changes made after switching to PostgreSQL.
-Production settings do not load this local file.
+existing unrecognized databases/roles are never overwritten.
+`TOURNAMENTS_LOCAL_DATABASE`, when present, must be `postgresql`; the SQLite
+opt-in and fallback have been removed. Existing legacy files are not opened,
+imported, removed or converted by startup. Production settings do not load the
+machine-specific `.env.postgresql.local` file.
 
 User-run verification, from `tournaments/`:
 
@@ -96,8 +107,8 @@ User-run verification, from `tournaments/`:
 ```
 
 The test command exercises gameplay admission, reservations/refunds and tasks
-against PostgreSQL. Existing SQLite-specific concurrency tests remain checks of
-the SQLite backend rather than PostgreSQL acceptance tests.
+against a disposable PostgreSQL test database. It requires a PostgreSQL test
+login with permission to create that database; it must not target production.
 
 ## Business model and legal review
 

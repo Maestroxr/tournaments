@@ -1,6 +1,6 @@
 # Direct game formats and financial contract
 
-Reviewed against local code: 2026-10-11. Public Match and money configuration comes from DirectPlaySettings.format_profiles; Friend uses independent friend_rules and friend_game_fee. Money clocks use money_time_control. This document describes code, not active database values or a production rollout.
+Reviewed against local code: 2026-10-24. Public Match and money configuration comes from DirectPlaySettings.format_profiles; Friend uses independent friend_rules and friend_game_fee. Money clocks use money_time_control. This document describes code, not active database values or a production rollout.
 
 ## Creation and access
 
@@ -20,9 +20,9 @@ For match, transfer is the agreed fixed stake. For money, transfer is min(requir
 
 Only the authenticated game result can settle a linked table. The code validates room, status, winner, funding and financial result before writes. Duplicate delivery must not pay twice. Server adjudication determines forfeits/timeouts; client labels are not financial authority.
 
-## Current contract gap
+## Cube contract compatibility
 
-The quick calculation can return max_cube above 64 (its loop permits values up to 2^20), but settle() accepts only 1,2,4,8,16,32,64, even when dynamic_max_cube is larger. Align calculation, signed contract, game enforcement and settlement before treating every calculated double as supported. This is a static-code finding, not a newly executed financial test.
+Quick calculation can return max_cube above 64, up to 2^20. Money-game ticket validation accepts positive powers of two within that existing range; match tickets retain their fixed cube choices up to 64. Settlement validates the final money cube against the table's frozen dynamic_max_cube (or its legacy snapshot fallback), rather than imposing another fixed 64 cap. Reservation, Jacoby, multiplier and transfer-cap behavior are unchanged. Deploy the corresponding game ticket verifier with the club settlement change. Local isolated checks are distinct from production validation.
 
 ## Related code and checks
 

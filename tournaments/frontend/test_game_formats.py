@@ -150,6 +150,21 @@ class GameFormatTests(TestCase):
         self.assertEqual(self.balance(self.host), 16080)
         self.assertEqual(self.balance(self.guest), 3600)
 
+    def test_funded_dynamic_cube_above_64_settles_once_and_refuses_other_cubes(self):
+        for user in (self.host, self.guest):
+            WalletTransaction.create_entry(user=user, amount=90000, kind=WalletTransaction.KIND_DEPOSIT)
+        table = self.funded()
+        self.assertEqual(table.settlement['dynamic_max_cube'], 256)
+        for cube in (255, 512, True):
+            self.assertEqual(self.result(table, financial_result={
+                'format': 'money', 'cube': cube, 'win_type': 'single'}).status_code, 409)
+        result = {'format': 'money', 'cube': 128, 'win_type': 'single'}
+        self.assertEqual(self.result(table, financial_result=result).status_code, 200)
+        balances = self.balance(self.host), self.balance(self.guest)
+        self.assertEqual(balances, (Decimal('112160.00'), Decimal('87200.00')))
+        self.assertEqual(self.result(table, financial_result=result).status_code, 200)
+        self.assertEqual((self.balance(self.host), self.balance(self.guest)), balances)
+
     def test_host_search_reserve_still_supports_cube_after_available_balance_is_spent(self):
         response = self.create()
         self.assertEqual(response.status_code, 201, response.content)
