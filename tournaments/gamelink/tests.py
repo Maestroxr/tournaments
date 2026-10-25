@@ -515,6 +515,10 @@ class SettingsTest(TestCase):
             (fake_repo / 'tournaments' / '__init__.py').write_text('', encoding='utf-8')
             (fake_repo / 'tournaments' / 'settings' / '__init__.py').write_text('', encoding='utf-8')
             (fake_settings_dir / 'common.py').write_text(source, encoding='utf-8')
+            (fake_settings_dir / 'database.py').write_text(
+                settings_path.with_name('database.py').read_text(encoding='utf-8'),
+                encoding='utf-8',
+            )
 
             result = subprocess.run(
                 [

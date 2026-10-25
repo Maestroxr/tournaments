@@ -686,47 +686,62 @@ class WithdrawTournamentViewTests(TestCase):
         self.user1_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test1', creator = self.user1, published = True, starts_at = timezone.now() - timedelta(minutes=1))
         self.user2_tournament = models.Tournament.load(definition = test_tournament1_yml, name = 'Test2', creator = self.user2, published = True, starts_at = timezone.now() - timedelta(minutes=1))
 
-        for tournament in models.Participation.objects.all():
-            for user in models.User.objects.all():
-                models.Participation.objects.create(tournament = tournament, participant = models.Participant.create_for_user(user), slot_id = models.Participation.next_slot_id(tournament))
+        for tournament in (self.user1_tournament, self.user2_tournament):
+            for user in (self.user1, self.user2):
+                models.Participation.objects.create(
+                    tournament=tournament,
+                    participant=models.Participant.get_or_create_for_user(user),
+                    slot_id=models.Participation.next_slot_id(tournament),
+                )
+            self.assertTrue(tournament.participations.filter(participant__user=self.user1).exists())
+            self.assertTrue(tournament.participations.filter(participant__user=self.user2).exists())
 
     def test_unauthenticated(self):
         self.client.logout()
 
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.resolver_match.func.view_class, LoginView)
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user1).exists())
 
     def test_not_found(self):
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = 0)))
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = 0)))
         self.assertEqual(response.status_code, 404)
 
     def test_foreign(self):
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = self.user2_tournament.id)), follow = True)
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = self.user2_tournament.id)), follow = True)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.resolver_match.func.view_class, views.UpdateTournamentView)
-        self.assertFalse(self.user1 in self.user2_tournament.participants)
+        self.assertFalse(self.user2_tournament.participations.filter(participant__user=self.user1).exists())
+        self.assertTrue(self.user2_tournament.participations.filter(participant__user=self.user2).exists())
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user1).exists())
 
     def test_drafted(self):
         self.user1_tournament.published = False
         self.user1_tournament.save()
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
         self.assertEqual(response.status_code, 412)
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user1).exists())
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user2).exists())
 
     def test_active(self):
         start_tournament(self.user1_tournament)
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)))
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)))
         self.assertEqual(response.status_code, 412)
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user1).exists())
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user2).exists())
 
     def test_withdrawn(self):
         self.test()
         self.test()
 
     def test(self):
-        response = self.client.get(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
+        response = self.client.post(reverse('withdraw-tournament', kwargs = dict(pk = self.user1_tournament.id)), follow = True)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.resolver_match.func.view_class, views.UpdateTournamentView)
-        self.assertFalse(self.user1 in self.user1_tournament.participants)
+        self.assertFalse(self.user1_tournament.participations.filter(participant__user=self.user1).exists())
+        self.assertTrue(self.user1_tournament.participations.filter(participant__user=self.user2).exists())
+        self.assertTrue(self.user2_tournament.participations.filter(participant__user=self.user1).exists())
 
 
 @skip('Legacy server-rendered admin UI was replaced by the admin Vue application')
