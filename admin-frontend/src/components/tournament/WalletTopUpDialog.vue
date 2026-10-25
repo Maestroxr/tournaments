@@ -22,7 +22,9 @@ const saving = ref(false)
 const uncertain = ref(false)
 const error = ref('')
 const operation = useWalletAdjustmentOperation()
-const valid = computed(() => amount.value !== null && Number.isFinite(amount.value) && Math.round(amount.value * 100) >= requiredCents && amount.value <= 99999999.99)
+const trimmedNote = computed(() => note.value.trim())
+const validAmount = computed(() => amount.value !== null && Number.isFinite(amount.value) && Math.round(amount.value * 100) >= requiredCents && amount.value <= 99999999.99)
+const valid = computed(() => validAmount.value && trimmedNote.value.length > 0 && trimmedNote.value.length <= 255)
 function money(value: number) { return value.toLocaleString(locale.value === 'he' ? 'he-IL' : 'en-US', { maximumFractionDigits: 2 }) }
 async function save() {
   if (!valid.value || saving.value) return
@@ -30,10 +32,10 @@ async function save() {
   error.value = ''
   try {
     const operationId = operation.operationId({
-      userId: props.user.id, action: 'deposit', amount: Number(amount.value), note: note.value.trim(),
+      userId: props.user.id, action: 'deposit', amount: Number(amount.value), note: trimmedNote.value,
     })
     const data = await apiFetch<{ balance: string }>(`/api/admin/users/${props.user.id}/wallet`, {
-      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: amount.value, note: note.value.trim(), operation_id: operationId }),
+      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: amount.value, note: trimmedNote.value, operation_id: operationId }),
     })
     operation.complete(operationId)
     uncertain.value = false
@@ -53,8 +55,8 @@ function close() { if (!saving.value) emit('close') }
       <p class="text-sm text-zinc-500">{{ t('attendees.topUpHint') }}</p>
       <AppAlert v-if="error" type="error" :message="error" />
       <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.amount') }}</span><InputNumber v-model="amount" :min="minimumAmount" :max="99999999.99" :max-fraction-digits="2" highlight-on-focus fluid :disabled="saving || uncertain" /></label>
-      <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.note') }}</span><InputText v-model="note" class="w-full" :disabled="saving || uncertain" /></label>
-      <p v-if="valid" class="text-sm text-emerald-700">{{ t('attendees.balanceAfter', { amount: money((Math.round(Number(user.balance ?? 0) * 100) + Math.round(Number(amount) * 100)) / 100) }) }}</p>
+      <label class="block"><span class="mb-2 block text-sm text-black">{{ t('common.note') }}</span><InputText v-model="note" class="w-full" :placeholder="t('transfers.notePlaceholder')" maxlength="255" required :disabled="saving || uncertain" /></label>
+      <p v-if="validAmount" class="text-sm text-emerald-700">{{ t('attendees.balanceAfter', { amount: money((Math.round(Number(user.balance ?? 0) * 100) + Math.round(Number(amount) * 100)) / 100) }) }}</p>
       <div class="flex justify-end gap-2">
         <Button type="button" :label="t('common.cancel')" severity="secondary" outlined :disabled="saving" @click="close" />
         <Button type="submit" :label="uncertain ? t('common.retry') : t('attendees.confirmTopUp')" severity="success" :loading="saving" :disabled="!valid" />

@@ -11,11 +11,12 @@ vi.mock('@/services/api', async importOriginal => ({
   ...await importOriginal<typeof import('@/services/api')>(), apiFetch: vi.fn(),
 }))
 const api = vi.mocked(apiFetch)
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const user = { id: 7, username: 'Dana', balance: '20.00' }
 const global = { plugins: [PrimeVue], stubs: { UserQuickView: true } }
 
 describe('Attendee funding', () => {
-  beforeEach(() => { vi.clearAllMocks(); useI18n().locale.value = 'en' })
+  beforeEach(() => { vi.clearAllMocks(); api.mockReset(); useI18n().locale.value = 'en' })
 
   it('blocks paid registration with insufficient funds and offers a top-up', async () => {
     const wrapper = mount(AttendeeUserRow, { props: { user, entryFee: 50 }, global })
@@ -58,11 +59,14 @@ describe('Attendee funding', () => {
     const wrapper = dialog()
     expect(wrapper.get('input').element.value).toBe('30')
     expect(api).not.toHaveBeenCalled()
+    await wrapper.get('input[required]').setValue('  Tournament top-up  ')
     await wrapper.get('form').trigger('submit')
     await wrapper.get('form').trigger('submit')
     expect(api).toHaveBeenCalledTimes(1)
+    const operationId = JSON.parse(String(api.mock.calls[0]?.[1]?.body)).operation_id
+    expect(operationId).toMatch(uuidPattern)
     expect(api).toHaveBeenCalledWith('/api/admin/users/7/wallet', {
-      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: 30, note: '' }),
+      method: 'POST', body: JSON.stringify({ action: 'deposit', amount: 30, note: 'Tournament top-up', operation_id: operationId }),
     })
     resolve({ balance: '50.00' })
     await flushPromises()
@@ -70,14 +74,26 @@ describe('Attendee funding', () => {
     expect(api).toHaveBeenCalledTimes(1)
   })
 
-  it('does not retry an uncertain deposit or emit success', async () => {
+  it('does not retry an uncertain deposit automatically and explicitly retries the same operation', async () => {
     api.mockRejectedValue(new TypeError('Connection lost'))
     const wrapper = dialog()
+    await wrapper.get('input[required]').setValue('Tournament top-up')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('form').trigger('submit')
     expect(api).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('saved')).toBeUndefined()
+    expect(wrapper.get('input').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('input[required]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('button[type="submit"]').text()).toBe(useI18n().t('common.retry'))
+    const firstRequest = api.mock.calls[0]
+    expect(JSON.parse(String(firstRequest?.[1]?.body))).toEqual({
+      action: 'deposit', amount: 30, note: 'Tournament top-up', operation_id: expect.stringMatching(uuidPattern),
+    })
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api).toHaveBeenCalledTimes(2)
+    expect(api.mock.calls[1]).toEqual(firstRequest)
     expect(wrapper.emitted('saved')).toBeUndefined()
   })
 })
