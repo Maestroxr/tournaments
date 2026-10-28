@@ -2,6 +2,7 @@
 from django.utils.dateparse import parse_datetime
 
 from tournaments.models import Knockout
+from gamelink.spectating import can_watch_fixture
 
 
 def serialize_fixture(fixture, snapshot, user, now, playability):
@@ -94,6 +95,9 @@ def serialize_fixture(fixture, snapshot, user, now, playability):
         'opponent': account_payload(opponent, other_participant),
         'is_current_user': current_user is not None,
         'can_play': playability['can_play'], 'playability': playability,
+        'can_watch': can_watch_fixture(fixture, game_link, user,
+                                       tournament_state=snapshot.state,
+                                       is_confirmed=is_confirmed),
         'score1': fixture.score1, 'score2': fixture.score2, 'is_confirmed': is_confirmed,
         'confirmations': fixture.read_confirmation_count,
         'required_confirmations': snapshot.required_confirmations,

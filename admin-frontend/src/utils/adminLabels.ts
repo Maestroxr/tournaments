@@ -52,6 +52,7 @@ export function timeControlDetail(value: string, targetPoints?: number, translat
     return translate('tournaments.timeControlDetail', {
       bank: formatClockDuration(secondsPerPoint * points, translate),
       rate: formatClockDuration(secondsPerPoint, translate),
+      delay: value === 'normal' ? 12 : 10,
     })
   }
   return value

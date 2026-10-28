@@ -12,7 +12,7 @@ const translate = (key: string, params: Record<string, string | number> = {}) =>
     'tournaments.clockSecond': '{count} sec',
     'tournaments.clockSeconds': '{count} sec',
     'tournaments.timeControlDetail':
-      '{bank} per player · {rate}/point · 10-second delay each turn',
+      '{bank} per player · {rate}/point · {delay}-second delay each turn',
     'tournaments.timeControlSummary': '{pace} · {detail}',
   }
   return Object.entries(params).reduce(
@@ -23,12 +23,16 @@ const translate = (key: string, params: Record<string, string | number> = {}) =>
 
 describe('timeControlLabel', () => {
   it('recalculates each player bank from the target score', () => {
-    expect(timeControlLabel('fast', 5, translate)).toContain('2 min 30 sec per player')
+    expect(timeControlLabel('fast', 5, translate)).toBe(
+      'Fast · 2 min 30 sec per player · 30 sec/point · 10-second delay each turn',
+    )
     expect(timeControlLabel('fast', 7, translate)).toContain('3 min 30 sec per player')
     expect(timeControlDetail('normal', 5, translate)).toBe(
-      '5 min per player · 1 min/point · 10-second delay each turn',
+      '5 min per player · 1 min/point · 12-second delay each turn',
     )
-    expect(timeControlLabel('slow', 5, translate)).toContain('10 min per player')
+    expect(timeControlLabel('slow', 5, translate)).toBe(
+      'Slow · 10 min per player · 2 min/point · 10-second delay each turn',
+    )
   })
 
   it('keeps no-clock matches unlimited regardless of the target score', () => {

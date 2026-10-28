@@ -303,6 +303,7 @@ def _serialize_user(user):
         "id": user.id,
         "username": user.username,
         "email": user.email,
+        "has_usable_password": user.has_usable_password(),
         "phone_number": contact.phone_number if contact else "",
         "profile_required": missing_username or missing_phone,
         "missing_username": missing_username,

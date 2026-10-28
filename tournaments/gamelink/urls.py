@@ -11,8 +11,10 @@ from . import views
 from .practice import ActivePracticeView, ResumePracticeView, StartPracticeView
 from .player_details import player_details
 from .replay import fixture_replay
+from .spectating import watch_fixture
 
 urlpatterns = [
+    path('api/gamelink/fixture/<int:fixture_id>/watch/', watch_fixture, name='gamelink-fixture-watch'),
     path('api/gamelink/fixture/<int:fixture_id>/replay/', fixture_replay, name='gamelink-fixture-replay'),
     path('api/gamelink/player-details/', player_details, name='gamelink-player-details'),
     path('api/practice/', StartPracticeView.as_view(), name='practice-api'),

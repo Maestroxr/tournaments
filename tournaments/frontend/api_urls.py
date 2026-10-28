@@ -1,19 +1,18 @@
-from django.urls import path
+from billing import operations as payment_operations
 from billing.admin_checkout import admin_checkouts
 from billing.catalog import admin_catalog
-from billing.tranzila_setup import admin_readiness
 from billing.tranzila_flow import checkout_session, reconcile
-from billing import operations as payment_operations
-from . import api
-from .analysis_results import analysis_record, analysis_results
-from . import accounts
-from . import google_auth
-from . import push
-from .push_health import admin_push_health
-from .operations import health
+from billing.tranzila_setup import admin_readiness
+from django.urls import path
+
+from . import accounts, api, google_auth, push
+from .account_settings import change_password
 from .admin_matches import admin_match
+from .analysis_results import analysis_record, analysis_results
 from .leaderboard import leaderboard
+from .operations import health
 from .performance import player_performance
+from .push_health import admin_push_health
 
 urlpatterns = [
     path('performance', player_performance, name='api-performance'),
@@ -31,6 +30,7 @@ urlpatterns = [
     path('client/log', api.api_client_log, name='api-client-log'),
     path('auth/me', api.api_me, name='api-me'),
     path('auth/profile', api.api_profile, name='api-profile'),
+    path('auth/password', change_password, name='api-password'),
     path('auth/login', api.api_login, name='api-login'),
     path('auth/logout', api.api_logout, name='api-logout'),
     path('auth/signup', accounts.signup, name='api-signup'),

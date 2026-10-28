@@ -206,6 +206,8 @@ GAMELINK_ENABLED        = os.environ.get('GAMELINK_ENABLED', '0') == '1'
 GAMELINK_ISSUER         = 'tournaments'
 GAMELINK_AUDIENCE       = 'backgammon'
 GAMELINK_BACKGAMMON_URL = os.environ.get('GAMELINK_BACKGAMMON_URL', '')  # https://…, no path
+GAMELINK_GAME_FRONTEND_URL = os.environ.get(
+    'GAMELINK_GAME_FRONTEND_URL', os.environ.get('GAMELINK_FRONTEND_URL', ''))
 GAMELINK_TICKET_SECRET  = os.environ.get('GAMELINK_TICKET_SECRET', '')
 GAMELINK_RESULT_SECRETS = [s for s in os.environ.get('GAMELINK_RESULT_SECRETS', '').split(',') if s]
 GAMELINK_COMMAND_SECRET = os.environ.get('GAMELINK_COMMAND_SECRET', '')
