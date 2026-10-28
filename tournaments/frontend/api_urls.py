@@ -5,7 +5,7 @@ from billing.tranzila_setup import admin_readiness
 from billing.tranzila_flow import checkout_session, reconcile
 from billing import operations as payment_operations
 from . import api
-from .analysis_results import analysis_results
+from .analysis_results import analysis_record, analysis_results
 from . import accounts
 from . import google_auth
 from . import push
@@ -20,6 +20,7 @@ urlpatterns = [
     path('leaderboard', leaderboard, name='api-leaderboard'),
     path('analyses', analysis_results, name='api-analyses'),
     path('analyses/<uuid:analysis_id>', analysis_results, name='api-analysis'),
+    path('analyses/<uuid:analysis_id>/record', analysis_record, name='api-analysis-record'),
     path('auth/google/config', google_auth.config, name='api-google-config'),
     path('auth/google', google_auth.authenticate, name='api-google-auth'),
     path('auth/google/complete', google_auth.complete, name='api-google-complete'),

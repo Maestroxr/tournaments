@@ -12,6 +12,7 @@ from django.conf import settings
 from django.db.models import Q
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
+from django.views.decorators.cache import cache_control
 from django.utils.crypto import salted_hmac
 
 from gamelink.models import GameLink, PracticePurchase
@@ -166,3 +167,33 @@ def analysis_results(request, analysis_id=None):
     response = JsonResponse(data, status=202 if payload is not None else 200)
     response["Cache-Control"] = "private, no-store"
     return response
+
+
+@cache_control(private=True, no_store=True)
+@require_http_methods(["GET"])
+def analysis_record(request, analysis_id):
+    """Fetch an authorized source record without loading the analysis detail."""
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required."}, status=401)
+    room = request.GET.get("room")
+    if room:
+        try:
+            room = str(uuid.UUID(room))
+        except (ValueError, AttributeError):
+            return JsonResponse({"detail": "Analysis not found."}, status=404)
+    if not request.user.is_staff and (not room or room not in allowed_rooms(request.user)):
+        return JsonResponse({"detail": "Analysis not found."}, status=404)
+    params = [("room", room)] if room else [("staff", "1")]
+    try:
+        data = read_results(f"{analysis_id}/record/", params)
+        if data.get("id") != str(analysis_id) or (room and data.get("room_id") != room):
+            return JsonResponse({"detail": "Analysis not found."}, status=404)
+    except AnalysisUnavailable as exc:
+        return unavailable_response(exc.reason, retryable=exc.retryable)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return JsonResponse({"detail": "Analysis not found."}, status=404)
+        return unavailable_response()
+    except (URLError, TimeoutError, ValueError, OSError, KeyError, TypeError, AttributeError):
+        return unavailable_response()
+    return JsonResponse(data)
