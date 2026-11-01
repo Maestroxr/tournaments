@@ -1213,6 +1213,9 @@ MAX_SCORE = 32767
 # Direct money games do not write Fixture's small-integer scores. Their existing dynamic cube
 # contract can award up to a backgammon at cube 2^20; table settlement still checks its funded cap.
 MAX_MONEY_SCORE = 3 * (1 << 20)
+TECHNICAL_TOURNAMENT_END_REASONS = frozenset({
+    'time', 'leave', 'disconnect', 'inactivity_timeout',
+})
 
 _TIMESTAMP_PATTERN = re.compile(r'\A[0-9]{1,20}\Z')
 _NONCE_PATTERN = re.compile(r'\A[A-Za-z0-9._:-]{1,64}\Z')
@@ -1484,6 +1487,10 @@ class ResultCallbackView(View):
         """
         Write a reported score onto its fixture and let the tournament move on.
         """
+        problem = _validate_tournament_completion(game_link, body)
+        if problem is not None:
+            return _reject(request, 409, problem, fixture_id=fixture.pk, code='invalid_score')
+
         # Completing a group can award a champion outside this fixture. Acquire
         # every potential payout/rating identity in one order before either step.
         participant_ids = list(fixture.mode.tournament.participations.values_list(
@@ -1526,8 +1533,11 @@ class ResultCallbackView(View):
             update_fields=['status', 'completed_at', 'external_room_id', 'raw_result'])
         from gamelink.ratings import rate_fixture
         rate_fixture(fixture, body)
+        audit_result = {'score': [fixture.score1, fixture.score2], 'confirmed': True}
+        if 'technical_result' in body:
+            audit_result['technical_result'] = body['technical_result']
         FixtureAudit.objects.create(fixture=fixture, action='game_result',
-                                    before={'score': previous_score}, after={'score': [fixture.score1, fixture.score2], 'confirmed': True})
+                                    before={'score': previous_score}, after=audit_result)
 
         # This is where the tournament actually advances: the level closes, a knockout propagates
         # its winner, and a finished tournament gets its podium.
@@ -1681,6 +1691,49 @@ class LiveSnapshotCallbackView(View):
         elif 'event_revision' in body:
             return snapshot_response(body, 'already_recorded')
         return snapshot_response(body, 'recorded')
+
+
+def _validate_tournament_completion(game_link, body):
+    """Validate an official tournament outcome against the locked ticket contract.
+
+    Old score-only callbacks may omit their winner or send null. Technical
+    results must declare one and retain the actual played score as audit data.
+    This runs only for an open tournament link, before any result writes.
+    """
+    score = body['score']
+    winner = body.get('winner_seat')
+    if winner is not None:
+        if winner not in SEATS:
+            return 'winner_seat is not a tournament seat'
+        loser = 'p2' if winner == 'p1' else 'p1'
+        if score[winner] <= score[loser]:
+            return 'winner_seat does not match the official tournament score'
+
+    if 'technical_result' not in body:
+        return None
+    technical = body['technical_result']
+    if not isinstance(technical, dict) or winner not in SEATS:
+        return 'technical_result requires an object and a declared winner'
+    reason = technical.get('reason')
+    if (not isinstance(reason, str) or reason not in TECHNICAL_TOURNAMENT_END_REASONS
+            or reason != body.get('end_reason') or body['tournament_id'] <= 0):
+        return 'technical_result has an unsupported tournament ending'
+    financial = body.get('financial_result')
+    if isinstance(financial, dict) and financial.get('format') == 'money':
+        return 'money results cannot use a technical tournament score'
+    target = game_link.target_points
+    if (not _is_integer(target) or not 1 <= target <= MAX_SCORE
+            or not _is_integer(body.get('target_points')) or body['target_points'] != target):
+        return 'technical_result target does not match the issued game contract'
+    played = technical.get('played_score')
+    if (not isinstance(played, dict)
+            or any(not _is_integer(played.get(seat)) or not 0 <= played[seat] <= MAX_SCORE
+                   for seat in SEATS)):
+        return 'technical_result has an invalid played score'
+    loser = 'p2' if winner == 'p1' else 'p1'
+    if score[winner] != target or score[loser] != played[loser] or played[loser] >= target:
+        return 'technical_result official score does not settle the declared winner'
+    return None
 
 
 def _validate_result(body):
