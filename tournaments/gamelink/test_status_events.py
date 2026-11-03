@@ -1,9 +1,9 @@
 """The two receivers share durable event ordering, separate from action sequence."""
 import copy
 import uuid
+from unittest.mock import patch
 
 from django.db import transaction
-
 from tournaments.models import FixtureAudit, HeadToHeadTable
 
 from . import tests as contract_tests
@@ -141,6 +141,33 @@ class TournamentStatusEventTests(StatusEventCases, contract_tests.ResultCallback
         self.deliver_live(event)
         self.deliver_live(event)
         self.assertEqual(FixtureAudit.objects.filter(fixture=self.fixture, action='live_admin_required').count(), 1)
+
+    def test_accepted_watch_status_transitions_invalidate_the_waiting_player_context(self):
+        for revision, event_type in enumerate(('started', 'admin_required', 'admin_cleared'), start=1):
+            with self.subTest(event_type=event_type), patch('frontend.lobby_events.invalidate_tournaments') as invalidate:
+                self.assertEqual(self.deliver_live(
+                    self.event_body(revision=revision, event_type=event_type),
+                ).status_code, 200)
+                self.assertTrue(invalidate.called)
+        with patch('frontend.lobby_events.invalidate_tournaments') as invalidate:
+            self.assertEqual(self.deliver_live(self.event_body(
+                revision=3, event_type='admin_cleared',
+            )).json()['status'], 'already_recorded')
+            invalidate.assert_not_called()
+
+    def test_legacy_board_and_clock_changes_do_not_invalidate_waiting_context(self):
+        self.deliver_live(self.live_body(sequence=1))
+        with patch('frontend.lobby_events.invalidate_tournaments') as invalidate:
+            self.assertEqual(self.deliver_live(self.live_body(
+                sequence=2, state={'turn': 'black', 'clock': {'white': 50, 'black': 49}},
+            )).status_code, 200)
+            invalidate.assert_not_called()
+
+    def test_terminal_snapshot_invalidates_waiting_context_before_final_result_arrives(self):
+        self.deliver_live(self.live_body(sequence=1))
+        with patch('frontend.lobby_events.invalidate_tournaments') as invalidate:
+            self.assertEqual(self.deliver_live(self.live_body(sequence=2, status='completed')).status_code, 200)
+            invalidate.assert_called_once_with()
 
 
 @contract_tests.gamelink_settings

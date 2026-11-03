@@ -2,11 +2,13 @@ import { mount } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
 import Drawer from 'primevue/drawer'
 import TournamentMatchAdminPanel from './TournamentMatchAdminPanel.vue'
+import MatchAdjudicationNotice from './MatchAdjudicationNotice.vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TournamentMatchDialog from './TournamentMatchDialog.vue'
 import { apiFetch } from '@/services/api'
 import { useI18n } from '@/i18n'
 import type { TournamentFixture } from '@/types/tournamentProgress'
+import type { MatchAdministration } from '@/types/matchAdministration'
 
 vi.mock('@/services/api', async (original) => ({
   ...(await original<typeof import('@/services/api')>()),
@@ -30,6 +32,44 @@ function fixture(extra: Partial<TournamentFixture> = {}): TournamentFixture {
     ...extra,
   }
 }
+function incidentFixture(extra: Partial<TournamentFixture> = {}): TournamentFixture {
+  return fixture({
+    live: {
+      status: 'playing',
+      event_revision: 2,
+      event_type: 'admin_required',
+      occurred_at: '2026-11-02T12:01:00Z',
+      state: {
+        phase: 'moving',
+        turn: 'white',
+        dice: [3, 6],
+        cube: 2,
+        presence: {
+          needsAdminAdjudication: true,
+          absentSince: { white: 1793620800, black: 1793620860 },
+        },
+      },
+      match_score: { white: 2, black: 1 },
+    },
+    ...extra,
+  })
+}
+function administration(extra: Partial<MatchAdministration> = {}): MatchAdministration {
+  return {
+    fixture_id: 12,
+    version: 'v1',
+    note: '',
+    can_rule: true,
+    target_points: 5,
+    needs_admin_adjudication: true,
+    absent_since: {},
+    players: [],
+    history: [],
+    result: { score: [null, null], confirmed: false, winner_id: null, resolution: '' },
+    times: { connection_created_at: null, live_started_at: null, ended_at: null },
+    ...extra,
+  }
+}
 const wrappers: ReturnType<typeof mount>[] = []
 function view(
   value = fixture(),
@@ -45,9 +85,9 @@ function view(
           template: '<div><slot /><slot name="footer" /></div>',
         },
         TournamentMatchAdminPanel: {
-          props: ['section'],
+          props: ['section', 'action'],
           template: '<div />',
-          emits: ['busy', 'saved'],
+          emits: ['busy', 'saved', 'loaded', 'update:action'],
         },
       },
     },
@@ -152,20 +192,108 @@ describe('Admin match details dialog', () => {
   })
 
   it('shows an admin event without frozen scores, dice or turn', () => {
-    const wrapper = view(fixture({
-      live: {
-        status: 'playing', event_revision: 2, event_type: 'admin_required',
-        state: {
-          phase: 'moving', turn: 'white', dice: [3, 6], cube: 2,
-          presence: { needsAdminAdjudication: true },
-        },
-        match_score: { white: 2, black: 1 },
-      },
-    }))
+    const wrapper = view(incidentFixture())
     expect(wrapper.get('.match-live').text()).toContain('Game status')
-    expect(wrapper.get('.match-live').text()).toContain('Organizer review required')
+    expect(wrapper.get('[data-testid="match-adjudication"]').text().toLowerCase()).toContain(
+      'no winner was selected automatically',
+    )
+    expect(wrapper.get('[data-testid="match-dialog-status"]').text()).toBe(
+      'Awaiting administrator decision',
+    )
     expect(wrapper.find('.match-live__score').exists()).toBe(false)
-    expect(wrapper.findAll('.match-live dd')).toHaveLength(0)
+    expect(wrapper.get('.match-live').text()).not.toContain('Doubling cube')
+    expect(wrapper.get('.match-live').text()).not.toContain('Dice')
+  })
+
+  it.each([
+    ['finish', 'score'],
+    ['advance', 'players'],
+    ['disqualify', 'players'],
+  ] as const)(
+    'opens the %s ruling form directly without deciding the match',
+    async (action, section) => {
+      const wrapper = view(incidentFixture(), { tournamentId: '20' })
+      const panel = wrapper.getComponent(TournamentMatchAdminPanel)
+      const instance = panel.vm
+      panel.vm.$emit('loaded', administration())
+      await wrapper.vm.$nextTick()
+
+      await wrapper.get(`[data-incident-action="${action}"]`).trigger('click')
+
+      expect(panel.props('section')).toBe(section)
+      expect(panel.props('action')).toBe(action)
+      expect(panel.isVisible()).toBe(true)
+      expect(wrapper.getComponent(TournamentMatchAdminPanel).vm).toBe(instance)
+      expect(api).not.toHaveBeenCalled()
+    },
+  )
+
+  it('reselects the requested ruling after another player action and preserves the panel instance', async () => {
+    const wrapper = view(incidentFixture(), { tournamentId: '20' })
+    const panel = wrapper.getComponent(TournamentMatchAdminPanel)
+    panel.vm.$emit('loaded', administration())
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-incident-action="advance"]').trigger('click')
+    panel.vm.$emit('update:action', 'disqualify')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-section="live"]').trigger('click')
+    await wrapper.get('[data-incident-action="advance"]').trigger('click')
+    expect(panel.props('action')).toBe('advance')
+    expect(panel.props('section')).toBe('players')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('keeps history available for a locked match but blocks every shortcut while a write is pending', async () => {
+    const wrapper = view(incidentFixture(), { tournamentId: '20' })
+    const panel = wrapper.getComponent(TournamentMatchAdminPanel)
+    panel.vm.$emit('loaded', administration({ can_rule: false }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-incident-action="finish"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-incident-action="history"]').trigger('click')
+    expect(panel.props('section')).toBe('history')
+    await wrapper.get('[data-section="live"]').trigger('click')
+    panel.vm.$emit('busy', true)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-incident-action="history"]').attributes('disabled')).toBeDefined()
+    wrapper.getComponent(MatchAdjudicationNotice).vm.$emit('action', 'history')
+    await wrapper.vm.$nextTick()
+    expect(panel.props('section')).toBe('live')
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { is_confirmed: true },
+    { admin_resolution: 'advance' },
+    { operational_status: 'completed' as const },
+  ])('removes the incident after a terminal fixture update: %j', async (terminal) => {
+    const wrapper = view(incidentFixture(), { tournamentId: '20' })
+    expect(wrapper.find('[data-testid="match-adjudication"]').exists()).toBe(true)
+    await wrapper.setProps({ fixture: incidentFixture(terminal) })
+    expect(wrapper.find('[data-testid="match-adjudication"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="match-dialog-status"]').text()).not.toBe(
+      'Awaiting administrator decision',
+    )
+  })
+
+  it('uses a newer cleared event instead of old incident details', async () => {
+    const value = incidentFixture()
+    const wrapper = view(value, { tournamentId: '20' })
+    wrapper.getComponent(TournamentMatchAdminPanel).vm.$emit('loaded', administration())
+    await wrapper.vm.$nextTick()
+    await wrapper.setProps({
+      fixture: fixture({
+        live: {
+          ...value.live!,
+          event_revision: 3,
+          event_type: 'admin_cleared',
+          state: { ...value.live!.state, presence: { needsAdminAdjudication: false } },
+        },
+      }),
+    })
+    expect(wrapper.find('[data-testid="match-adjudication"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="match-dialog-status"]').text()).not.toBe(
+      'Awaiting administrator decision',
+    )
   })
 
   it('keeps all close paths locked during an organizer mutation and forwards saves', async () => {

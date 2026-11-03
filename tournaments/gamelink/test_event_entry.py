@@ -9,10 +9,11 @@ from unittest.mock import ANY, AsyncMock, patch
 from channels.testing import WebsocketCommunicator
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament
 
-from gamelink import entry_presence
+from gamelink import entry_presence, entry_verification
 from gamelink.consumers import ClubUpdatesConsumer
 from gamelink.entry_waiting import release, state
 from gamelink.models import GameLink
@@ -101,10 +102,12 @@ class EntryPresenceTests(SimpleTestCase):
 
 
 @override_settings(CHANNEL_LAYERS=MEMORY_LAYERS, GAMELINK_ENABLED=True,
+                   GAMELINK_TICKET_SECRET='event-entry-test-only-secret-0123456789',
                    GAMELINK_BACKGAMMON_URL='https://game.example.invalid')
 class EventAdmissionTests(TestCase):
     def setUp(self):
         entry_presence._memory.clear()
+        entry_verification._memory.clear()
         self.now = timezone.now()
         self.users = [User.objects.create_user(username=f'event-player-{n}') for n in (1, 2)]
         self.tournament = Tournament.objects.create(name='Event entry', starts_at=self.now,
@@ -119,21 +122,119 @@ class EventAdmissionTests(TestCase):
 
     def tearDown(self):
         entry_presence._memory.clear()
+        entry_verification._memory.clear()
 
     def join(self, index):
         with patch('gamelink.entry_waiting.entry_presence.notify_fixture'):
             return state(self.users[index], self.tournament.pk, self.tokens[index], f'socket-{index}', join=True)
 
-    def test_second_click_authorizes_both_and_exit_does_not_revoke_admission(self):
+    def verify(self, index, challenge):
+        with patch('gamelink.entry_waiting.entry_presence.notify_fixture'):
+            return state(self.users[index], self.tournament.pk, self.tokens[index], f'socket-{index}',
+                         fixture_id=self.fixture.pk, verification_id=challenge)
+
+    def verified_pair(self):
         self.assertFalse(self.join(0)['state']['both_ready'])
-        self.assertTrue(self.join(1)['state']['both_ready'])
+        waiting = self.join(1)['state']
+        self.assertFalse(waiting['both_ready'])
+        challenge = waiting['verification_id']
+        self.assertFalse(self.verify(0, challenge)['state']['both_ready'])
+        self.assertTrue(self.verify(1, challenge)['state']['both_ready'])
+        return challenge
+
+    def test_both_current_screens_must_confirm_and_exit_cancels_unissued_admission(self):
+        self.verified_pair()
         link = GameLink.objects.get(fixture=self.fixture)
-        self.assertTrue(link.entry_authorized_for(self.fixture))
+        self.assertIsNone(link.entry_authorized_at)
         release((self.tournament.pk, self.fixture.pk, 'p1', self.tokens[0]), 'socket-0')
         other = state(self.users[1], self.tournament.pk, self.tokens[1], 'socket-1', fixture_id=self.fixture.pk)
-        self.assertTrue(other['state']['both_ready'])
+        self.assertFalse(other['state']['both_ready'])
         link.refresh_from_db()
-        self.assertTrue(link.entry_authorized_for(self.fixture))
+        self.assertFalse(link.entry_authorized_for(self.fixture))
+
+    def test_issued_ticket_preserves_the_other_players_handoff(self):
+        challenge = self.verified_pair()
+        self.client.force_login(self.users[0])
+        url = reverse('gamelink-tournament-start-api', args=[self.tournament.pk])
+        response = self.client.post(url, {'attempt_id': self.tokens[0], 'verification_id': challenge},
+                                    content_type='application/json', HTTP_ACCEPT='application/json')
+        self.assertEqual(response.status_code, 200)
+        release((self.tournament.pk, self.fixture.pk, 'p1', self.tokens[0]), 'socket-0')
+        self.assertTrue(self.verify(1, challenge)['state']['both_ready'])
+        self.client.force_login(self.users[1])
+        response = self.client.post(url, {'attempt_id': self.tokens[1], 'verification_id': challenge},
+                                    content_type='application/json', HTTP_ACCEPT='application/json')
+        self.assertEqual(response.status_code, 200)
+
+    def test_closed_screen_cannot_confirm_from_a_stale_lease(self):
+        self.join(0)
+        challenge = self.join(1)['state']['verification_id']
+        release((self.tournament.pk, self.fixture.pk, 'p1', self.tokens[0]), 'socket-0', disconnected=True)
+        self.assertFalse(self.verify(0, challenge)['state']['both_ready'])
+        self.assertFalse(self.verify(1, challenge)['state']['both_ready'])
+        self.assertFalse(entry_presence.seat_present(self.fixture.pk, 'p1', timezone.now()))
+
+    def test_waiting_indicator_requires_a_current_response_from_the_opponent(self):
+        self.join(0)
+        waiting = self.join(1)['state']
+        self.assertTrue(entry_presence.seat_present(self.fixture.pk, 'p1', timezone.now()))
+        self.assertFalse(waiting['opponent']['is_waiting'])
+        challenge = waiting['verification_id']
+        self.verify(0, challenge)
+        result = state(self.users[1], self.tournament.pk, self.tokens[1], 'socket-1',
+                       fixture_id=self.fixture.pk)['state']
+        self.assertTrue(result['opponent']['is_waiting'])
+        self.assertFalse(result['both_ready'])
+
+    def test_expired_confirmation_requires_a_new_round_from_both_screens(self):
+        self.join(0)
+        challenge = self.join(1)['state']['verification_id']
+        self.verify(0, challenge)
+        with patch('gamelink.views.timezone.now', return_value=self.now + datetime.timedelta(seconds=6)):
+            result = self.verify(1, challenge)['state']
+        self.assertFalse(result['both_ready'])
+        self.assertNotEqual(result['verification_id'], challenge)
+        self.assertIsNone(GameLink.objects.get(fixture=self.fixture).entry_authorized_at)
+
+    def test_old_socket_confirmation_cannot_confirm_the_replacement_owner(self):
+        self.join(0)
+        challenge = self.join(1)['state']['verification_id']
+        with patch('gamelink.entry_waiting.entry_presence.notify_fixture'):
+            state(self.users[0], self.tournament.pk, self.tokens[0], 'replacement', join=True,
+                  fixture_id=self.fixture.pk)
+        self.assertFalse(self.verify(0, challenge)['state']['both_ready'])
+        self.assertFalse(self.verify(1, challenge)['state']['both_ready'])
+        release((self.tournament.pk, self.fixture.pk, 'p1', self.tokens[0]), 'socket-0', disconnected=True)
+        with patch('gamelink.entry_waiting.entry_presence.notify_fixture'):
+            result = state(self.users[0], self.tournament.pk, self.tokens[0], 'replacement',
+                           fixture_id=self.fixture.pk, verification_id=challenge)
+        self.assertTrue(result['state']['both_ready'])
+
+    def test_unconfirmed_tab_leaving_does_not_clear_the_current_round(self):
+        challenge = self.verified_pair()
+        other = uuid.uuid4().hex
+        entry_presence.change(self.fixture.pk, 'p1', other, 'other-tab', 'join')
+        release((self.tournament.pk, self.fixture.pk, 'p1', other), 'other-tab')
+        self.assertTrue(self.verify(1, challenge)['state']['both_ready'])
+
+    def test_wrong_round_and_wrong_attempt_cannot_mint_the_first_ticket(self):
+        challenge = self.verified_pair()
+        self.client.force_login(self.users[0])
+        url = reverse('gamelink-tournament-start-api', args=[self.tournament.pk])
+        for attempt, round_id in ((uuid.uuid4().hex, challenge), (self.tokens[0], uuid.uuid4().hex)):
+            response = self.client.post(url, {'attempt_id': attempt, 'verification_id': round_id},
+                                        content_type='application/json', HTTP_ACCEPT='application/json')
+            self.assertEqual(response.status_code, 412)
+        self.assertIsNone(GameLink.objects.get(fixture=self.fixture).entry_authorized_at)
+
+    def test_legacy_http_heartbeats_cannot_authorize_navigation(self):
+        url = reverse('gamelink-tournament-ready', args=[self.tournament.pk])
+        for user in self.users:
+            self.client.force_login(user)
+            self.assertFalse(self.client.post(url).json()['both_ready'])
+        self.assertIsNone(GameLink.objects.get(fixture=self.fixture).entry_authorized_at)
+        self.assertEqual(self.client.post(reverse('gamelink-tournament-start-api',
+                                                 args=[self.tournament.pk])).status_code, 412)
 
     def test_explicit_cancel_before_opponent_join_removes_readiness(self):
         self.join(0)
@@ -177,6 +278,45 @@ class EntrySocketTests(SimpleTestCase):
             self.assertTrue(await connection.receive_nothing())
             cancel.assert_called_once_with((32, 72, 'p1', token), ANY)
         await connection.disconnect()
+
+    async def test_matching_verification_is_forwarded_but_old_attempt_is_ignored(self):
+        token, challenge = uuid.uuid4().hex, uuid.uuid4().hex
+        consumer = ClubUpdatesConsumer()
+        consumer.entry = (32, 72, 'p1', token)
+        consumer.verification_task = None
+        consumer.verification_round = None
+        consumer.channel_name = 'current-socket'
+        consumer.scope = {'user': SimpleNamespace(pk=7)}
+        consumer.send_json = AsyncMock()
+        payload = {'type': 'entry_state', 'attempt_id': token,
+                   'state': {'fixture_id': 72, 'both_ready': True, 'verification_id': challenge}}
+        with patch('gamelink.entry_waiting.state', return_value=payload) as snapshot:
+            await consumer.receive_json({'type': 'entry_verified', 'attempt_id': uuid.uuid4().hex,
+                                         'fixture_id': 72, 'verification_id': challenge})
+            snapshot.assert_not_called()
+            await consumer.receive_json({'type': 'entry_verified', 'attempt_id': token,
+                                         'fixture_id': 72, 'verification_id': challenge})
+            snapshot.assert_called_once_with(consumer.scope['user'], 32, token, 'current-socket',
+                                             fixture_id=72, verification_id=challenge)
+        consumer.send_json.assert_awaited_once_with(payload)
+
+    async def test_verification_deadline_refreshes_state_and_stops_when_no_pair_remains(self):
+        token = uuid.uuid4().hex
+        consumer = ClubUpdatesConsumer()
+        consumer.entry = (32, 72, 'p1', token)
+        consumer.verification_task = None
+        consumer.verification_round = 'expired-round'
+        consumer.channel_name = 'current-socket'
+        consumer.scope = {'user': SimpleNamespace(pk=7)}
+        consumer.send_json = AsyncMock()
+        payload = {'type': 'entry_state', 'attempt_id': token,
+                   'state': {'fixture_id': 72, 'both_ready': False, 'verification_id': None}}
+        with patch('gamelink.consumers.asyncio.sleep', new_callable=AsyncMock), \
+                patch('gamelink.entry_waiting.state', return_value=payload) as snapshot:
+            await consumer._verification_expired(consumer.entry, 5)
+        snapshot.assert_called_once()
+        consumer.send_json.assert_awaited_once_with(payload)
+        self.assertIsNone(consumer.verification_round)
 
 
 @skipUnless(os.environ.get('ENTRY_REDIS_TESTS') == '1', 'Opt in to isolated Redis integration coverage')

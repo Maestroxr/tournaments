@@ -105,6 +105,21 @@ def seat_present(fixture_id, seat, now):
                                                   f'({timestamp}', '+inf'))
 
 
+def attempt_present(fixture_id, seat, token, channel, now):
+    """Validate the exact owner, rather than another tab belonging to this seat."""
+    timestamp = now.timestamp()
+    if _uses_memory():
+        with _memory_lock:
+            owner = _memory.get((fixture_id, seat, token))
+            return bool(owner and owner[0] == channel and owner[1] > timestamp)
+    keys = _keys(fixture_id, seat)
+    return bool(_client(settings.REDIS_URL).eval('''
+        local expiry = tonumber(redis.call('ZSCORE', KEYS[1], ARGV[1]))
+        return expiry and expiry > tonumber(ARGV[3])
+            and redis.call('HGET', KEYS[2], ARGV[1]) == ARGV[2] and 1 or 0
+    ''', 2, *keys, token, channel, timestamp))
+
+
 def notify_fixture(fixture_id):
     try:
         async_to_sync(get_channel_layer().group_send)(group_name(fixture_id), {

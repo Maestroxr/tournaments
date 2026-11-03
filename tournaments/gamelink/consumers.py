@@ -33,10 +33,13 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({'type': 'connected', 'revisions': revisions})
         self.sent_revisions = dict(revisions)
         self.entry = None
+        self.verification_task = None
+        self.verification_round = None
         self.pong = None
         self.probe_task = asyncio.create_task(self._probe_connection())
 
     async def disconnect(self, close_code):
+        await self._cancel_verification_timer()
         task = getattr(self, 'probe_task', None)
         if task:
             task.cancel()
@@ -77,9 +80,23 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
         except ValueError:
             return
         from .entry_waiting import release, state
+        if content.get('type') == 'entry_verified':
+            verification_id = content.get('verification_id')
+            if (not self.entry or self.entry[3] != token
+                    or content.get('fixture_id') != self.entry[1]
+                    or not isinstance(verification_id, str) or len(verification_id) != 32):
+                return
+            tournament_id, fixture_id, _, _ = self.entry
+            message = await database_sync_to_async(state)(
+                self.scope['user'], tournament_id, token, self.channel_name,
+                fixture_id=fixture_id, verification_id=verification_id,
+            )
+            await self._send_entry_state(message)
+            return
         if content.get('type') == 'entry_leave':
             if self.entry and self.entry[3] == token:
                 binding, self.entry = self.entry, None
+                await self._cancel_verification_timer()
                 await database_sync_to_async(release)(binding, self.channel_name)
                 await self.channel_layer.group_discard(group_name(binding[1]), self.channel_name)
             return
@@ -109,7 +126,7 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
                     self.scope['user'], tournament_id, token, self.channel_name,
                     fixture_id=data['fixture_id'],
                 )
-            await self.send_json(message)
+            await self._send_entry_state(message)
         except Exception:
             logger.exception('event=entry_join_failed tournament_id=%s', tournament_id)
             if self.entry:
@@ -129,7 +146,46 @@ class ClubUpdatesConsumer(AsyncJsonWebsocketConsumer):
         message = await database_sync_to_async(state)(
             self.scope['user'], tournament_id, token, self.channel_name, fixture_id=fixture_id,
         )
+        await self._send_entry_state(message)
+
+    async def _cancel_verification_timer(self):
+        task = getattr(self, 'verification_task', None)
+        self.verification_task = None
+        self.verification_round = None
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _send_entry_state(self, message):
         await self.send_json(message)
+        data = message.get('state', {}) if message.get('type') == 'entry_state' else {}
+        challenge = data.get('verification_id')
+        if not challenge or data.get('both_ready') or not self.entry:
+            await self._cancel_verification_timer()
+            return
+        if self.verification_round == challenge:
+            return
+        await self._cancel_verification_timer()
+        self.verification_round = challenge
+        self.verification_task = asyncio.create_task(self._verification_expired(
+            self.entry, data.get('verification_timeout_seconds') or 5))
+
+    async def _verification_expired(self, binding, remaining):
+        """A missing response must create a new round, without HTTP polling."""
+        try:
+            await asyncio.sleep(max(0.01, min(float(remaining), 5)) + 0.01)
+            if self.entry != binding:
+                return
+            from .entry_waiting import state
+            tournament_id, fixture_id, _, token = binding
+            message = await database_sync_to_async(state)(
+                self.scope['user'], tournament_id, token, self.channel_name, fixture_id=fixture_id)
+            await self._send_entry_state(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('event=entry_verification_expiry_failed fixture_id=%s', binding[1])
+            await self.close(code=1011)
 
     async def _probe_connection(self):
         """Small ping/pong renews a Redis lease, with no DB or list refresh."""

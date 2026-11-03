@@ -1,4 +1,5 @@
 export type MatchAdminAction = 'score' | 'finish' | 'advance' | 'disqualify' | 'refund'
+export type MatchIncidentAction = 'finish' | 'advance' | 'disqualify' | 'history'
 export type MatchPanelSection = 'live' | 'score' | 'players' | 'times' | 'note' | 'history'
 export interface MatchAdminPlayer {
   id: number

@@ -8,10 +8,6 @@ from django.db import connection
 from django.test import RequestFactory, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-
-from frontend.api import _serialize_tournament
-from frontend.tournament_list_reads import _confirmed_filter, _fixture_reads, tournament_list_snapshots
-from frontend.tournament_reads import TournamentReadSnapshot
 from tournaments.models import (
     Fixture,
     FixtureAudit,
@@ -22,6 +18,10 @@ from tournaments.models import (
     TournamentRegistration,
     WalletTransaction,
 )
+
+from frontend.api import _serialize_tournament
+from frontend.tournament_list_reads import _confirmed_filter, _fixture_reads, tournament_list_snapshots
+from frontend.tournament_reads import TournamentReadSnapshot
 
 
 @override_settings(GAMELINK_ENABLED=True, GAMELINK_BACKGAMMON_URL='https://game.example.invalid')
@@ -71,6 +71,17 @@ class TournamentListReadTests(TestCase):
         for user in (self.player, self.opponent, self.staff, AnonymousUser()):
             with self.subTest(user=user.pk):
                 self.assert_payload_matches_detail(tournament, user)
+
+    def test_one_sided_personal_fixture_adds_waiting_flag_without_extra_reads(self):
+        tournament, _, fixture = self.make_tournament()
+        fixture.player2 = None
+        fixture.playable_at = None
+        fixture.save(update_fields=['player2', 'playable_at'])
+        _, payload = self.assert_payload_matches_detail(tournament, self.player)
+        self.assertTrue(payload['waiting_for_opponent'])
+        self.assertFalse(payload['can_play'])
+        _, outside = self.assert_payload_matches_detail(tournament, self.opponent)
+        self.assertFalse(outside['waiting_for_opponent'])
 
     def test_open_finished_and_empty_next_stage_match_detail(self):
         tournament, _, fixture = self.make_tournament()

@@ -68,6 +68,8 @@ export const messages = {
         refund: 'Refund entry fee',
         note: 'Internal note updated',
         live_started: 'Live play first observed',
+        live_admin_required: 'Administrator decision requested',
+        live_admin_cleared: 'Administrator decision no longer required',
         game_result: 'Game result received',
         player_result: 'Player result submitted',
       },
@@ -100,6 +102,26 @@ export const messages = {
       saved: 'Action saved. The tournament has been updated.',
       locked:
         'Result actions require an unresolved current-round match with both players in a single-stage knockout tournament. Confirmed results are locked.',
+      awaitingDecision: 'Awaiting administrator decision',
+      incident: {
+        title: 'Both players lost connection',
+        explanation:
+          'The system detected both players absent after they had joined the game. No winner was selected automatically. Review the recorded information and decide how to settle the match.',
+        recordedDisconnect: '{color} · recorded disconnect',
+        recordedEvent: 'Administrator review requested at',
+        notRecorded: 'Not recorded',
+        syncNotRecorded: 'Tournament update time was not recorded.',
+        historicalHint:
+          'These times describe the reported incident. They do not indicate who is connected now.',
+        actionsLabel: 'Actions to resolve this match',
+        actions: {
+          finish: 'Set final result',
+          advance: 'Award a player the win',
+          disqualify: 'Disqualify from tournament',
+          history: 'View history',
+        },
+        reviewHint: 'Every decision requires a reason and review before confirmation.',
+      },
       adjudicationTitle: 'Administrator decision required',
       adjudicationBothMissing:
         'Both players left after joining the game. Review the match and decide the result; no winner was selected automatically.',
@@ -140,6 +162,8 @@ export const messages = {
       statusPlaying: 'The game is in progress.',
       connected: 'Live feed connected',
       periodic: 'Periodic updates',
+      feedExplanation:
+        'This connection receives tournament updates. It does not indicate whether the players are connected.',
       turn: 'Turn',
       dice: 'Dice',
       cube: 'Doubling cube',
@@ -1371,6 +1395,8 @@ export const messages = {
         refund: 'החזר דמי כניסה',
         note: 'עדכון הערה פנימית',
         live_started: 'זוהה משחק חי לראשונה',
+        live_admin_required: 'נדרשה החלטת מנהל',
+        live_admin_cleared: 'הדרישה להחלטת מנהל הוסרה',
         game_result: 'התקבלה תוצאת משחק',
         player_result: 'שחקן הזין תוצאה',
       },
@@ -1399,6 +1425,26 @@ export const messages = {
       saved: 'הפעולה נשמרה והטורניר עודכן.',
       locked:
         'פעולות תוצאה זמינות במשחק שטרם הוכרע, בסיבוב הנוכחי, עם שני שחקנים ובטורניר נוקאאוט בעל שלב אחד. תוצאה מאושרת נעולה.',
+      awaitingDecision: 'ממתין להחלטת מנהל',
+      incident: {
+        title: 'שני השחקנים איבדו חיבור',
+        explanation:
+          'המערכת זיהתה ששני השחקנים נעדרו לאחר שהתחברו למשחק. לא נבחר מנצח אוטומטית. יש לבדוק את המידע שתועד ולהחליט כיצד להכריע את המשחק.',
+        recordedDisconnect: '{color} · הניתוק שנרשם',
+        recordedEvent: 'מועד הדרישה להחלטת מנהל',
+        notRecorded: 'לא תועד',
+        syncNotRecorded: 'מועד עדכון הטורניר לא תועד.',
+        historicalHint:
+          'הזמנים מתארים את האירוע שדווח. הם אינם מעידים מי מחובר כעת.',
+        actionsLabel: 'פעולות להכרעת המשחק',
+        actions: {
+          finish: 'קביעת תוצאה סופית',
+          advance: 'הענקת ניצחון לשחקן',
+          disqualify: 'פסילה מהטורניר',
+          history: 'צפייה בהיסטוריה',
+        },
+        reviewHint: 'כל הכרעה דורשת נימוק ובדיקה לפני האישור.',
+      },
       adjudicationTitle: 'נדרשת החלטת מנהל',
       adjudicationBothMissing:
         'שני השחקנים עזבו לאחר שהתחברו למשחק. יש לבדוק את המשחק ולהחליט על התוצאה; לא נבחר מנצח אוטומטית.',
@@ -1438,6 +1484,8 @@ export const messages = {
       statusPlaying: 'המשחק בעיצומו.',
       connected: 'חיבור לייב פעיל',
       periodic: 'עדכון תקופתי',
+      feedExplanation:
+        'החיבור מיועד לקבלת עדכוני הטורניר ואינו מעיד על חיבור השחקנים.',
       turn: 'תור',
       dice: 'קוביות',
       cube: 'קוביית הכפלה',

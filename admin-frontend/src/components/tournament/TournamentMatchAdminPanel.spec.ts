@@ -96,6 +96,101 @@ describe('Match organizer actions', () => {
     expect(posts()).toHaveLength(0)
   })
 
+  it('keeps a directly requested final result through loading and still requires a reviewed decision', async () => {
+    let resolve!: (value: MatchAdministration) => void
+    api.mockImplementationOnce(
+      () =>
+        new Promise<MatchAdministration>((done) => {
+          resolve = done
+        }),
+    )
+    wrapper = mount(TournamentMatchAdminPanel, {
+      attachTo: document.body,
+      props: { tournamentId: '20', fixtureId: 12, section: 'live' },
+      global: { plugins: [PrimeVue] },
+    })
+    await wrapper.setProps({ section: 'score', action: 'finish' })
+    const initial = data({ needs_admin_adjudication: true })
+    resolve(initial)
+    await flushPromises()
+
+    expect(wrapper.get('[data-action="finish"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.emitted('loaded')?.[0]).toEqual([initial])
+    expect(wrapper.find('.match-admin__adjudication').exists()).toBe(true)
+    expect(posts()).toHaveLength(0)
+    const inputs = wrapper.findAllComponents(InputNumber)
+    inputs[0]!.vm.$emit('update:modelValue', 2)
+    inputs[1]!.vm.$emit('update:modelValue', 1)
+    await wrapper.get('#match-admin-12-reason').setValue('Verified with both players')
+    await review()
+
+    expect(wrapper.get('.match-admin__confirmation').text()).toContain('End the match now')
+    expect(posts()).toHaveLength(0)
+
+    api.mockResolvedValueOnce(
+      data({
+        version: 'v2',
+        can_rule: false,
+        needs_admin_adjudication: true,
+        result: { score: [2, 1], confirmed: true, winner_id: 1, resolution: '' },
+      }),
+    )
+    await wrapper.get('[data-testid="confirm-ruling"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.match-admin__adjudication').exists()).toBe(false)
+    expect(posts()).toHaveLength(1)
+  })
+
+  it.each(['advance', 'disqualify'] as const)(
+    'keeps the direct %s request when switching tools before the initial read completes',
+    async (action) => {
+      let resolve!: (value: MatchAdministration) => void
+      api.mockImplementationOnce(
+        () =>
+          new Promise<MatchAdministration>((done) => {
+            resolve = done
+          }),
+      )
+      wrapper = mount(TournamentMatchAdminPanel, {
+        props: { tournamentId: '20', fixtureId: 12, section: 'live' },
+        global: { plugins: [PrimeVue] },
+      })
+      await wrapper.setProps({ section: 'players', action })
+      resolve(data())
+      await flushPromises()
+      expect(wrapper.get(`[data-action="${action}"]`).attributes('aria-pressed')).toBe('true')
+      expect(posts()).toHaveLength(0)
+    },
+  )
+
+  it('hides the old incident banner when the drawer receives a newer cleared event', async () => {
+    await view(data({ needs_admin_adjudication: true }))
+    expect(wrapper.find('.match-admin__adjudication').exists()).toBe(true)
+    await wrapper.setProps({ needsDecision: false })
+    expect(wrapper.find('.match-admin__adjudication').exists()).toBe(false)
+    expect(posts()).toHaveLength(0)
+  })
+
+  it('ignores an initial response after the match panel has been removed', async () => {
+    let resolve!: (value: MatchAdministration) => void
+    api.mockImplementationOnce(
+      () =>
+        new Promise<MatchAdministration>((done) => {
+          resolve = done
+        }),
+    )
+    const pending = mount(TournamentMatchAdminPanel, {
+      props: { tournamentId: '20', fixtureId: 12 },
+      global: { plugins: [PrimeVue] },
+    })
+    pending.unmount()
+    resolve(data())
+    await flushPromises()
+    expect(pending.emitted('loaded')).toBeUndefined()
+    expect(pending.emitted('saved')).toBeUndefined()
+    expect(posts()).toHaveLength(0)
+  })
+
   it.each([false, true])(
     'requires review before tournament-wide disqualification, refund=%s',
     async (refund) => {
@@ -173,7 +268,12 @@ describe('Match organizer actions', () => {
     await wrapper.get('#match-admin-12-reason').setValue('Scoreboard correction')
     await review()
     expect(wrapper.get('.match-admin__confirmation').text()).toContain('match remains active')
-    api.mockResolvedValueOnce(data({ version: 'v2', result: { score: [2, 1], confirmed: false, winner_id: 1, resolution: '' } }))
+    api.mockResolvedValueOnce(
+      data({
+        version: 'v2',
+        result: { score: [2, 1], confirmed: false, winner_id: 1, resolution: '' },
+      }),
+    )
     await wrapper.get('[data-testid="confirm-ruling"]').trigger('click')
     await flushPromises()
     expect(JSON.parse(posts()[0]![1]!.body as string).action).toBe('score')

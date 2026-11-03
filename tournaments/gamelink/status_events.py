@@ -9,6 +9,14 @@ EVENT_FIELDS = {'event_id', 'event_type', 'event_revision', 'occurred_at', 'star
 EVENT_TYPES = {'started', 'admin_required', 'admin_cleared'}
 
 
+def snapshot_watch_status(snapshot):
+    """Only room status and adjudication affect watching, not board updates."""
+    live = snapshot if isinstance(snapshot, dict) else {}
+    state = live.get('state') if isinstance(live.get('state'), dict) else {}
+    presence = state.get('presence') if isinstance(state.get('presence'), dict) else {}
+    return live.get('status'), bool(presence.get('needsAdminAdjudication'))
+
+
 def validate_status_event(body):
     if not EVENT_FIELDS.intersection(body):
         return

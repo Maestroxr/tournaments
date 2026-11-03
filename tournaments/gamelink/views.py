@@ -36,7 +36,7 @@ from channels.layers import get_channel_layer
 from tournaments.models import Fixture, FixtureAudit, HeadToHeadTable, RatingResult, Tournament, WalletTransaction
 
 from .models import DirectPlayRematch, GameLink, IssuedTicket, SeenNonce
-from .status_events import should_record_snapshot, snapshot_response, validate_status_event
+from .status_events import should_record_snapshot, snapshot_response, snapshot_watch_status, validate_status_event
 from .playability import earliest_unresolved_fixtures, personally_ready_fixture_ids
 from .signing import SEATS, issue_direct_play_ticket, issue_ticket, verify_result_signature
 
@@ -781,18 +781,36 @@ def _readiness_fresh(game_link, now):
     return _fresh_seat(game_link, 'p1', now) and _fresh_seat(game_link, 'p2', now)
 
 
-def _authorize_entry_pair(request, fixture, game_link, now, *, seat=None):
+def _game_has_started(game_link):
+    """A reserved room is not evidence that both game sockets connected."""
+    return (game_link.status == 'playing'
+            and (game_link.live_snapshot or {}).get('status') == 'playing')
+
+
+def _reserved_entry(game_link, fixture):
+    return (game_link.entry_authorized_for(fixture)
+            and (bool(game_link.external_room_id) or game_link.tickets.exists()))
+
+
+def _clear_unissued_entry(game_link):
+    game_link.entry_authorized_at = None
+    game_link.entry_player1_id = None
+    game_link.entry_player2_id = None
+    game_link.save(update_fields=['entry_authorized_at', 'entry_player1', 'entry_player2'])
+
+
+def _authorize_entry_pair(request, fixture, game_link, now, *, seat=None, verified=False):
     """Persist shared readiness under the caller's tournament/fixture locks.
 
-    A successful ready response is a durable admission decision, even if the
-    subsequent ticket request waits longer than the heartbeat freshness window.
+    The first ticket commits this durable grant in the same transaction. Waiting
+    screen confirmations alone must not exempt an unstarted fixture from expiry.
     """
     if (game_link.status not in ('pending', 'playing')
             or (game_link.live_snapshot or {}).get('status') in ('completed', 'cancelled')):
         return False
     if game_link.entry_authorized_at:
         return game_link.entry_authorized_for(fixture)
-    if game_link.status != 'pending' or not _readiness_fresh(game_link, now):
+    if game_link.status != 'pending' or not verified:
         return False
     game_link.entry_authorized_at = now
     game_link.entry_player1_id = fixture.player1.user_id
@@ -804,7 +822,7 @@ def _authorize_entry_pair(request, fixture, game_link, now, *, seat=None):
     return True
 
 
-def _opponent_info(fixture, seat, game_link, now):
+def _opponent_info(fixture, seat, game_link, now, *, verified=False):
     """
     Freshness card for the caller's authoritative opponent in this fixture.
 
@@ -817,9 +835,14 @@ def _opponent_info(fixture, seat, game_link, now):
     else:
         opponent_user = fixture.player1.user
         opponent_seat = 'p1'
+    if verified:
+        from .entry_verification import seat_verified
+        waiting = seat_verified(fixture, opponent_seat, now)
+    else:
+        waiting = _fresh_seat(game_link, opponent_seat, now)
     return {
         'username': opponent_user.username,
-        'is_waiting': _fresh_seat(game_link, opponent_seat, now),
+        'is_waiting': waiting,
     }
 
 
@@ -1011,7 +1034,7 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
     always_json_auth_response = True
 
     @transaction.atomic
-    def post(self, request, pk, *, presence_change=None, expected_fixture=None):
+    def post(self, request, pk, *, presence_change=None, expected_fixture=None, verification_check=None):
         if not settings.GAMELINK_ENABLED:
             return _start_refusal(412, 'disabled')
 
@@ -1047,9 +1070,7 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
         if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
             return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
 
-        if game_link.entry_authorized_for(fixture):
-            # Both seats already passed readiness together. One player's departure
-            # from the lobby must not revoke the other's room entry.
+        if game_link.entry_authorized_for(fixture) and _game_has_started(game_link):
             entry_deadline, remaining_seconds = _entry_deadline_fields(
                 fixture, now)
             return JsonResponse({
@@ -1057,6 +1078,8 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
                 'seat': seat,
                 'both_ready': True,
                 'entry_status': 'ready',
+                'verification_id': None,
+                'game_started': True,
                 'entry_deadline': entry_deadline,
                 'remaining_seconds': remaining_seconds,
                 'opponent': _opponent_info(fixture, seat, game_link, now),
@@ -1083,11 +1106,15 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
             # Queue rows and the heartbeat commit together. Delivery belongs to
             # the push worker; a queue write failure must roll this request back.
             notify_tournament_opponent_waiting(fixture, recipient_id=opponent_user_id)
-        both_ready = _readiness_fresh(game_link, now)
+        verification_id, both_ready, verification_remaining = None, False, None
+        if verification_check is not None:
+            verification_id, both_ready, verification_remaining = verification_check(fixture, seat, game_link, now)
+        if (not both_ready and game_link.entry_authorized_at
+                and not _reserved_entry(game_link, fixture)):
+            from .entry_verification import pair_verified
+            if not pair_verified(fixture, now):
+                _clear_unissued_entry(game_link)
         if both_ready:
-            if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat):
-                return _start_refusal(412, 'entry_not_authorized', request=request,
-                                      fixture=fixture, link=game_link)
             entry_deadline, remaining_seconds = _entry_deadline_fields(
                 fixture, now)
             return JsonResponse({
@@ -1095,9 +1122,12 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
                 'seat': seat,
                 'both_ready': both_ready,
                 'entry_status': 'ready',
+                'verification_id': verification_id,
+                'game_started': False,
                 'entry_deadline': entry_deadline,
                 'remaining_seconds': remaining_seconds,
-                'opponent': _opponent_info(fixture, seat, game_link, now),
+                'opponent': _opponent_info(fixture, seat, game_link, now,
+                                           verified=verification_check is not None),
             })
         winner_seat = _try_resolve_no_show(fixture, game_link, now)
         if winner_seat == 'double_no_show':
@@ -1113,9 +1143,13 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
             'seat': seat,
             'both_ready': both_ready,
             'entry_status': 'waiting',
+            'verification_id': verification_id,
+            'verification_timeout_seconds': verification_remaining,
+            'game_started': False,
             'entry_deadline': entry_deadline,
             'remaining_seconds': remaining_seconds,
-            'opponent': _opponent_info(fixture, seat, game_link, now),
+            'opponent': _opponent_info(fixture, seat, game_link, now,
+                                       verified=verification_check is not None),
         })
 
 
@@ -1148,9 +1182,23 @@ def _issue_game_ticket(request, fixture, seat):
             return _start_refusal(412, 'room_terminal', request=request, fixture=fixture, link=game_link)
         if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
             return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
-        # Retain the same gate for callers that post directly to this endpoint;
-        # normal readiness already persisted the grant before returning success.
-        if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat):
+        verified = False
+        if not _game_has_started(game_link):
+            from .entry_verification import can_admit
+            try:
+                credentials = (json.loads(request.body) if request.content_type == 'application/json'
+                               else request.POST)
+            except (ValueError, UnicodeDecodeError, RequestDataTooBig):
+                credentials = {}
+            if not isinstance(credentials, dict) and not hasattr(credentials, 'get'):
+                credentials = {}
+            if not can_admit(fixture, seat, credentials.get('attempt_id'),
+                             credentials.get('verification_id'), now,
+                             reserved=_reserved_entry(game_link, fixture)):
+                return _start_refusal(412, 'entry_not_authorized', request=request,
+                                      fixture=fixture, link=game_link)
+            verified = True
+        if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat, verified=verified):
             return _start_refusal(412, 'entry_not_authorized', request=request,
                                   fixture=fixture, link=game_link)
 
@@ -1629,6 +1677,7 @@ class LiveSnapshotCallbackView(View):
                     return snapshot_response(body, 'already_recorded')
                 previous = (link.live_snapshot or {}).get('sequence', -1)
                 if should_record_snapshot(body, link.live_snapshot, allow_equal_sequence=True):
+                    watch_status_changed = snapshot_watch_status(link.live_snapshot) != snapshot_watch_status(body)
                     link.live_snapshot = body
                     link.live_updated_at = timezone.now()
                     link.external_room_id = room_id
@@ -1639,6 +1688,11 @@ class LiveSnapshotCallbackView(View):
                             request, 'linked_game_started', fixture=link.fixture, link=link))
                     link.save(update_fields=[
                               'live_snapshot', 'live_updated_at', 'external_room_id', 'status'])
+                    if watch_status_changed:
+                        # The locked previous snapshot is already in memory. Do
+                        # not make lobby signals read every board/clock JSON.
+                        from frontend.lobby_events import invalidate_tournaments
+                        invalidate_tournaments()
                     if body.get('status') == 'playing' and not FixtureAudit.objects.filter(fixture_id=fixture_id, action='live_started').exists():
                         FixtureAudit.objects.create(
                             fixture_id=fixture_id, action='live_started',

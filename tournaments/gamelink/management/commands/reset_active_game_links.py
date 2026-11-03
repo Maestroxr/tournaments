@@ -1,6 +1,8 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from tournaments.models import Fixture, Tournament
 
+from gamelink import entry_verification
 from gamelink.models import GameLink
 
 
@@ -50,6 +52,10 @@ class Command(BaseCommand):
             return
 
         with transaction.atomic():
+            # Serialize reset and Redis invalidation with normal admission.
+            Tournament.objects.select_for_update().get(pk=options['tournament_id'])
+            list(Fixture.objects.select_for_update().filter(
+                pk__in=[link.fixture_id for link in links]).order_by('pk').values_list('pk', flat=True))
             ids = [link.pk for link in links]
             reset = GameLink.objects.select_for_update().filter(pk__in=ids).exclude(
                 status="completed").update(
@@ -65,5 +71,7 @@ class Command(BaseCommand):
                     entry_player1=None,
                     entry_player2=None,
                 )
+            for link in links:
+                entry_verification.clear(link.fixture_id)
 
         self.stdout.write(self.style.SUCCESS(f"Reset {reset} game link(s)."))

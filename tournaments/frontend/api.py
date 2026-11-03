@@ -254,6 +254,8 @@ def _serialize_tournament(t, request, *, read_snapshot=None):
         "registration_status": registration_status,
         "is_eliminated": is_eliminated,
         "can_play": can_play,
+        "waiting_for_opponent": bool(current_fixture and
+                                     bool(current_fixture.player1_id) != bool(current_fixture.player2_id)),
         "current_fixture_id": current_fixture.pk if current_fixture else None,
         "current_stage_id": (str(current_fixture.mode_id) if current_fixture else
                              str(snapshot.current_stage.pk) if snapshot.current_stage else None),
@@ -1781,13 +1783,15 @@ def api_tournament_current_match(request, pk):
         return JsonResponse({"detail": "Not found"}, status=404)
     current = snapshot.current_user_fixtures(request.user)
     fixture = current[0] if len(current) == 1 else None
-    from .progress_reads import serialize_fixture
+    from .progress_reads import serialize_fixture, serialize_waiting_opponent
+    now = timezone.now()
     payload = serialize_fixture(
-        fixture, snapshot, request.user, timezone.now(),
+        fixture, snapshot, request.user, now,
         _playability_payload(request, fixture, read_snapshot=snapshot),
     ) if fixture else None
     return JsonResponse({
         'fixture': payload,
+        'waiting_for_opponent': serialize_waiting_opponent(fixture, snapshot, request.user, now),
         'tournament': _serialize_tournament(t, request, read_snapshot=snapshot),
     })
 

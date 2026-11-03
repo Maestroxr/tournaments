@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, onMounted, ref } from 'vue'
+import { computed, nextTick, onUnmounted, onMounted, ref, shallowRef, watch } from 'vue'
 import Drawer from 'primevue/drawer'
 import Avatar from 'primevue/avatar'
 import Button from 'primevue/button'
@@ -9,7 +9,13 @@ import TournamentMatchAdminPanel from './TournamentMatchAdminPanel.vue'
 import UserQuickView from '@/components/UserQuickView.vue'
 import MatchLiveStatus from './MatchLiveStatus.vue'
 import MatchPanelNavigation from './MatchPanelNavigation.vue'
-import type { MatchPanelSection } from '@/types/matchAdministration'
+import type {
+  MatchAdministration,
+  MatchAdminAction,
+  MatchIncidentAction,
+  MatchPanelSection,
+} from '@/types/matchAdministration'
+import { isMatchSettled, needsMatchAdjudication } from '@/services/matchAdjudication'
 
 const props = defineProps<{
   fixture: TournamentFixture
@@ -22,6 +28,28 @@ const props = defineProps<{
 const emit = defineEmits<{ close: []; saved: [] }>()
 const busy = ref(false)
 const section = ref<MatchPanelSection>('live')
+const action = shallowRef<MatchAdminAction>('score')
+const administration = shallowRef<MatchAdministration | null>(null)
+const content = shallowRef<HTMLElement | null>(null)
+const settled = computed(
+  () =>
+    isMatchSettled(props.fixture) ||
+    administration.value?.result.confirmed === true ||
+    !!administration.value?.result.resolution,
+)
+const needsDecision = computed(() => !settled.value && needsMatchAdjudication(props.fixture))
+const canRule = computed(() =>
+  !props.tournamentId || settled.value ? false : administration.value?.can_rule,
+)
+watch(
+  () => [props.tournamentId, props.fixture.id] as const,
+  () => {
+    administration.value = null
+    section.value = 'live'
+    action.value = 'score'
+    busy.value = false
+  },
+)
 let opener: HTMLElement | null = null
 onMounted(() => {
   opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -30,18 +58,26 @@ onUnmounted(() => {
   if (opener?.isConnected) opener.focus()
 })
 const { t, direction } = useI18n()
+const resolution = computed(
+  () => props.fixture.admin_resolution || administration.value?.result.resolution,
+)
+const confirmed = computed(
+  () => props.fixture.is_confirmed || administration.value?.result.confirmed,
+)
 const status = computed(() =>
-  props.fixture.admin_resolution === 'disqualify'
+  resolution.value === 'disqualify'
     ? 'matchAdmin.disqualifiedStatus'
-    : props.fixture.admin_resolution === 'advance'
+    : resolution.value === 'advance'
       ? 'matchAdmin.advancedStatus'
-      : props.fixture.is_confirmed
+      : confirmed.value
         ? 'tournaments.confirmed'
-        : props.fixture.score1 != null || props.fixture.score2 != null
-          ? 'tournaments.awaitingConfirmation'
-          : props.fixture.live?.status === 'playing'
-            ? 'tournaments.inProgress'
-            : 'tournaments.waiting',
+        : needsDecision.value
+          ? 'matchAdmin.awaitingDecision'
+          : props.fixture.score1 != null || props.fixture.score2 != null
+            ? 'tournaments.awaitingConfirmation'
+            : props.fixture.live?.status === 'playing'
+              ? 'tournaments.inProgress'
+              : 'tournaments.waiting',
 )
 const players = computed(() =>
   ([1, 2] as const).map((slot) => {
@@ -60,11 +96,10 @@ const players = computed(() =>
   }),
 )
 const hint = computed(() => {
-  if (props.fixture.is_confirmed) return 'tournaments.resultLocked'
+  if (settled.value) return 'tournaments.resultLocked'
   if (props.fixture.score1 != null || props.fixture.score2 != null)
     return 'matchDetails.confirmingHint'
   if (!props.fixture.player1 || !props.fixture.player2) return 'matchDetails.waitingPlayers'
-  if (props.fixture.live?.state.presence?.needsAdminAdjudication) return 'controlRoom.adminRequired'
   if (props.fixture.live?.status === 'playing') return 'matchDetails.playingHint'
   if (!props.fixture.editable) return 'matchDetails.waitingRound'
   return 'matchDetails.waitingStart'
@@ -72,6 +107,25 @@ const hint = computed(() => {
 
 function close() {
   if (!busy.value) emit('close')
+}
+
+function updateAdministration(value: MatchAdministration) {
+  if (value.fixture_id === props.fixture.id) administration.value = value
+}
+
+async function openIncidentAction(value: MatchIncidentAction) {
+  if (busy.value || !props.tournamentId || settled.value) return
+  if (value !== 'history' && canRule.value === false) return
+  const identity = `${props.tournamentId}:${props.fixture.id}`
+  if (value === 'history') section.value = 'history'
+  else {
+    action.value = value
+    section.value = value === 'finish' ? 'score' : 'players'
+  }
+  await nextTick()
+  if (identity !== `${props.tournamentId}:${props.fixture.id}`) return
+  // Move focus out of the now-hidden incident button to the selected workspace.
+  content.value?.focus()
 }
 </script>
 
@@ -122,15 +176,24 @@ function close() {
   >
     <div class="match-dialog__meta">
       <span>{{ round }}</span
-      ><span class="match-dialog__status">{{ t(status) }}</span>
+      ><span
+        v-if="needsDecision"
+        data-testid="match-dialog-status"
+        class="rounded-full border border-amber-400/60 px-2.5 py-1 text-xs text-amber-100"
+        >{{ t(status) }}</span
+      >
+      <span v-else data-testid="match-dialog-status" class="match-dialog__status">{{
+        t(status)
+      }}</span>
     </div>
     <div class="match-dialog__players">
       <div v-for="player in players" :key="player.slot" class="match-dialog__player">
         <span class="match-dialog__identity"
-          ><Avatar :label="(player.name?.trim()?.[0] || '?').toUpperCase()" shape="circle" /><UserQuickView
+          ><Avatar
+            :label="(player.name?.trim()?.[0] || '?').toUpperCase()"
+            shape="circle" /><UserQuickView
             :user-id="player.userId"
-            :username="player.name"
-        /></span
+            :username="player.name" /></span
         ><strong>{{ player.score ?? '–' }}</strong>
       </div>
     </div>
@@ -140,9 +203,15 @@ function close() {
       :disabled="busy"
       :content-id="`match-content-${fixture.id}`"
     />
-    <div :id="`match-content-${fixture.id}`">
+    <div
+      :id="`match-content-${fixture.id}`"
+      ref="content"
+      tabindex="-1"
+      :aria-label="t(`matchDetails.sections.${section}`)"
+      class="rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-amber-300"
+    >
       <div v-show="section === 'live'">
-        <p class="match-dialog__hint">{{ t(hint) }}</p>
+        <p v-if="!needsDecision" class="match-dialog__hint">{{ t(hint) }}</p>
         <p
           v-if="!fixture.is_confirmed && (fixture.score1 != null || fixture.score2 != null)"
           class="match-dialog__hint"
@@ -154,17 +223,29 @@ function close() {
             })
           }}
         </p>
-        <MatchLiveStatus :fixture="fixture" :connected="liveConnected" :updated-at="updatedAt" />
+        <MatchLiveStatus
+          :fixture="fixture"
+          :connected="liveConnected"
+          :updated-at="updatedAt"
+          :settled="settled"
+          :can-rule="canRule"
+          :disabled="busy"
+          :show-actions="!!tournamentId"
+          @action="openIncidentAction"
+        />
       </div>
       <TournamentMatchAdminPanel
         v-if="tournamentId"
         v-show="section !== 'live'"
-        :key="fixture.id"
+        :key="`${tournamentId}:${fixture.id}`"
+        v-model:action="action"
         :tournament-id="tournamentId"
         :fixture-id="fixture.id"
         :section="section"
+        :needs-decision="needsDecision"
         @busy="busy = $event"
         @saved="emit('saved')"
+        @loaded="updateAdministration"
       />
     </div>
     <template #footer>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
 import InputNumber from 'primevue/inputnumber'
@@ -17,10 +17,19 @@ import MatchInternalNote from './MatchInternalNote.vue'
 import MatchAuditHistory from './MatchAuditHistory.vue'
 
 const props = withDefaults(
-  defineProps<{ tournamentId: string; fixtureId: number; section?: MatchPanelSection }>(),
-  { section: 'score' },
+  defineProps<{
+    tournamentId: string
+    fixtureId: number
+    section?: MatchPanelSection
+    needsDecision?: boolean
+  }>(),
+  { section: 'score', needsDecision: undefined },
 )
-const emit = defineEmits<{ saved: []; busy: [value: boolean] }>()
+const emit = defineEmits<{
+  saved: []
+  busy: [value: boolean]
+  loaded: [value: MatchAdministration]
+}>()
 const { t, locale } = useI18n()
 const data = ref<MatchAdministration | null>(null)
 const loading = ref(true)
@@ -28,7 +37,7 @@ const busy = ref(false)
 const error = ref('')
 const success = ref('')
 const needsRefresh = ref(false)
-const action = ref<MatchAdminAction>('score')
+const action = defineModel<MatchAdminAction>('action', { default: 'score' })
 const participantId = ref<number | null>(null)
 const score1 = ref<number | null>(null)
 const score2 = ref<number | null>(null)
@@ -36,21 +45,38 @@ const reason = ref('')
 const note = ref('')
 const returnFee = ref(false)
 const reviewing = ref(false)
+const showAdjudication = computed(
+  () =>
+    !!data.value &&
+    !data.value.result.confirmed &&
+    !data.value.result.resolution &&
+    (props.needsDecision ?? data.value.needs_admin_adjudication),
+)
 const path = computed(
   () => `/api/admin/tournaments/${props.tournamentId}/matches/${props.fixtureId}`,
 )
+let requestGeneration = 0
+let active = true
+onBeforeUnmount(() => {
+  active = false
+  requestGeneration++
+})
 const prefix = computed(() => `match-admin-${props.fixtureId}`)
 const refundPlayers = computed(
   () => data.value?.players.filter((p) => p.disqualified && Number(p.refundable) > 0) ?? [],
 )
 const allOptions = computed(() => {
-  const actions: MatchAdminAction[] = data.value?.can_rule ? ['score', 'finish', 'advance', 'disqualify'] : []
+  const actions: MatchAdminAction[] = data.value?.can_rule
+    ? ['score', 'finish', 'advance', 'disqualify']
+    : []
   if (refundPlayers.value.length) actions.push('refund')
   return actions.map((value) => ({ value, label: t(`matchAdmin.actions.${value}`) }))
 })
 const options = computed(() =>
   allOptions.value.filter((o) =>
-    props.section === 'players' ? !['score', 'finish'].includes(o.value) : ['score', 'finish'].includes(o.value),
+    props.section === 'players'
+      ? !['score', 'finish'].includes(o.value)
+      : ['score', 'finish'].includes(o.value),
   ),
 )
 const actionIcons = {
@@ -61,6 +87,8 @@ const actionIcons = {
   refund: 'bi bi-wallet2',
 }
 function syncAction() {
+  // A shortcut may be selected while the initial read is still in flight.
+  if (!data.value) return
   if (!['score', 'players'].includes(props.section)) return
   if (!options.value.some((o) => o.value === action.value))
     action.value = options.value[0]?.value ?? 'score'
@@ -77,8 +105,10 @@ const playerOptions = computed(() =>
 )
 const selectedPlayer = computed(() => playerOptions.value.find((p) => p.id === participantId.value))
 const isScoreAction = computed(() => action.value === 'score' || action.value === 'finish')
-const scoreReachesTarget = computed(() =>
-  isScoreAction.value && Math.max(score1.value ?? -1, score2.value ?? -1) >= (data.value?.target_points ?? Infinity),
+const scoreReachesTarget = computed(
+  () =>
+    isScoreAction.value &&
+    Math.max(score1.value ?? -1, score2.value ?? -1) >= (data.value?.target_points ?? Infinity),
 )
 const terminalAction = computed(() => action.value !== 'score' || scoreReachesTarget.value)
 const refundAmount = computed(() =>
@@ -103,10 +133,13 @@ const valid = computed(
 const confirmation = computed(() => {
   const name = selectedPlayer.value?.name ?? ''
   if (action.value === 'score')
-    return t(scoreReachesTarget.value ? 'matchAdmin.confirmScoreFinal' : 'matchAdmin.confirmScoreInterim', {
-      score: `${score1.value} : ${score2.value}`,
-      target: data.value?.target_points ?? 0,
-    })
+    return t(
+      scoreReachesTarget.value ? 'matchAdmin.confirmScoreFinal' : 'matchAdmin.confirmScoreInterim',
+      {
+        score: `${score1.value} : ${score2.value}`,
+        target: data.value?.target_points ?? 0,
+      },
+    )
   if (action.value === 'finish')
     return t('matchAdmin.confirmFinish', { score: `${score1.value} : ${score2.value}` })
   if (action.value === 'advance') return t('matchAdmin.confirmAdvance', { name })
@@ -128,11 +161,14 @@ watch(busy, (value) => emit('busy', value), { flush: 'sync' })
 
 async function load(initial = false) {
   if (busy.value) return
+  const generation = ++requestGeneration
+  const requestPath = path.value
   loading.value = true
   error.value = ''
   reviewing.value = false
   try {
-    const result = await apiFetch<MatchAdministration>(path.value)
+    const result = await apiFetch<MatchAdministration>(requestPath)
+    if (!active || generation !== requestGeneration || requestPath !== path.value) return
     data.value = result
     // Refresh never silently discards a note the organizer is still editing.
     if (initial) note.value = result.note
@@ -140,21 +176,26 @@ async function load(initial = false) {
     score2.value = result.result.score[1] ?? null
     needsRefresh.value = false
     syncAction()
+    emit('loaded', result)
   } catch (e) {
+    if (!active || generation !== requestGeneration || requestPath !== path.value) return
     error.value = formatApiError(e)
     needsRefresh.value = true
   } finally {
-    loading.value = false
+    if (active && generation === requestGeneration && requestPath === path.value)
+      loading.value = false
   }
 }
 async function save(kind: MatchAdminAction | 'note') {
   if (busy.value || needsRefresh.value || !data.value) return
   if (kind !== 'note' && (!reviewing.value || !valid.value)) return
+  const generation = ++requestGeneration
+  const requestPath = path.value
   busy.value = true
   error.value = ''
   success.value = ''
   try {
-    const result = await apiFetch<MatchAdministration>(path.value, {
+    const result = await apiFetch<MatchAdministration>(requestPath, {
       method: 'POST',
       body: JSON.stringify({
         action: kind,
@@ -168,6 +209,7 @@ async function save(kind: MatchAdminAction | 'note') {
         refund: kind === 'disqualify' && returnFee.value,
       }),
     })
+    if (!active || generation !== requestGeneration || requestPath !== path.value) return
     data.value = result
     if (kind === 'note') note.value = result.note
     if (kind !== 'note') {
@@ -177,20 +219,35 @@ async function save(kind: MatchAdminAction | 'note') {
     }
     success.value = t(kind === 'note' ? 'matchAdmin.noteSaved' : 'matchAdmin.saved')
     syncAction()
+    emit('loaded', result)
     emit('saved')
   } catch (e) {
+    if (!active || generation !== requestGeneration || requestPath !== path.value) return
     error.value = formatApiError(e)
     // An uncertain response must never trigger an automatic financial/result retry.
     if (!(e instanceof ApiError) || e.status === 409 || e.status >= 500) needsRefresh.value = true
     reviewing.value = false
   } finally {
-    busy.value = false
+    if (active && generation === requestGeneration && requestPath === path.value) busy.value = false
   }
 }
 function selectAll(event: Event) {
   ;(event.target as HTMLInputElement)?.select?.()
 }
-onMounted(() => load(true))
+watch(
+  path,
+  () => {
+    data.value = null
+    busy.value = false
+    reason.value = ''
+    note.value = ''
+    success.value = ''
+    participantId.value = null
+    returnFee.value = false
+    void load(true)
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -209,11 +266,7 @@ onMounted(() => load(true))
     </div>
     <p v-if="success" role="status" class="match-admin__success">{{ success }}</p>
     <template v-if="data && !loading">
-      <div
-        v-if="data.needs_admin_adjudication"
-        class="match-admin__adjudication"
-        role="alert"
-      >
+      <div v-if="showAdjudication" class="match-admin__adjudication" role="alert">
         <strong>{{ t('matchAdmin.adjudicationTitle') }}</strong>
         <span>{{ t('matchAdmin.adjudicationBothMissing') }}</span>
       </div>
@@ -320,7 +373,9 @@ onMounted(() => load(true))
               required
               :disabled="busy || needsRefresh || reviewing"
             />
-            <small>{{ t(terminalAction ? 'matchAdmin.sharedReason' : 'matchAdmin.private') }}</small>
+            <small>{{
+              t(terminalAction ? 'matchAdmin.sharedReason' : 'matchAdmin.private')
+            }}</small>
           </fieldset>
           <Button
             v-if="!reviewing"
@@ -341,7 +396,7 @@ onMounted(() => load(true))
               })
             }}
           </p>
-            <p v-if="terminalAction && action !== 'refund'" class="match-admin__hint">
+          <p v-if="terminalAction && action !== 'refund'" class="match-admin__hint">
             {{ t('matchAdmin.finalWarning') }}
           </p>
           <div class="match-admin__buttons">

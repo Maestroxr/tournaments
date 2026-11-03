@@ -13,20 +13,23 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth.models import User
-from django.core.management import call_command, CommandError
+from django.core.management import CommandError, call_command
 from django.db import DatabaseError, transaction
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, _notify_match_ready
 
+from gamelink import entry_presence, entry_verification
+from gamelink.entry_waiting import release, state
 from gamelink.housekeeping import purge_expired
 from gamelink.models import GameLink, IssuedTicket
 from gamelink.signing import sign_result_body
 from gamelink.views import _check_playability, _entry_deadline_fields, _try_resolve_no_show
-from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, _notify_match_ready
 
 
 @override_settings(
+    CHANNEL_LAYERS={'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}},
     GAMELINK_ENABLED=True,
     GAMELINK_BACKGAMMON_URL="https://game.example.invalid",
     GAMELINK_TICKET_SECRET="incident-test-ticket-not-production-0123456789",
@@ -35,6 +38,8 @@ from tournaments.models import Fixture, Knockout, Participant, Participation, To
 )
 class AdmissionIncidentTests(TestCase):
     def setUp(self):
+        entry_presence._memory.clear()
+        entry_verification._memory.clear()
         self.now = timezone.now()
         self.users = [User.objects.create_user(username=f"incident-player-{n}") for n in (1, 2)]
         self.tournament = Tournament.objects.create(
@@ -54,10 +59,35 @@ class AdmissionIncidentTests(TestCase):
             expires_at=self.now + datetime.timedelta(hours=2),
             p1_ready_at=self.now, p2_ready_at=self.now,
         )
+        self.tokens = [uuid.uuid4().hex for _ in self.users]
+        self.challenge = None
+
+    def tearDown(self):
+        entry_presence._memory.clear()
+        entry_verification._memory.clear()
+
+    def authorize_pair(self):
+        """Use the same live challenge exchange as two actual waiting screens."""
+        with patch('gamelink.entry_waiting.entry_presence.notify_fixture'):
+            first = state(self.users[0], self.tournament.pk, self.tokens[0], 'screen-0', join=True)
+            self.assertFalse(first['state']['both_ready'])
+            second = state(self.users[1], self.tournament.pk, self.tokens[1], 'screen-1', join=True)
+            self.assertFalse(second['state']['both_ready'])
+            self.challenge = second['state']['verification_id']
+            for index, user in enumerate(self.users):
+                confirmed = state(user, self.tournament.pk, self.tokens[index], f'screen-{index}',
+                                  fixture_id=self.fixture.pk, verification_id=self.challenge)
+                self.assertEqual(confirmed['state']['both_ready'], index == 1)
+
+    def credentials(self, user):
+        if user not in self.users:
+            return {}
+        return {'attempt_id': self.tokens[self.users.index(user)], 'verification_id': self.challenge}
 
     def start(self, user):
         self.client.force_login(user)
-        return self.client.post(reverse("gamelink-tournament-start", args=[self.tournament.pk]))
+        return self.client.post(reverse("gamelink-tournament-start", args=[self.tournament.pk]),
+                                self.credentials(user), content_type='application/json')
 
     def snapshot(self, status, sequence=0):
         payload = {
@@ -79,17 +109,20 @@ class AdmissionIncidentTests(TestCase):
         )
 
     def test_control_both_can_get_tickets_before_first_snapshot(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.start(self.users[1]).status_code, 302)
         self.assertEqual(set(IssuedTicket.objects.values_list("seat", flat=True)), {"p1", "p2"})
 
     def test_json_entry_returns_only_configured_url_with_private_headers(self):
+        self.authorize_pair()
         self.client.force_login(self.users[0])
         with self.assertLogs('gamelink.views', level='INFO') as logs:
             with self.captureOnCommitCallbacks(execute=True):
                 response = self.client.post(
                     reverse('gamelink-tournament-start', args=[self.tournament.pk]),
-                    {'enter_url': 'https://untrusted.example.invalid/'}, HTTP_ACCEPT='application/json',
+                    {**self.credentials(self.users[0]), 'enter_url': 'https://untrusted.example.invalid/'},
+                    content_type='application/json', HTTP_ACCEPT='application/json',
                 )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(set(response.json()), {'enter_url'})
@@ -103,15 +136,18 @@ class AdmissionIncidentTests(TestCase):
         self.assertNotIn(ticket, '\n'.join(logs.output))
 
     def test_api_play_alias_accepts_json_post_and_preserves_legacy_route(self):
+        self.authorize_pair()
         self.client.force_login(self.users[0])
         api_path = f'/api/gamelink/tournament/{self.tournament.pk}/play/'
         self.assertEqual(reverse('gamelink-tournament-start-api', args=[self.tournament.pk]), api_path)
-        response = self.client.post(api_path, HTTP_ACCEPT='application/json')
+        response = self.client.post(api_path, self.credentials(self.users[0]),
+                                    content_type='application/json', HTTP_ACCEPT='application/json')
         self.assertEqual(response.status_code, 200)
         self.assertIn('enter_url', response.json())
         legacy_path = reverse('gamelink-tournament-start', args=[self.tournament.pk])
         self.assertEqual(legacy_path, f'/t/tournament/{self.tournament.pk}/play')
-        self.assertEqual(self.client.post(legacy_path).status_code, 302)
+        self.assertEqual(self.client.post(legacy_path, self.credentials(self.users[0]),
+                                         content_type='application/json').status_code, 302)
 
     def test_json_entry_without_session_returns_401_for_all_routes(self):
         for route, pk in [('gamelink-start', self.fixture.pk),
@@ -145,23 +181,21 @@ class AdmissionIncidentTests(TestCase):
                 self.assertEqual(response.status_code, 403)
         self.assertFalse(IssuedTicket.objects.exists())
 
-    def test_both_ready_persists_admission_before_a_delayed_first_ticket(self):
-        self.client.force_login(self.users[0])
-        ready = self.client.post(reverse('gamelink-tournament-ready', args=[self.tournament.pk]))
-        self.assertEqual(ready.status_code, 200)
-        self.assertTrue(ready.json()['both_ready'])
+    def test_first_ticket_cannot_use_an_expired_screen_confirmation(self):
+        self.authorize_pair()
         self.assertFalse(IssuedTicket.objects.exists())
         self.link.refresh_from_db()
-        granted_at = self.link.entry_authorized_at
-        self.assertIsNotNone(granted_at)
+        self.assertIsNone(self.link.entry_authorized_at)
+        verified_at = timezone.now()
         with patch('gamelink.views.timezone.now',
-                   return_value=granted_at + datetime.timedelta(seconds=20)):
-            self.assertEqual(self.start(self.users[0]).status_code, 302)
-            self.assertEqual(self.start(self.users[1]).status_code, 302)
+                   return_value=verified_at + datetime.timedelta(seconds=20)):
+            self.assertEqual(self.start(self.users[0]).status_code, 412)
+            self.assertEqual(self.start(self.users[1]).status_code, 412)
         self.link.refresh_from_db()
-        self.assertEqual(self.link.entry_authorized_at, granted_at)
+        self.assertIsNone(self.link.entry_authorized_at)
 
     def test_second_first_entry_survives_first_players_waiting_snapshot(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.snapshot("waiting").status_code, 200)
         self.link.refresh_from_db()
@@ -172,14 +206,16 @@ class AdmissionIncidentTests(TestCase):
             p1_ready_at=self.now - datetime.timedelta(minutes=3),
         )
         self.client.force_login(self.users[1])
-        ready = self.client.post(reverse("gamelink-tournament-ready", args=[self.tournament.pk]))
-        self.assertEqual(ready.status_code, 200)
-        self.assertTrue(ready.json()["both_ready"])
+        release((self.tournament.pk, self.fixture.pk, 'p1', self.tokens[0]), 'screen-0')
+        ready = state(self.users[1], self.tournament.pk, self.tokens[1], 'screen-1',
+                      fixture_id=self.fixture.pk)
+        self.assertTrue(ready['state']['both_ready'])
         response = self.start(self.users[1])
         self.assertEqual(response.status_code, 302,
                          "A reserved waiting room must admit its assigned second player")
 
     def test_active_reentry_survives_expired_ticket_cleanup(self):
+        self.authorize_pair()
         for user in self.users:
             self.assertEqual(self.start(user).status_code, 302)
         self.assertEqual(self.snapshot("playing").status_code, 200)
@@ -195,6 +231,7 @@ class AdmissionIncidentTests(TestCase):
     def test_control_outsider_and_terminal_link_are_not_admitted(self):
         outsider = User.objects.create_user(username="incident-outsider")
         self.assertNotEqual(self.start(outsider).status_code, 302)
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.link.status = "completed"
         self.link.save(update_fields=["status"])
@@ -209,6 +246,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertFalse(IssuedTicket.objects.exists())
 
     def test_changed_pair_cannot_reuse_an_old_grant(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         replacement = User.objects.create_user(username='replacement')
         self.fixture.player2 = Participant.create_for_user(replacement)
@@ -216,6 +254,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertEqual(self.start(self.users[0]).status_code, 412)
 
     def test_cleanup_preserves_authorized_pending_room_after_expiry(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.snapshot('waiting').status_code, 200)
         GameLink.objects.filter(pk=self.link.pk).update(
@@ -236,6 +275,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertEqual(purge_expired(now=self.now)['links'], 0)
 
     def test_no_show_does_not_cancel_an_authorized_waiting_room(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.link.refresh_from_db()
         later = self.now + datetime.timedelta(minutes=11)
@@ -244,6 +284,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertEqual(self.fixture.admin_result, '')
 
     def test_waiting_snapshot_cannot_regress_a_started_game(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.snapshot('playing', sequence=2).status_code, 200)
         self.assertEqual(self.snapshot('waiting', sequence=3).status_code, 200)
@@ -252,6 +293,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertEqual(self.link.live_snapshot['sequence'], 2)
 
     def test_late_snapshot_cannot_replace_terminal_game_state(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.snapshot('playing', sequence=2).status_code, 200)
         GameLink.objects.filter(pk=self.link.pk).update(status='completed')
@@ -267,6 +309,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertIsNone(self.link.entry_authorized_at)
 
     def test_terminal_room_snapshot_blocks_tickets_until_canonical_result(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         self.assertEqual(self.snapshot('completed', sequence=2).status_code, 200)
         self.assertEqual(self.snapshot('playing', sequence=3).status_code, 200)
@@ -278,6 +321,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertFalse(self.fixture.auto_confirmed)
 
     def test_explicit_room_reset_revokes_the_pair_grant(self):
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         call_command('reset_active_game_links', tournament_id=self.tournament.pk,
                      fixture_ids=[self.fixture.pk], execute=True, stdout=StringIO())
@@ -354,14 +398,16 @@ class AdmissionIncidentTests(TestCase):
         earlier_stage = self._advance_pair_while_unrelated_game_waits()
         self.assertEqual(earlier_stage.current_level, 0)
         self.assertEqual(self.fixture.level, 1)
-        for user in self.users:
+        self.authorize_pair()
+        for index, user in enumerate(self.users):
             self.client.force_login(user)
-            ready = self.client.post(reverse('gamelink-tournament-ready', args=[self.tournament.pk]))
-            self.assertEqual(ready.status_code, 200)
-            self.assertEqual(ready.json()['fixture_id'], self.fixture.pk)
-            self.assertTrue(ready.json()['both_ready'])
+            ready = state(user, self.tournament.pk, self.tokens[index], f'screen-{index}',
+                          fixture_id=self.fixture.pk)
+            self.assertEqual(ready['state']['fixture_id'], self.fixture.pk)
+            self.assertTrue(ready['state']['both_ready'])
             entry = self.client.post(
-                f'/api/gamelink/tournament/{self.tournament.pk}/play/', HTTP_ACCEPT='application/json',
+                f'/api/gamelink/tournament/{self.tournament.pk}/play/', self.credentials(user),
+                content_type='application/json', HTTP_ACCEPT='application/json',
             )
             self.assertEqual(entry.status_code, 200)
             self.assertIn('enter_url', entry.json())
@@ -373,6 +419,7 @@ class AdmissionIncidentTests(TestCase):
         self.assertEqual(snapshot.current_stage.pk, earlier_stage.pk)
         self.assertEqual([item.pk for item in snapshot.current_user_fixtures(self.users[0])],
                          [self.fixture.pk])
+        self.authorize_pair()
         for user in self.users:
             self.assertEqual(self.start(user).status_code, 302)
 
@@ -428,6 +475,7 @@ class AdmissionIncidentTests(TestCase):
         response = self.client.post(reverse('gamelink-start', args=[self.fixture.pk]),
                                     HTTP_ACCEPT='application/json')
         self.assertEqual(response.status_code, 403)
+        self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
         GameLink.objects.filter(pk=self.link.pk).update(status='completed')
         self.assertEqual(self.start(self.users[1]).status_code, 412)
