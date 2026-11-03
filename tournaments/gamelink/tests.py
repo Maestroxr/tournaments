@@ -108,6 +108,44 @@ class TicketTest(GameLinkTestBase):
         self.assertEqual(payload['name'], self.fixture.player2.name)
         self.assertEqual(payload['opp'], self.fixture.player1.name)
 
+    def test_renamed_accounts_use_current_names_for_both_seats(self):
+        subjects = [LinkedAccount.external_id_for(user) for user in self.users]
+        for index, user in enumerate(self.users):
+            User.objects.filter(pk=user.pk).update(username=f'renamed-{index + 1}')
+            user.refresh_from_db(fields=['username'])
+        fixture = Fixture.objects.select_related(
+            'mode__tournament', 'player1__user', 'player2__user',
+        ).get(pk=self.fixture.pk)
+
+        for index, seat in enumerate(('p1', 'p2')):
+            with self.subTest(seat=seat):
+                # Only the existing linked-account lookup is needed after preloading the fixture.
+                with self.assertNumQueries(1):
+                    token, _ = issue_ticket(self.users[index], fixture, seat, self.game_link)
+                payload = verify_ticket(token)
+                self.assertEqual(payload['name'], f'renamed-{index + 1}')
+                self.assertEqual(payload['opp'], f'renamed-{2 - index}')
+                self.assertEqual(payload['sub'], subjects[index])
+
+        self.assertEqual(fixture.player1.name, 'user-1')
+        self.assertEqual(fixture.player2.name, 'user-2')
+
+    def test_virtual_opponent_keeps_its_participant_name(self):
+        opponent = self.fixture.player2
+        opponent.user = None
+        opponent.save(update_fields=['user'])
+
+        token, _ = issue_ticket(self.users[0], self.fixture, 'p1', self.game_link)
+
+        self.assertEqual(verify_ticket(token)['opp'], opponent.name)
+
+    def test_missing_opponent_keeps_an_empty_name(self):
+        self.fixture.player2 = None
+
+        token, _ = issue_ticket(self.users[0], self.fixture, 'p1', self.game_link)
+
+        self.assertEqual(verify_ticket(token)['opp'], '')
+
     def test_subject_is_opaque_and_stable(self):
         # The subject must not be the user's primary key, or the ticket would enumerate the
         # tournaments user table (plan §2, threat 10).

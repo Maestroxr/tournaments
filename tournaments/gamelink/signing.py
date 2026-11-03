@@ -50,6 +50,12 @@ _REDACTION_PATTERNS = (
 # -----------------------------------
 
 
+def _participant_name(participant):
+    if participant is None:
+        return ''
+    return participant.user.username if participant.user_id else participant.name
+
+
 def issue_ticket(user, fixture, seat, game_link):
     """
     Mint a single-use ticket authorizing `user` to play `fixture` from `seat`.
@@ -64,8 +70,7 @@ def issue_ticket(user, fixture, seat, game_link):
 
     from .models import LinkedAccount
 
-    own, opponent = (fixture.player1, fixture.player2) if seat == 'p1' else (
-        fixture.player2, fixture.player1)
+    opponent = fixture.player2 if seat == 'p1' else fixture.player1
 
     issued_at = int(time.time())
     jti = uuid.uuid4()
@@ -77,11 +82,11 @@ def issue_ticket(user, fixture, seat, game_link):
         'iat': issued_at,
         'exp': issued_at + settings.GAMELINK_TICKET_TTL,
         'sub': LinkedAccount.external_id_for(user),
-        'name': own.name if own else '',
+        'name': user.username,
         'trn': fixture.mode.tournament_id,
         'fix': fixture.pk,
         'seat': seat,
-        'opp': opponent.name if opponent else '',
+        'opp': _participant_name(opponent),
         'tp': game_link.target_points,
         'dbl': game_link.doubling_enabled,
         'tc': fixture.mode.tournament.time_control,
