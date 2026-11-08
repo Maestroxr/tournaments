@@ -123,6 +123,24 @@ class EntryLifecycleTests(TestCase):
         self.assertEqual(remote.call_args.args[0].pk, table.pk)
         self.assertEqual(WalletTransaction.balance_for_user(self.user), balance_before)
 
+    @patch('frontend.entry_lifecycle.remote_expiry', return_value='started')
+    def test_issued_friend_ticket_checks_game_server_before_refunding(self, remote):
+        table = self.old_table('ready')
+        table.mode = HeadToHeadTable.MODE_FRIEND
+        table.settlement = {'friend_live_entry': True, 'entry_ticket_issued': True}
+        table.save(update_fields=['mode', 'settlement'])
+        balance_before = WalletTransaction.balance_for_user(self.user)
+
+        expire_unstarted_tables(allow_remote=False)
+        remote.assert_not_called()
+        expire_unstarted_tables()
+
+        table.refresh_from_db()
+        self.assertEqual(table.status, 'ready')
+        self.assertTrue(table.settlement['entry_confirmed'])
+        self.assertEqual(remote.call_args.args[0].pk, table.pk)
+        self.assertEqual(WalletTransaction.balance_for_user(self.user), balance_before)
+
     @patch('frontend.entry_lifecycle.remote_expiry', side_effect=OSError('offline'))
     def test_network_failure_does_not_cancel_a_game(self, remote):
         table = self.old_table('playing')

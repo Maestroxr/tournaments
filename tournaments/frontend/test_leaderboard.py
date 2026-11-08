@@ -1,7 +1,8 @@
 from django.contrib.auth.models import User
 from django.test import TestCase
 
-from tournaments.models import PlayerRating
+from tournaments.models import HeadToHeadTable, PlayerRating
+from tournaments.ratings import record_result
 
 
 class LeaderboardTests(TestCase):
@@ -19,6 +20,16 @@ class LeaderboardTests(TestCase):
         self.client.force_login(self.players[-1])
 
     def test_ties_cross_pages_and_self_rank_is_available_outside_first_page(self):
+        host, guest = self.players[:2]
+        table = HeadToHeadTable.objects.create(
+            code='LEADER', mode=HeadToHeadTable.MODE_MATCH, host=host, guest=guest,
+            amount=1, fee_percent=0, fee_per_player=0,
+            winner=guest, status=HeadToHeadTable.STATUS_COMPLETED,
+        )
+        record_result(
+            player1_id=host.pk, player2_id=guest.pk, winner_id=guest.pk,
+            source='public', reason='bear_off', table=table,
+        )
         first = self.client.get('/api/leaderboard', {'limit': 5}).json()
         second = self.client.get('/api/leaderboard', {'limit': 5, 'offset': 5}).json()
         self.assertEqual(first['count'], 7)
@@ -35,8 +46,11 @@ class LeaderboardTests(TestCase):
         self.assertEqual(first['me']['rating'], 1000)
         for row in first['results'] + second['results']:
             self.assertEqual(set(row), {
-                'user_id', 'username', 'rating', 'games_played', 'position',
+                'user_id', 'username', 'rating', 'games_played', 'position', 'wins', 'losses',
+                'pr', 'pr_unavailable',
             })
+        self.assertEqual([(row['wins'], row['losses']) for row in first['results'][:3]],
+                         [(0, 1), (1, 0), (0, 0)])
 
     def test_unranked_reader_does_not_create_a_rating(self):
         self.client.force_login(self.unranked)

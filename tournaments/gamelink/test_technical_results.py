@@ -42,6 +42,9 @@ class TechnicalTournamentResultTests(callback_tests.ResultCallbackTestBase):
         self.assertFalse(WalletTransaction.objects.exists())
 
     def test_timeout_official_score_advances_the_declared_winner_and_keeps_played_audit(self):
+        self.assert_official_score_advances_and_keeps_played_audit('time')
+
+    def assert_official_score_advances_and_keeps_played_audit(self, reason):
         other_players = [
             Participant.create_for_user(User.objects.create_user(username=f'other-player-{index}'))
             for index in range(2)
@@ -66,13 +69,16 @@ class TechnicalTournamentResultTests(callback_tests.ResultCallbackTestBase):
             'propagate': {'winner': {'fixture_id': final.pk, 'player_slot': 1}},
         }
         self.fixture.save(update_fields=['extras'])
-        body = self.technical_body(match_details={
-            'white_score': 1, 'black_score': 1, 'winner': 'black', 'end_reason': 'time',
+        body = self.technical_body(reason=reason, match_details={
+            'white_score': 1, 'black_score': 1, 'winner': 'black', 'end_reason': reason,
         })
 
         response = self.deliver(body)
 
         self.assertEqual(response.status_code, 200, response.content)
+        retry = self.deliver(body)
+        self.assertEqual(retry.status_code, 200, retry.content)
+        self.assertEqual(retry.json()['status'], 'already_recorded')
         self.fixture.refresh_from_db()
         final.refresh_from_db()
         self.game_link.refresh_from_db()
@@ -106,10 +112,7 @@ class TechnicalTournamentResultTests(callback_tests.ResultCallbackTestBase):
         self.assertEqual(self.fixture.score, (5, 4))
 
     def test_disconnect_uses_the_same_official_result_contract(self):
-        response = self.deliver(self.technical_body(reason='disconnect'))
-        self.assertEqual(response.status_code, 200, response.content)
-        self.fixture.refresh_from_db()
-        self.assertEqual(self.fixture.score, (1, 5))
+        self.assert_official_score_advances_and_keeps_played_audit('disconnect')
 
     def test_inactivity_timeout_uses_the_same_official_result_contract(self):
         response = self.deliver(self.technical_body(reason='inactivity_timeout'))

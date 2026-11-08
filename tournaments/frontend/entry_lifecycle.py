@@ -53,6 +53,17 @@ def mark_entry_ready(table):
     table.status = HeadToHeadTable.STATUS_READY
 
 
+def direct_entry_deadline(table):
+    """Normalize the entry window, including tables paired before it was stored."""
+    settlement = table.settlement or {}
+    deadline = settlement.get('entry_deadline')
+    if type(deadline) is not int:
+        return int(table.updated_at.timestamp()) + ENTRY_WINDOW_SECONDS
+    if settlement.get('entry_window_seconds') is None:
+        return deadline - 24 * 60 * 60 + ENTRY_WINDOW_SECONDS
+    return deadline
+
+
 def active_table(user_id, exclude=None):
     tables = HeadToHeadTable.objects.filter(
         Q(host_id=user_id) | Q(guest_id=user_id), status__in=ACTIVE)
@@ -151,23 +162,11 @@ def expire_unstarted_tables(user_id=None, heartbeat=None, *, allow_remote=True,
                 now_ts - last_seen >= SEARCH_PRESENCE_SECONDS)
             if observed.created_at > open_cutoff and not search_offline:
                 continue
-        else:
-            entry_deadline = (observed.settlement or {}).get('entry_deadline')
-
-            # Compatibility for tables created before entry_deadline was stored.
-            if type(entry_deadline) is not int:
-                entry_deadline = (
-                    int(observed.updated_at.timestamp()) +
-                    ENTRY_WINDOW_SECONDS
-                )
-            elif (observed.settlement or {}).get('entry_window_seconds') is None:
-                # Existing paired tables used a 24-hour deadline.
-                entry_deadline = entry_deadline - 24 * 60 * 60 + ENTRY_WINDOW_SECONDS
-
-            if entry_deadline > now_ts:
-                continue
+        elif direct_entry_deadline(observed) > now_ts:
+            continue
         result = None
-        if observed.status == 'playing' or observed.external_room_id:
+        has_live_entry_ticket = (observed.settlement or {}).get('friend_live_entry') is True
+        if observed.status == 'playing' or observed.external_room_id or has_live_entry_ticket:
             if not allow_remote:
                 # Requests cannot decide whether a remote room already started.
                 # Keep its reservation and active-game guard until the worker

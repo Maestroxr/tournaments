@@ -28,6 +28,7 @@ from gamelink.housekeeping import minimum_nonce_retention, purge_expired
 from gamelink.models import GameLink, IssuedTicket, LinkedAccount, SeenNonce
 from gamelink.signing import (
     TICKET_SALT,
+    issue_direct_play_ticket,
     issue_ticket,
     redact,
     result_signature_base,
@@ -81,6 +82,40 @@ class GameLinkTestBase(TestCase):
 
 @gamelink_settings
 class TicketTest(GameLinkTestBase):
+
+    def test_pending_friend_ticket_expires_at_the_table_cutoff(self):
+        from frontend.entry_lifecycle import ENTRY_WINDOW_SECONDS
+
+        deadline = int(time.time()) + 30
+        table = HeadToHeadTable.objects.create(
+            code='FRTEST', mode=HeadToHeadTable.MODE_FRIEND, game_format='match',
+            host=self.users[0], guest=self.users[1], status=HeadToHeadTable.STATUS_READY,
+            amount='50', fee_percent='0', fee_per_player='50',
+            rules_snapshot={'max_cube': 64, 'jacoby': False},
+            settlement={'entry_deadline': deadline, 'entry_window_seconds': ENTRY_WINDOW_SECONDS},
+        )
+        table = HeadToHeadTable.objects.select_for_update().get(pk=table.pk)
+        token, _ = issue_direct_play_ticket(table.host, table, 'p1')
+        payload = verify_ticket(token)
+        self.assertIs(payload['friend'], True)
+        self.assertEqual(payload['entry_deadline'], deadline)
+        self.assertEqual(payload['exp'], deadline)
+        table.refresh_from_db()
+        self.assertIs(table.settlement['entry_ticket_issued'], True)
+        self.assertIs(table.settlement['friend_live_entry'], True)
+
+        table.settlement['entry_deadline'] = int(time.time()) - 1
+        table.save(update_fields=['settlement'])
+        with self.assertRaisesRegex(ValueError, 'entry has expired'):
+            issue_direct_play_ticket(table.guest, table, 'p2')
+
+        table.status = HeadToHeadTable.STATUS_PLAYING
+        table.settlement['entry_confirmed'] = True
+        table.save(update_fields=['status', 'settlement'])
+        token, _ = issue_direct_play_ticket(table.guest, table, 'p2')
+        payload = verify_ticket(token)
+        self.assertGreater(payload['exp'], payload['iat'])
+        self.assertLess(payload['entry_deadline'], payload['iat'])
 
     def test_round_trip(self):
         token, jti = issue_ticket(self.users[0], self.fixture, 'p1', self.game_link)
@@ -1170,6 +1205,26 @@ class DirectPlayLiveSnapshotTest(ResultCallbackTestBase):
                 self.assertEqual(self.table.status, 'playing')
                 self.assertIsNotNone(self.table.live_updated_at)
                 self.assertNothingRecorded()
+
+    def test_friend_room_only_confirms_entry_on_a_signed_playing_snapshot(self):
+        self.table.mode = HeadToHeadTable.MODE_FRIEND
+        self.table.settlement = {'friend_live_entry': True}
+        self.table.save(update_fields=['mode', 'settlement'])
+        self.assertEqual(self.deliver_live(self.live_body(sequence=0, status='waiting')).status_code, 200)
+        self.table.refresh_from_db()
+        self.assertEqual(self.table.status, HeadToHeadTable.STATUS_READY)
+        self.assertNotIn('entry_confirmed', self.table.settlement)
+
+        started_at = timezone.now().isoformat()
+        response = self.deliver_live(self.live_body(
+            sequence=0, event_id=str(uuid.uuid4()), event_type='started', event_revision=1,
+            occurred_at=started_at, started_at=started_at, entry_confirmed=True,
+            state={'presence': {'needsAdminAdjudication': False}},
+        ))
+        self.assertEqual(response.status_code, 200)
+        self.table.refresh_from_db()
+        self.assertEqual(self.table.status, HeadToHeadTable.STATUS_PLAYING)
+        self.assertIs(self.table.settlement['entry_confirmed'], True)
 
     def test_old_and_duplicate_sequences_do_not_replace_snapshot(self):
         self.assertEqual(self.deliver_live(self.live_body(sequence=5)).status_code, 200)

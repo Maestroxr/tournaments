@@ -97,7 +97,7 @@ def issue_ticket(user, fixture, seat, game_link):
 
 
 def issue_direct_play_ticket(user, table, seat) -> tuple[str, uuid.UUID]:
-    """Mint a game ticket for a paid one-on-one table (not a tournament fixture)."""
+    """Mint a game ticket for a funded direct table locked by the caller."""
     if seat not in SEATS:
         raise ValueError(f'unknown seat: "{seat}"')
     from .models import LinkedAccount
@@ -130,11 +130,30 @@ def issue_direct_play_ticket(user, table, seat) -> tuple[str, uuid.UUID]:
         }
 
     entry_deadline = issued_at + (24 * 60 * 60)
+    expires_at = issued_at + settings.GAMELINK_TICKET_TTL
+    friend_settlement = None
+    if table.is_friend_game and table.game_format == 'match':
+        from frontend.entry_lifecycle import ENTRY_WINDOW_SECONDS, direct_entry_deadline
+
+        entry_deadline = direct_entry_deadline(table)
+        settlement = table.settlement or {}
+        if not settlement.get('entry_confirmed'):
+            expires_at = min(expires_at, entry_deadline)
+            if expires_at <= issued_at:
+                raise ValueError('Friend game entry has expired.')
+        friend_settlement = {
+            **settlement,
+            'entry_deadline': entry_deadline,
+            'entry_window_seconds': ENTRY_WINDOW_SECONDS,
+            'friend_live_entry': True,
+            'entry_ticket_issued': True,
+        }
+        format_claims['friend'] = True
 
     payload = {
         'v': TICKET_VERSION, 'iss': settings.GAMELINK_ISSUER,
         'aud': settings.GAMELINK_AUDIENCE, 'jti': str(jti),
-        'iat': issued_at, 'exp': issued_at + settings.GAMELINK_TICKET_TTL,
+        'iat': issued_at, 'exp': expires_at,
         'sub': LinkedAccount.external_id_for(user), 'name': user.username,
         # Negative fixture ids occupy a disjoint namespace on the game server.
         'trn': 0, 'fix': -table.pk, 'seat': seat,
@@ -145,6 +164,9 @@ def issue_direct_play_ticket(user, table, seat) -> tuple[str, uuid.UUID]:
     }
     token = signing.dumps(payload, key=_ticket_secret(),
                           salt=TICKET_SALT, compress=False)
+    if friend_settlement is not None and friend_settlement != table.settlement:
+        table.settlement = friend_settlement
+        table.save(update_fields=['settlement'])
     return token, jti
 
 

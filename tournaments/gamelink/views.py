@@ -152,8 +152,9 @@ class StartDirectPlayView(LoginRequiredMixin, View):
 
         # Cancellation must not refund a funded game after a ticket was issued,
         # even before the game server's room callback arrives.
-        table.settlement = {**(table.settlement or {}), 'entry_ticket_issued': True}
-        table.save(update_fields=['settlement'])
+        if (table.settlement or {}).get('entry_ticket_issued') is not True:
+            table.settlement = {**(table.settlement or {}), 'entry_ticket_issued': True}
+            table.save(update_fields=['settlement'])
 
         if request.user.id == table.host_id:
             from frontend.push import queue_host_entered_push
@@ -1734,14 +1735,22 @@ class LiveSnapshotCallbackView(View):
             return snapshot_response(body, 'already_recorded')
         if table.status not in (HeadToHeadTable.STATUS_READY, HeadToHeadTable.STATUS_PLAYING) or not table.guest_id:
             return _reject(request, 409, 'direct-play table is not ready', fixture_id=-table_id)
+        settlement = table.settlement or {}
+        friend_live_entry = settlement.get('friend_live_entry') is True
+        if friend_live_entry and table.status == HeadToHeadTable.STATUS_PLAYING and body['status'] == 'waiting':
+            return snapshot_response(body, 'already_recorded')
         if should_record_snapshot(body, table.live_snapshot):
             table.live_snapshot = body
             table.live_updated_at = timezone.now()
             table.external_room_id = body['room_id']
-            table.status = HeadToHeadTable.STATUS_PLAYING
-            table.save(update_fields=[
-                'live_snapshot', 'live_updated_at', 'external_room_id', 'status', 'updated_at',
-            ])
+            fields = ['live_snapshot', 'live_updated_at', 'external_room_id', 'updated_at']
+            if not friend_live_entry or body['status'] == 'playing':
+                table.status = HeadToHeadTable.STATUS_PLAYING
+                fields.append('status')
+            if friend_live_entry and body['status'] == 'playing' and body.get('entry_confirmed') is True:
+                table.settlement = {**settlement, 'entry_confirmed': True}
+                fields.append('settlement')
+            table.save(update_fields=fields)
         elif 'event_revision' in body:
             return snapshot_response(body, 'already_recorded')
         return snapshot_response(body, 'recorded')
@@ -2110,14 +2119,16 @@ class RematchCallbackView(View):
                         # other player requests while pending -> treat as accept
                         return self._handle_accept(request, body, table_id, room_id, actor_seat)
                 elif existing.status == 'created':
-                    if not existing.new_table:
+                    if not existing.new_table_id:
                         return _reject(request, 409, 'rematch created but no table')
                     from .signing import issue_direct_play_ticket
-                    t1, _ = issue_direct_play_ticket(
-                        existing.new_table.host, existing.new_table, 'p1')
-                    t2, _ = issue_direct_play_ticket(
-                        existing.new_table.guest, existing.new_table, 'p2')
-                    return JsonResponse({'status': 'created', 'table_id': existing.new_table.pk, 'table_code': existing.new_table.code, 'tickets': {'p1': t1, 'p2': t2}})
+                    new_table = HeadToHeadTable.objects.select_for_update().get(pk=existing.new_table_id)
+                    try:
+                        t1, _ = issue_direct_play_ticket(new_table.host, new_table, 'p1')
+                        t2, _ = issue_direct_play_ticket(new_table.guest, new_table, 'p2')
+                    except ValueError as error:
+                        return _reject(request, 412, str(error))
+                    return JsonResponse({'status': 'created', 'table_id': new_table.pk, 'table_code': new_table.code, 'tickets': {'p1': t1, 'p2': t2}})
             # preflight eligibility: check can_join for both
             # requester must afford now, responder preflight
             for user, code in [(actor, 'requester_not_eligible'), (other, 'opponent_not_eligible')]:
