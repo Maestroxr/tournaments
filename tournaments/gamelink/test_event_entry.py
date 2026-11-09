@@ -102,6 +102,7 @@ class EntryPresenceTests(SimpleTestCase):
 
 
 @override_settings(CHANNEL_LAYERS=MEMORY_LAYERS, GAMELINK_ENABLED=True,
+                   GAMELINK_TOURNAMENT_SOLO_ENTRY=False,
                    GAMELINK_TICKET_SECRET='event-entry-test-only-secret-0123456789',
                    GAMELINK_BACKGAMMON_URL='https://game.example.invalid')
 class EventAdmissionTests(TestCase):

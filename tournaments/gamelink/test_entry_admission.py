@@ -18,13 +18,17 @@ from django.db import DatabaseError, transaction
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from tournaments.models import Fixture, Knockout, Participant, Participation, Tournament, _notify_match_ready
+from frontend.task_runner import expire_tournament_entry_deadlines
+from tournaments.models import (
+    Fixture, FixtureAudit, Knockout, Participant, Participation, RatingResult, Tournament,
+    _notify_match_ready,
+)
 
 from gamelink import entry_presence, entry_verification
 from gamelink.entry_waiting import release, state
 from gamelink.housekeeping import purge_expired
 from gamelink.models import GameLink, IssuedTicket
-from gamelink.signing import sign_result_body
+from gamelink.signing import sign_result_body, verify_ticket
 from gamelink.views import _check_playability, _entry_deadline_fields, _try_resolve_no_show
 
 
@@ -36,7 +40,9 @@ from gamelink.views import _check_playability, _entry_deadline_fields, _try_reso
     GAMELINK_RESULT_SECRETS=["incident-test-result-not-production-0123456789"],
     GAMELINK_COMMAND_SECRET="incident-test-command-not-production-0123456789",
 )
-class AdmissionIncidentTests(TestCase):
+class AdmissionFixture(TestCase):
+    room_id = '64db8810-175c-4a74-bddd-b3f23f29286f'
+
     def setUp(self):
         entry_presence._memory.clear()
         entry_verification._memory.clear()
@@ -89,25 +95,31 @@ class AdmissionIncidentTests(TestCase):
         return self.client.post(reverse("gamelink-tournament-start", args=[self.tournament.pk]),
                                 self.credentials(user), content_type='application/json')
 
-    def snapshot(self, status, sequence=0):
+    def snapshot(self, status, sequence=0, **claims):
         payload = {
             "v": 1, "tournament_id": self.tournament.pk,
             "fixture_id": self.fixture.pk,
-            "room_id": "64db8810-175c-4a74-bddd-b3f23f29286f",
+            "room_id": self.room_id,
             "sequence": sequence, "status": status,
             "state": {"phase": "opening_roll", "turn": None, "dice": []},
             "match_score": {"white": 0, "black": 0},
         }
+        return self.signed_callback('gamelink-live', {**payload, **claims})
+
+    def signed_callback(self, route, payload):
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         timestamp = str(int(time.time()))
         nonce = uuid.uuid4().hex
         return self.client.post(
-            reverse("gamelink-live"), data=raw, content_type="application/json",
+            reverse(route), data=raw, content_type="application/json",
             HTTP_X_GAMELINK_TIMESTAMP=timestamp,
             HTTP_X_GAMELINK_NONCE=nonce,
             HTTP_X_GAMELINK_SIGNATURE=sign_result_body(raw, timestamp, nonce),
         )
 
+
+@override_settings(GAMELINK_TOURNAMENT_SOLO_ENTRY=False)
+class AdmissionIncidentTests(AdmissionFixture):
     def test_control_both_can_get_tickets_before_first_snapshot(self):
         self.authorize_pair()
         self.assertEqual(self.start(self.users[0]).status_code, 302)
@@ -496,3 +508,76 @@ class AdmissionIncidentTests(TestCase):
         call_command('restore_game_entry_authorization', execute=True,
                      verified_game_server_seats=True, **options)
         self.assertEqual(self.start(self.users[1]).status_code, 302)
+
+
+@override_settings(GAMELINK_TOURNAMENT_SOLO_ENTRY=True)
+class SoloEntryTests(AdmissionFixture):
+    @property
+    def deadline(self):
+        return int((self.now + datetime.timedelta(minutes=10)).timestamp())
+
+    def bind_room(self, **overrides):
+        return self.snapshot('waiting', **{
+            'solo_entry': True, 'entry_deadline': self.deadline, **overrides,
+        })
+
+    def report_no_show(self, winner):
+        return self.signed_callback('gamelink-result', {
+            'v': 1, 'tournament_id': self.tournament.pk, 'fixture_id': self.fixture.pk,
+            'room_id': self.room_id, 'match_id': None, 'status': 'completed',
+            'end_reason': 'opponent_no_show' if winner else 'double_no_show',
+            'winner_seat': winner, 'score': {'p1': 0, 'p2': 0},
+        })
+
+    def test_each_seat_can_enter_without_pair_verification(self):
+        self.client.force_login(self.users[0])
+        ready = self.client.post(reverse('gamelink-tournament-ready', args=[self.tournament.pk])).json()
+        self.assertTrue(ready['can_enter'])
+        self.assertFalse(ready['both_ready'])
+        for index, user in enumerate(self.users, start=1):
+            response = self.start(user)
+            self.assertEqual(response.status_code, 302)
+            claims = verify_ticket(parse_qs(urlparse(response['Location']).query)['ticket'][0])
+            self.assertTrue(claims['solo_entry'])
+            self.assertEqual(claims['entry_deadline'], self.deadline)
+            self.assertEqual(claims['seat'], f'p{index}')
+        self.link.refresh_from_db()
+        self.assertIsNone(self.link.entry_authorized_at)
+        self.assertEqual(self.link.external_room_id, '')
+
+    def test_only_exact_signed_binding_transfers_deadline_ownership(self):
+        self.assertEqual(self.start(self.users[0]).status_code, 302)
+        self.assertEqual(self.snapshot('waiting').status_code, 409)
+        self.assertEqual(self.bind_room(entry_deadline=self.deadline + 1).status_code, 409)
+        self.assertEqual(self.bind_room().json(), {'status': 'recorded', 'solo_entry': True})
+        self.assertEqual(self.snapshot('playing', sequence=2).status_code, 200)
+        self.assertEqual(self.bind_room().json(), {'status': 'already_recorded', 'solo_entry': True})
+        with patch('django.utils.timezone.now', return_value=self.now + datetime.timedelta(minutes=11)):
+            self.assertEqual(expire_tournament_entry_deadlines(heartbeat=None), 0)
+            self.assertEqual(self.report_no_show('p1').json()['status'], 'recorded')
+            self.assertEqual(self.report_no_show('p1').json()['status'], 'already_recorded')
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.admin_winner_id, self.fixture.player1_id)
+        self.assertEqual((self.fixture.score1, self.fixture.score2), (None, None))
+        self.assertEqual(FixtureAudit.objects.filter(fixture=self.fixture, action='opponent_no_show').count(), 1)
+        self.assertFalse(RatingResult.objects.filter(fixture=self.fixture).exists())
+
+    def test_issued_but_unbound_ticket_expires_even_with_fresh_lobby_presence(self):
+        self.assertEqual(self.start(self.users[0]).status_code, 302)
+        after_deadline = self.now + datetime.timedelta(minutes=11)
+        GameLink.objects.filter(pk=self.link.pk).update(p1_ready_at=after_deadline)
+        with patch('django.utils.timezone.now', return_value=after_deadline):
+            self.assertEqual(self.bind_room().status_code, 409)
+            self.assertEqual(expire_tournament_entry_deadlines(heartbeat=None), 1)
+            self.assertEqual(self.report_no_show(None).json()['status'], 'already_recorded')
+        self.fixture.refresh_from_db()
+        self.assertEqual(self.fixture.admin_result, 'double_no_show')
+        self.assertIsNone(self.fixture.admin_winner_id)
+
+    def test_unbound_callback_can_settle_only_double_no_show_after_deadline(self):
+        self.assertEqual(self.start(self.users[0]).status_code, 302)
+        with patch('django.utils.timezone.now', return_value=self.now + datetime.timedelta(minutes=11)):
+            self.assertEqual(self.report_no_show('p1').status_code, 409)
+            self.assertEqual(self.report_no_show(None).json()['status'], 'recorded')
+            self.assertEqual(expire_tournament_entry_deadlines(heartbeat=None), 0)
+        self.assertEqual(FixtureAudit.objects.filter(fixture=self.fixture, action='double_no_show').count(), 1)

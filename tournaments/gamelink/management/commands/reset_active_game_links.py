@@ -70,6 +70,7 @@ class Command(BaseCommand):
                     entry_authorized_at=None,
                     entry_player1=None,
                     entry_player2=None,
+                    solo_entry_deadline=None,
                 )
             for link in links:
                 entry_verification.clear(link.fixture_id)

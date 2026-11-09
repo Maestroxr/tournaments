@@ -91,6 +91,8 @@ def issue_ticket(user, fixture, seat, game_link):
         'dbl': game_link.doubling_enabled,
         'tc': fixture.mode.tournament.time_control,
     }
+    if game_link.solo_entry_deadline is not None:
+        payload.update(solo_entry=True, entry_deadline=game_link.solo_entry_deadline)
     token = signing.dumps(payload, key=_ticket_secret(),
                           salt=TICKET_SALT, compress=False)
     return token, jti

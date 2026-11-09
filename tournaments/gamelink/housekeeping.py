@@ -65,6 +65,7 @@ def purge_expired(nonce_retention = None, now = None):
     links = GameLink.objects.filter(
         status='pending', expires_at__lt=now,
         external_room_id='', entry_authorized_at__isnull=True,
+        solo_entry_deadline__isnull=True,
         fixture__mode__tournament__entry_deadline_paused=False,
     ).update(status='cancelled')
 

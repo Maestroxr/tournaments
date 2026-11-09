@@ -216,14 +216,15 @@ def expire_tournament_entry_deadlines(*, heartbeat, cursor=0, stop_id=None, boun
         Fixture.objects.filter(
             mode__tournament__published=True,
             mode__tournament__results_confirmed_at__isnull=True,
-            mode__tournament__entry_deadline_paused=False,
-            playable_at__lte=cutoff,
             playable_at__isnull=False,
             player1__isnull=False,
             player2__isnull=False,
             admin_result='',
             score1__isnull=True,
             score2__isnull=True,
+        ).filter(
+            Q(mode__tournament__entry_deadline_paused=False, playable_at__lte=cutoff)
+            | Q(game_link__solo_entry_deadline__lte=int(now.timestamp())),
         ).filter(
             Q(game_link__isnull=True) | Q(
                 game_link__status='pending',
@@ -266,7 +267,7 @@ def expire_tournament_entry_deadlines(*, heartbeat, cursor=0, stop_id=None, boun
                 except Tournament.DoesNotExist:
                     continue
                 fence_task_ownership()
-                if tournament.entry_deadline_paused or tournament.state != 'active':
+                if tournament.state != 'active':
                     logger.debug('event=entry_expiry_skipped tournament_id=%s fixture_id=%s reason=paused_or_inactive',
                                  tournament_id, fixture_id)
                     continue
@@ -292,14 +293,14 @@ def expire_tournament_entry_deadlines(*, heartbeat, cursor=0, stop_id=None, boun
                                  tournament_id, fixture_id)
                     continue
                 fixture_now = timezone.now()
-                entry_deadline, _ = _entry_deadline_fields(fixture, fixture_now)
-                if entry_deadline is None or fixture_now < entry_deadline:
-                    continue
                 from gamelink.models import GameLink
 
                 game_link = GameLink.objects.select_for_update().filter(
                     fixture_id=fixture.pk,
                 ).first()
+                entry_deadline, _ = _entry_deadline_fields(fixture, fixture_now, game_link=game_link)
+                if entry_deadline is None or fixture_now < entry_deadline:
+                    continue
                 if game_link is not None:
                     if (game_link.status != 'pending' or game_link.external_room_id
                             or game_link.entry_authorized_at is not None):

@@ -434,24 +434,38 @@ READY_FRESHNESS_SECONDS = 15
 TOURNAMENT_ENTRY_WINDOW = datetime.timedelta(minutes=10)
 
 
-def _entry_deadline_fields(fixture, now):
+def _entry_deadline_fields(fixture, now, *, game_link=None):
     """
     Return ``(entry_deadline, remaining_seconds)`` for `fixture`.
 
-    The deadline is derived only from ``fixture.playable_at``. When it is
-    unexpectedly missing, both values stay `None` so the gap remains visible
-    instead of being silently replaced by the wrong clock. The remaining time
-    never goes negative; an expired deadline reports ``0`` without resolving
-    anything — no-show resolution happens elsewhere.
+    The deadline comes from ``fixture.playable_at``, or from the same deadline
+    frozen when the first solo ticket was issued. Missing or paused deadlines
+    return no time. An expired deadline reports zero without resolving anything.
     """
-    if fixture.mode.tournament.entry_deadline_paused or fixture.playable_at is None:
+    solo_epoch = game_link.solo_entry_deadline if game_link is not None else None
+    if solo_epoch is not None:
+        entry_deadline = datetime.datetime.fromtimestamp(solo_epoch, datetime.timezone.utc)
+    elif fixture.mode.tournament.entry_deadline_paused or fixture.playable_at is None:
         return None, None
-    entry_deadline = fixture.playable_at + TOURNAMENT_ENTRY_WINDOW
+    else:
+        entry_deadline = fixture.playable_at + TOURNAMENT_ENTRY_WINDOW
     remaining_seconds = max(
         0,
         math.ceil((entry_deadline - now).total_seconds()),
     )
     return entry_deadline, remaining_seconds
+
+
+def _solo_entry_epoch(fixture, game_link, now):
+    if game_link is not None:
+        if game_link.solo_entry_deadline is not None:
+            return game_link.solo_entry_deadline
+        if game_link.entry_authorized_at or game_link.external_room_id or game_link.status != 'pending':
+            return None
+    if not getattr(settings, 'GAMELINK_TOURNAMENT_SOLO_ENTRY', True):
+        return None
+    deadline, _ = _entry_deadline_fields(fixture, now)
+    return int(deadline.timestamp()) if deadline is not None else None
 
 
 def _fresh_seat(game_link, seat, now):
@@ -503,6 +517,25 @@ def _fixture_personally_ready(fixture):
     )
 
 
+def _record_fixture_no_show(fixture, now, winner_seat=None):
+    winner = {'p1': fixture.player1, 'p2': fixture.player2}.get(winner_seat)
+    action = 'opponent_no_show' if winner is not None else 'double_no_show'
+    fixture.admin_result = 'advance' if winner is not None else action
+    fixture.admin_winner = winner
+    fixture.admin_resolved_at = now
+    fixture.save(update_fields=['admin_result', 'admin_winner', 'admin_resolved_at'])
+    after = {'admin_result': fixture.admin_result}
+    if winner is not None:
+        after.update(winner_seat=winner_seat, winner_participant_id=winner.pk)
+    FixtureAudit.objects.create(
+        fixture=fixture, action=action,
+        reason=(f'{winner_seat} entered; the opponent never entered before the entry deadline.'
+                if winner is not None else 'Neither player entered before the entry deadline.'),
+        before={'score': [fixture.score1, fixture.score2], 'admin_result': ''},
+        after=after,
+    )
+
+
 def _resolve_double_no_show_locked(fixture, locked_link, now):
     """Resolve an expired fixture where neither player entered. Caller holds locks.
 
@@ -516,29 +549,23 @@ def _resolve_double_no_show_locked(fixture, locked_link, now):
         return False
     if fixture.player1_id is None or fixture.player2_id is None:
         return False
-    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    solo_epoch = _solo_entry_epoch(fixture, locked_link, now)
+    entry_deadline, _ = _entry_deadline_fields(fixture, now, game_link=locked_link)
+    if solo_epoch is not None:
+        entry_deadline = datetime.datetime.fromtimestamp(solo_epoch, datetime.timezone.utc)
     if entry_deadline is None or now < entry_deadline:
         return False
     if locked_link is not None:
         if (locked_link.status != 'pending' or locked_link.entry_authorized_at
                 or locked_link.external_room_id):
             return False
-        if _fresh_seat(locked_link, 'p1', now) or _fresh_seat(locked_link, 'p2', now):
+        if solo_epoch is None and (
+            _fresh_seat(locked_link, 'p1', now) or _fresh_seat(locked_link, 'p2', now)
+        ):
             return False
     if not _fixture_personally_ready(fixture):
         return False
-    fixture.admin_result = 'double_no_show'
-    fixture.admin_winner = None
-    fixture.admin_resolved_at = now
-    fixture.save(update_fields=['admin_result',
-                 'admin_winner', 'admin_resolved_at'])
-    FixtureAudit.objects.create(
-        fixture=fixture,
-        action='double_no_show',
-        reason='Neither player entered before the entry deadline.',
-        before={'score': [fixture.score1, fixture.score2], 'admin_result': ''},
-        after={'admin_result': 'double_no_show'},
-    )
+    _record_fixture_no_show(fixture, now)
     if locked_link is not None:
         locked_link.status = 'cancelled'
         locked_link.save(update_fields=['status'])
@@ -565,18 +592,26 @@ def _try_resolve_no_show(fixture, game_link, now):
     """
     if fixture.playable_at is None:
         return None
-    entry_deadline, _ = _entry_deadline_fields(fixture, now)
-    if entry_deadline is None or now < entry_deadline:
-        return None
     if fixture.is_confirmed or fixture.admin_result:
         if _is_double_no_show(fixture):
             return 'double_no_show'
         return _no_show_winner_seat(fixture)
-    if game_link.status != 'pending':
+    solo_epoch = _solo_entry_epoch(fixture, game_link, now)
+    entry_deadline, _ = _entry_deadline_fields(fixture, now, game_link=game_link)
+    if (game_link.status != 'pending' or entry_deadline is None
+            or (now.timestamp() < solo_epoch if solo_epoch is not None else now < entry_deadline)):
         return None
     locked_link = GameLink.objects.select_for_update().get(pk=game_link.pk)
     if (locked_link.status != 'pending' or locked_link.entry_authorized_at
             or locked_link.external_room_id):
+        return None
+    if _solo_entry_epoch(fixture, locked_link, now) is not None:
+        # Lobby requests and unused tickets are not arrivals at the game server.
+        if _resolve_double_no_show_locked(fixture, locked_link, now):
+            return 'double_no_show'
+        return None
+    entry_deadline, _ = _entry_deadline_fields(fixture, now)
+    if entry_deadline is None or now < entry_deadline:
         return None
     p1_here = _fresh_seat(locked_link, 'p1', now)
     p2_here = _fresh_seat(locked_link, 'p2', now)
@@ -592,20 +627,7 @@ def _try_resolve_no_show(fixture, game_link, now):
     if not _fixture_personally_ready(fixture):
         return None
     winner_seat = 'p1' if p1_here else 'p2'
-    winner = fixture.player1 if winner_seat == 'p1' else fixture.player2
-    fixture.admin_result = 'advance'
-    fixture.admin_winner = winner
-    fixture.admin_resolved_at = now
-    fixture.save(update_fields=['admin_result',
-                 'admin_winner', 'admin_resolved_at'])
-    FixtureAudit.objects.create(
-        fixture=fixture,
-        action='opponent_no_show',
-        reason=f'{winner_seat} entered; the opponent never entered before the entry deadline.',
-        before={'score': [fixture.score1, fixture.score2], 'admin_result': ''},
-        after={'admin_result': 'advance', 'winner_seat': winner_seat,
-               'winner_participant_id': winner.pk},
-    )
+    _record_fixture_no_show(fixture, now, winner_seat)
     # Terminal for first entries: no ticket can be issued off this link again.
     locked_link.status = 'cancelled'
     locked_link.save(update_fields=['status'])
@@ -859,13 +881,14 @@ def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_f
     candidate_ids = list(
         Fixture.objects.filter(
             mode__tournament_id=tournament_id,
-            mode__tournament__entry_deadline_paused=False,
-            playable_at__lte=cutoff,
             player1__isnull=False,
             player2__isnull=False,
             admin_result='',
             score1__isnull=True,
             score2__isnull=True,
+        ).filter(
+            Q(mode__tournament__entry_deadline_paused=False, playable_at__lte=cutoff)
+            | Q(game_link__solo_entry_deadline__lte=int(now.timestamp())),
         ).filter(
             Q(game_link__isnull=True) | Q(
                 game_link__status='pending', game_link__external_room_id='',
@@ -884,9 +907,6 @@ def resolve_expired_double_no_shows_for_tournament(tournament_id, now, exclude_f
                 if fixture.is_confirmed or fixture.admin_result:
                     continue
                 if fixture.playable_at is None:
-                    continue
-                entry_deadline, _ = _entry_deadline_fields(fixture, now)
-                if entry_deadline is None or now < entry_deadline:
                     continue
                 link = GameLink.objects.select_for_update().filter(fixture_id=fixture.pk).first()
                 if link is not None and link.status != 'pending':
@@ -1053,7 +1073,7 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
         if expected_fixture is not None and fixture.pk != expected_fixture:
             return _start_refusal(412, 'entry_pairing_changed', request=request)
         now = timezone.now()
-        game_link, _ = GameLink.objects.get_or_create(
+        game_link, _ = GameLink.objects.select_for_update().get_or_create(
             fixture=fixture,
             defaults=dict(
                 target_points=fixture.mode.tournament.target_points,
@@ -1070,6 +1090,27 @@ class TournamentGameReadyView(GameEntryLoginRequiredMixin, View):
 
         if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
             return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
+
+        solo_epoch = _solo_entry_epoch(fixture, game_link, now)
+        if solo_epoch is not None:
+            if game_link.solo_entry_deadline is not None and not game_link.entry_pair_matches(fixture):
+                return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
+            if not game_link.external_room_id and now.timestamp() >= solo_epoch:
+                if _resolve_double_no_show_locked(fixture, game_link, now):
+                    return _double_no_show_terminal_response(fixture, seat, now)
+                return _start_refusal(412, 'entry_not_authorized', request=request, fixture=fixture, link=game_link)
+            deadline = datetime.datetime.fromtimestamp(solo_epoch, datetime.timezone.utc)
+            return JsonResponse({
+                'fixture_id': fixture.pk,
+                'seat': seat,
+                'can_enter': True,
+                'both_ready': False,
+                'entry_status': 'ready',
+                'game_started': _game_has_started(game_link),
+                'entry_deadline': deadline,
+                'remaining_seconds': max(0, math.ceil(solo_epoch - now.timestamp())),
+                'opponent': _opponent_info(fixture, seat, game_link, now),
+            })
 
         if game_link.entry_authorized_for(fixture) and _game_has_started(game_link):
             entry_deadline, remaining_seconds = _entry_deadline_fields(
@@ -1168,7 +1209,7 @@ def _issue_game_ticket(request, fixture, seat):
     link_ttl = datetime.timedelta(seconds=settings.GAMELINK_LINK_TTL)
 
     with transaction.atomic():
-        game_link, _ = GameLink.objects.get_or_create(
+        game_link, _ = GameLink.objects.select_for_update().get_or_create(
             fixture=fixture,
             defaults=dict(
                 target_points=fixture.mode.tournament.target_points,
@@ -1183,8 +1224,22 @@ def _issue_game_ticket(request, fixture, seat):
             return _start_refusal(412, 'room_terminal', request=request, fixture=fixture, link=game_link)
         if game_link.entry_authorized_at and not game_link.entry_authorized_for(fixture):
             return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
-        verified = False
-        if not _game_has_started(game_link):
+        solo_epoch = _solo_entry_epoch(fixture, game_link, now)
+        if solo_epoch is not None:
+            if game_link.solo_entry_deadline is not None and not game_link.entry_pair_matches(fixture):
+                return _start_refusal(412, 'entry_pairing_changed', request=request, fixture=fixture, link=game_link)
+            if not game_link.external_room_id and now.timestamp() >= solo_epoch:
+                _resolve_double_no_show_locked(fixture, game_link, now)
+                return _start_refusal(412, 'entry_not_authorized', request=request, fixture=fixture, link=game_link)
+            if game_link.solo_entry_deadline is None:
+                game_link.solo_entry_deadline = solo_epoch
+                game_link.entry_player1_id = fixture.player1.user_id
+                game_link.entry_player2_id = fixture.player2.user_id
+                game_link.save(update_fields=['solo_entry_deadline', 'entry_player1', 'entry_player2'])
+                from frontend.push import notify_tournament_opponent_waiting
+                opponent = fixture.player2 if seat == 'p1' else fixture.player1
+                notify_tournament_opponent_waiting(fixture, recipient_id=opponent.user_id)
+        elif not _game_has_started(game_link):
             from .entry_verification import can_admit
             try:
                 credentials = (json.loads(request.body) if request.content_type == 'application/json'
@@ -1198,8 +1253,10 @@ def _issue_game_ticket(request, fixture, seat):
                              reserved=_reserved_entry(game_link, fixture)):
                 return _start_refusal(412, 'entry_not_authorized', request=request,
                                       fixture=fixture, link=game_link)
-            verified = True
-        if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat, verified=verified):
+            if not _authorize_entry_pair(request, fixture, game_link, now, seat=seat, verified=True):
+                return _start_refusal(412, 'entry_not_authorized', request=request,
+                                      fixture=fixture, link=game_link)
+        elif not _authorize_entry_pair(request, fixture, game_link, now, seat=seat):
             return _start_refusal(412, 'entry_not_authorized', request=request,
                                   fixture=fixture, link=game_link)
 
@@ -1265,6 +1322,7 @@ MAX_MONEY_SCORE = 3 * (1 << 20)
 TECHNICAL_TOURNAMENT_END_REASONS = frozenset({
     'time', 'leave', 'disconnect', 'inactivity_timeout',
 })
+TOURNAMENT_NO_SHOW_REASONS = ('opponent_no_show', 'double_no_show')
 
 _TIMESTAMP_PATTERN = re.compile(r'\A[0-9]{1,20}\Z')
 _NONCE_PATTERN = re.compile(r'\A[A-Za-z0-9._:-]{1,64}\Z')
@@ -1278,6 +1336,7 @@ _ERRORS = {
     404: 'not_found',
     409: 'conflict',
     413: 'payload_too_large',
+    503: 'temporarily_unavailable',
 }
 
 
@@ -1394,6 +1453,8 @@ class ResultCallbackView(View):
                                code='fixture_not_found')
 
             if locked_fixture.admin_result:
+                if self._recorded_no_show(game_link, locked_fixture, body):
+                    return _tournament_result_response(locked_fixture, 'already_recorded')
                 return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id,
                                code='fixture_admin_resolved')
 
@@ -1432,10 +1493,52 @@ class ResultCallbackView(View):
                 return _reject(request, 409, 'room_id does not match the room this fixture is linked to',
                                fixture_id=fixture_id, code='room_mismatch')
 
+            if body.get('end_reason') in TOURNAMENT_NO_SHOW_REASONS:
+                return self._record_no_show(request, game_link, fixture, body)
+
             if body['status'] == STATUS_CANCELLED:
                 return self._record_cancellation(game_link, body)
 
             return self._record_completion(request, game_link, fixture, body)
+
+    def _recorded_no_show(self, game_link, fixture, body):
+        reason = body.get('end_reason')
+        if (reason not in TOURNAMENT_NO_SHOW_REASONS
+                or game_link.solo_entry_deadline is None
+                or body['tournament_id'] != fixture.mode.tournament_id):
+            return False
+        if not game_link.external_room_id:
+            # The club closed an unbound fixture first. A room that never took
+            # ownership can only have reached the same double-no-show outcome.
+            return reason == 'double_no_show' and _is_double_no_show(fixture)
+        return (game_link.status == STATUS_COMPLETED and game_link.external_room_id == body['room_id']
+                and (game_link.raw_result or {}).get('end_reason') == reason
+                and (game_link.raw_result or {}).get('winner_seat') == body['winner_seat'])
+
+    def _record_no_show(self, request, game_link, fixture, body):
+        now = timezone.now()
+        if (game_link.solo_entry_deadline is None
+                or not game_link.entry_pair_matches(fixture) or fixture.is_confirmed):
+            return _reject(request, 409, 'fixture is not eligible for a game-server no-show',
+                           fixture_id=fixture.pk, code='invalid_score')
+        if now.timestamp() < game_link.solo_entry_deadline:
+            # The two hosts can briefly disagree at the deadline boundary.
+            return _reject(request, 503, 'entry deadline has not elapsed', fixture_id=fixture.pk)
+
+        reason = body['end_reason']
+        if not game_link.external_room_id:
+            if reason == 'double_no_show' and _resolve_double_no_show_locked(fixture, game_link, now):
+                return _tournament_result_response(fixture, 'recorded')
+            return _reject(request, 409, 'room was not bound to this fixture',
+                           fixture_id=fixture.pk, code='room_mismatch')
+
+        _record_fixture_no_show(fixture, now, body['winner_seat'])
+        game_link.status = STATUS_COMPLETED
+        game_link.completed_at = now
+        game_link.raw_result = body
+        game_link.save(update_fields=['status', 'completed_at', 'raw_result'])
+        fixture.mode.tournament.update_state()
+        return _tournament_result_response(fixture, 'recorded')
 
     def _record_direct_play(self, request, table_id, body):
         """Settle a versioned contract, retaining fee-only settlement for legacy friend tables."""
@@ -1643,6 +1746,14 @@ class LiveSnapshotCallbackView(View):
                     or body.get('status') not in ('waiting', 'playing', 'completed', 'cancelled')):
                 raise ValueError
             validate_status_event(body)
+            solo_binding = 'solo_entry' in body or 'entry_deadline' in body
+            if solo_binding and (
+                not _is_integer(body.get('v')) or body['v'] != RESULT_VERSION
+                or body.get('solo_entry') is not True or not _is_integer(body.get('entry_deadline'))
+                or body['entry_deadline'] <= 0 or body['status'] != 'waiting'
+                or tournament_id <= 0 or fixture_id <= 0
+            ):
+                raise ValueError
         except (KeyError, TypeError, ValueError, UnicodeDecodeError):
             return _reject(request, 400, 'invalid live snapshot')
         try:
@@ -1654,12 +1765,27 @@ class LiveSnapshotCallbackView(View):
                     return self._record_direct_play(request, -fixture_id, body)
                 actual_tournament_id = Fixture.objects.values_list(
                     'mode__tournament_id', flat=True).get(pk=fixture_id)
-                Tournament.objects.select_for_update().get(pk=actual_tournament_id)
+                tournament = Tournament.objects.select_for_update().get(pk=actual_tournament_id)
                 Fixture.objects.select_for_update().get(pk=fixture_id)
                 link = GameLink.objects.select_for_update().select_related(
                     'fixture__mode').get(fixture_id=fixture_id)
                 if link.fixture.mode.tournament_id != tournament_id or link.external_room_id not in ('', room_id):
                     return _reject(request, 409, 'live snapshot does not match fixture', fixture_id=fixture_id)
+                if solo_binding and (
+                    link.solo_entry_deadline != body['entry_deadline']
+                    or not link.entry_pair_matches(link.fixture)
+                ):
+                    return _reject(request, 409, 'solo entry does not match fixture', fixture_id=fixture_id)
+                if solo_binding and (link.fixture.admin_result or link.fixture.is_confirmed
+                                     or link.status not in OPEN_LINK_STATUSES):
+                    return _reject(request, 409, 'fixture is already resolved', fixture_id=fixture_id)
+                if solo_binding and link.external_room_id:
+                    return JsonResponse({'status': 'already_recorded', 'solo_entry': True})
+                if link.solo_entry_deadline is not None and not link.external_room_id and (
+                    not solo_binding or tournament.state != 'active'
+                    or timezone.now().timestamp() >= link.solo_entry_deadline
+                ):
+                    return _reject(request, 409, 'solo entry is not available', fixture_id=fixture_id)
                 if link.fixture.admin_result:
                     return _reject(request, 409, 'fixture settled by an administrator', fixture_id=fixture_id)
                 if link.status not in OPEN_LINK_STATUSES or link.fixture.is_confirmed:
@@ -1671,6 +1797,8 @@ class LiveSnapshotCallbackView(View):
                                  link=link, reason='terminal_room_snapshot')
                     return snapshot_response(body, 'already_recorded')
                 if link.entry_authorized_at and not link.entry_authorized_for(link.fixture):
+                    return _reject(request, 409, 'entry pairing changed', fixture_id=fixture_id)
+                if link.solo_entry_deadline is not None and not link.entry_pair_matches(link.fixture):
                     return _reject(request, 409, 'entry pairing changed', fixture_id=fixture_id)
                 if link.status == 'playing' and body['status'] == 'waiting':
                     _entry_event(request, 'snapshot_ignored', fixture=link.fixture,
@@ -1718,6 +1846,8 @@ class LiveSnapshotCallbackView(View):
             return _reject(request, 401, 'nonce has been seen before')
         except (GameLink.DoesNotExist, Fixture.DoesNotExist):
             return _reject(request, 404, 'no game link for this fixture', fixture_id=fixture_id)
+        if solo_binding:
+            return JsonResponse({'status': 'recorded', 'solo_entry': True})
         return snapshot_response(body, 'recorded')
 
     def _record_direct_play(self, request, table_id, body):
@@ -1837,6 +1967,17 @@ def _validate_result(body):
         for seat in SEATS:
             if not _is_integer(score.get(seat)) or not 0 <= score[seat] <= max_score:
                 return f'score.{seat} is missing or not a usable score'
+
+    reason = body.get('end_reason')
+    if reason in TOURNAMENT_NO_SHOW_REASONS:
+        seat = body.get('winner_seat')
+        if (body['tournament_id'] <= 0 or body['fixture_id'] <= 0 or status != STATUS_COMPLETED
+                or body.get('match_id', False) is not None or 'winner_seat' not in body
+                or body['score'] != {'p1': 0, 'p2': 0}
+                or 'technical_result' in body or 'financial_result' in body
+                or (reason == 'opponent_no_show' and seat not in SEATS)
+                or (reason == 'double_no_show' and seat is not None)):
+            return 'invalid tournament no-show result'
 
     return None
 

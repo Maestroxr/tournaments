@@ -78,12 +78,20 @@ class GameLink(models.Model):
         'auth.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
     entry_player2 = models.ForeignKey(
         'auth.User', null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    # Freeze the signed admission deadline as soon as the first solo ticket is issued.
+    # Only a room binding transfers deadline ownership to the game server.
+    solo_entry_deadline = models.PositiveBigIntegerField(null=True, blank=True)
 
     def entry_authorized_for(self, fixture):
         """A grant is valid only for the exact pair that passed readiness."""
         return bool(
             self.fixture_id == fixture.pk and self.entry_authorized_at
-            and fixture.player1_id and fixture.player2_id
+            and self.entry_pair_matches(fixture)
+        )
+
+    def entry_pair_matches(self, fixture):
+        return bool(
+            fixture.player1_id and fixture.player2_id
             and self.entry_player1_id and self.entry_player2_id
             and self.entry_player1_id == fixture.player1.user_id
             and self.entry_player2_id == fixture.player2.user_id
