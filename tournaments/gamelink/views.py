@@ -518,7 +518,11 @@ def _fixture_personally_ready(fixture):
 
 
 def _record_fixture_no_show(fixture, now, winner_seat=None):
-    winner = {'p1': fixture.player1, 'p2': fixture.player2}.get(winner_seat)
+    winner = None
+    if winner_seat == 'p1':
+        winner = fixture.player1
+    elif winner_seat == 'p2':
+        winner = fixture.player2
     action = 'opponent_no_show' if winner is not None else 'double_no_show'
     fixture.admin_result = 'advance' if winner is not None else action
     fixture.admin_winner = winner
@@ -644,8 +648,8 @@ def _try_resolve_no_show(fixture, game_link, now):
 
 def _no_show_terminal_response(fixture, seat, winner_seat, now):
     """Terminal no-show state for a player whose fixture already ended."""
-    entry_deadline, _ = _entry_deadline_fields(fixture, now)
     game_link = GameLink.objects.filter(fixture_id=fixture.pk).first()
+    entry_deadline, _ = _entry_deadline_fields(fixture, now, game_link=game_link)
     if game_link is not None:
         opponent = _opponent_info(fixture, seat, game_link, now)
     elif fixture.player1 is not None and fixture.player2 is not None:
@@ -668,8 +672,8 @@ def _no_show_terminal_response(fixture, seat, winner_seat, now):
 
 def _double_no_show_terminal_response(fixture, seat, now):
     """Terminal double-no-show state: fixture ended with no winner."""
-    entry_deadline, _ = _entry_deadline_fields(fixture, now)
     game_link = GameLink.objects.filter(fixture_id=fixture.pk).first()
+    entry_deadline, _ = _entry_deadline_fields(fixture, now, game_link=game_link)
     if game_link is not None:
         try:
             opponent = _opponent_info(fixture, seat, game_link, now)

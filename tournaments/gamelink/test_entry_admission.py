@@ -552,8 +552,10 @@ class SoloEntryTests(AdmissionFixture):
         self.assertEqual(self.bind_room().json(), {'status': 'recorded', 'solo_entry': True})
         self.assertEqual(self.snapshot('playing', sequence=2).status_code, 200)
         self.assertEqual(self.bind_room().json(), {'status': 'already_recorded', 'solo_entry': True})
+        self.assertEqual(self.report_no_show('p1').status_code, 503)
         with patch('django.utils.timezone.now', return_value=self.now + datetime.timedelta(minutes=11)):
             self.assertEqual(expire_tournament_entry_deadlines(heartbeat=None), 0)
+            self.assertEqual(self.start(self.users[0]).status_code, 302)
             self.assertEqual(self.report_no_show('p1').json()['status'], 'recorded')
             self.assertEqual(self.report_no_show('p1').json()['status'], 'already_recorded')
         self.fixture.refresh_from_db()
